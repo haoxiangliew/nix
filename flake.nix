@@ -64,24 +64,26 @@
                 ];
               }
             ];
-            language-server.nixd = {
-              command = "nixd";
-              args = [ "--semantic-tokens=true" ];
-              config.nixd = {
-                formatting.command = [ "nixfmt" ];
-                nixpkgs.expr = "import ${flake}.inputs.nixpkgs { }";
-                options.home-manager.expr = ''${flake}.homeConfigurations."haoxiangliew@hx-framework".options'';
+            language-server = {
+              nixd = {
+                command = "nixd";
+                args = [ "--semantic-tokens=true" ];
+                config.nixd = {
+                  formatting.command = [ "nixfmt" ];
+                  nixpkgs.expr = "import ${flake}.inputs.nixpkgs { }";
+                  options.home-manager.expr = ''${flake}.homeConfigurations."haoxiangliew@hx-framework".options'';
+                };
               };
-            };
-            language-server.mpls = {
-              command = "mpls";
-              args = [
-                "--theme"
-                "dracula"
-                "--browser"
-                "helium"
-                "--enable-emoji"
-              ];
+              mpls = {
+                command = "mpls";
+                args = [
+                  "--theme"
+                  "dracula"
+                  "--browser"
+                  "helium"
+                  "--enable-emoji"
+                ];
+              };
             };
           };
         in
