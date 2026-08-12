@@ -30,6 +30,7 @@
     claude-code = {
       enable = true;
       enableMcpIntegration = true;
+      package = pkgs.unstable.claude-code;
     };
     delta = {
       enable = true;

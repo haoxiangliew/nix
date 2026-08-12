@@ -30,3 +30,13 @@ subsequent runs can just use `home-manager switch --flake .#$USER@$HOSTNAME`
 echo "$HOME/.nix-profile/bin/fish" | sudo tee -a /etc/shells
 chsh -s "$HOME/.nix-profile/bin/fish"
 ```
+#### 1Password
+Due to changes by 1Password, a nightly release is required for operation in `rpm-ostree` environments like Fedora Silverblue:
+
+[https://www.1password.community/1password-at-home-31/update-to-fedora-silverblue-fails-25075](https://www.1password.community/1password-at-home-31/update-to-fedora-silverblue-fails-25075)
+
+[Yama](https://support.1password.com/linux-ptrace-scope-issue/#if-yama-is-loaded) will also need to be set up for importing / exporting files:
+
+```bash
+sudo sysctl -w kernel.yama.ptrace_scope=1 | sudo tee -a /etc/sysctl.conf
+```
