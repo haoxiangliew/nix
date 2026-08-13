@@ -9,6 +9,13 @@
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    llm-agents.url = "github:numtide/llm-agents.nix";
+  };
+
+  nixConfig = {
+    extra-substituters = [ "https://cache.numtide.com" ];
+    extra-trusted-public-keys = [ "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=" ];
   };
 
   outputs =
@@ -90,6 +97,7 @@
         {
           default = pkgs.mkShell {
             packages = [
+              pkgs.bashInteractive
               pkgs.unstable.nixd
               pkgs.nixfmt
               pkgs.marksman
@@ -108,6 +116,7 @@
         extraSpecialArgs = { inherit inputs; };
         modules = [
           ./home
+          ./home/agents.nix
           ./home/silverblue.nix
           ./home/gnome.nix
           ./home/helix.nix

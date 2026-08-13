@@ -9,6 +9,7 @@
       nerd-fonts.symbols-only
       font-awesome
       material-design-icons
+      unstable.podman-tui
     ];
   };
 
@@ -27,11 +28,6 @@
     ripgrep.enable = true;
     ssh.enable = true;
     yazi.enable = true;
-    claude-code = {
-      enable = true;
-      enableMcpIntegration = true;
-      package = pkgs.unstable.claude-code;
-    };
     delta = {
       enable = true;
       enableGitIntegration = true;

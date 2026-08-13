@@ -1,4 +1,4 @@
-{ nixpkgs-unstable, ... }:
+{ nixpkgs-unstable, llm-agents, ... }:
 
 {
   unstable = final: prev: {
@@ -6,5 +6,9 @@
       inherit (prev.stdenv.hostPlatform) system;
       config.allowUnfree = true;
     };
+  };
+
+  llm-agents = final: prev: {
+    llm-agents = llm-agents.packages.${prev.stdenv.hostPlatform.system};
   };
 }

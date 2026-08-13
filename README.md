@@ -24,6 +24,13 @@ nix run home-manager/release-${home.stateVersion} -- switch --flake .#$USER@$HOS
 ```
 subsequent runs can just use `home-manager switch --flake .#$USER@$HOSTNAME`
 
+##### `trusted-users`
+
+add your user to `/etc/nix/nix.conf` for `nixConfig` binary caches to apply
+```bash
+trusted-users = root $USER
+```
+
 #### `fish` init
 
 ```bash
@@ -31,6 +38,7 @@ echo "$HOME/.nix-profile/bin/fish" | sudo tee -a /etc/shells
 chsh -s "$HOME/.nix-profile/bin/fish"
 ```
 #### 1Password
+
 Due to changes by 1Password, a nightly release is required for operation in `rpm-ostree` environments like Fedora Silverblue:
 
 [https://www.1password.community/1password-at-home-31/update-to-fedora-silverblue-fails-25075](https://www.1password.community/1password-at-home-31/update-to-fedora-silverblue-fails-25075)

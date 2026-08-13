@@ -7,6 +7,12 @@
   programs.helix = {
     enable = true;
     package = pkgs.unstable.helix;
+    extraPackages = with pkgs; [
+      bash-language-server
+      shellcheck
+      taplo
+      vscode-langservers-extracted
+    ];
     defaultEditor = true;
     settings = {
       theme = "dracula-pro";
