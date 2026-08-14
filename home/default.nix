@@ -53,6 +53,12 @@
         fish_add_path --global --prepend $HOME/.nix-profile/bin
       '';
     };
+    fzf = {
+      enable = true;
+      enableFishIntegration = true;
+      defaultCommand = "fd --type f --color=always";
+      defaultOptions = [ "--ansi" ];
+    };
     git = {
       enable = true;
       lfs.enable = true;

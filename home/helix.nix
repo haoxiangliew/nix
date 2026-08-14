@@ -16,6 +16,7 @@
     defaultEditor = true;
     settings = {
       theme = "dracula-pro";
+      editor.workspace-trust.level = "insecure";
     };
 
     themes.dracula-pro = {
