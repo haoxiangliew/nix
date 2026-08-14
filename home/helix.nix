@@ -6,7 +6,7 @@
 {
   programs.helix = {
     enable = true;
-    package = pkgs.unstable.helix;
+    package = pkgs.helix;
     extraPackages = with pkgs; [
       bash-language-server
       shellcheck

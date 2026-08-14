@@ -1,4 +1,9 @@
-{ nixpkgs-unstable, llm-agents, ... }:
+{
+  nixpkgs-unstable,
+  helix,
+  llm-agents,
+  ...
+}:
 
 {
   unstable = final: prev: {
@@ -6,6 +11,10 @@
       inherit (prev.stdenv.hostPlatform) system;
       config.allowUnfree = true;
     };
+  };
+
+  helix = final: prev: {
+    helix = helix.packages.${prev.stdenv.hostPlatform.system}.default;
   };
 
   llm-agents = final: prev: {
