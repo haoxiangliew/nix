@@ -72,7 +72,6 @@
               }
               {
                 name = "markdown";
-                auto-format = true;
                 language-servers = [
                   "marksman"
                   "mpls"
@@ -81,10 +80,8 @@
             ];
             language-server = {
               nixd = {
-                command = "nixd";
                 args = [ "--semantic-tokens=true" ];
                 config.nixd = {
-                  formatting.command = [ "nixfmt" ];
                   nixpkgs.expr = "import ${flake}.inputs.nixpkgs { }";
                   options.home-manager.expr = ''${flake}.homeConfigurations."haoxiangliew@hx-framework".options'';
                 };

@@ -9,6 +9,7 @@
     package = pkgs.helix;
     extraPackages = with pkgs; [
       bash-language-server
+      marksman
       shellcheck
       taplo
       vscode-langservers-extracted
