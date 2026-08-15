@@ -142,7 +142,6 @@
           {
             home-manager = {
               useGlobalPkgs = true;
-              useUserPackages = true;
               users.hao.imports = [
                 ./home
                 ./home/darwin.nix
