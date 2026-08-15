@@ -18,6 +18,10 @@
         packages = [
           "ghostty"
           "helium-browser"
+          "keyboardcleantool"
+          "middleclick"
+          "slack"
+          "spotify"
         ];
       in
       (map (
