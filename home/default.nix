@@ -2,8 +2,6 @@
 
 {
   home = {
-    username = "haoxiangliew";
-    stateVersion = "26.05";
     packages = with pkgs; [
       nerd-fonts.jetbrains-mono
       nerd-fonts.symbols-only

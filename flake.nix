@@ -3,15 +3,19 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    darwin = {
+      url = "github:LnL7/nix-darwin/nix-darwin-26.05";
+      inputs.nixpkgs.follows = "nixpkgs-darwin";
+    };
 
     helix.url = "github:helix-editor/helix";
-
     llm-agents.url = "github:numtide/llm-agents.nix";
   };
 
@@ -30,6 +34,7 @@
     inputs@{
       nixpkgs,
       home-manager,
+      darwin,
       ...
     }:
     let
@@ -45,7 +50,7 @@
 
       pkgsFor =
         system:
-        import nixpkgs {
+        import (if nixpkgs.lib.hasSuffix "-darwin" system then inputs.nixpkgs-darwin else nixpkgs) {
           inherit system;
           config.allowUnfree = true;
           overlays = builtins.attrValues overlays;
@@ -82,8 +87,19 @@
               nixd = {
                 args = [ "--semantic-tokens=true" ];
                 config.nixd = {
-                  nixpkgs.expr = "import ${flake}.inputs.nixpkgs { }";
-                  options.home-manager.expr = ''${flake}.homeConfigurations."haoxiangliew@hx-framework".options'';
+                  nixpkgs.expr =
+                    if pkgs.stdenv.isDarwin then
+                      "import ${flake}.inputs.nixpkgs-darwin { }"
+                    else
+                      "import ${flake}.inputs.nixpkgs { }";
+                  options = {
+                    darwin.expr = ''${flake}.darwinConfigurations."hao@fluidstack".options'';
+                    home-manager.expr =
+                      if pkgs.stdenv.isDarwin then
+                        ''${flake}.darwinConfigurations."hao@fluidstack".options.home-manager.users.type.getSubOptions [ ]''
+                      else
+                        ''${flake}.homeConfigurations."haoxiangliew@hx-framework".options'';
+                  };
                 };
               };
               mpls = {
@@ -116,15 +132,38 @@
         }
       );
 
+      darwinConfigurations."hao@fluidstack" = darwin.lib.darwinSystem {
+        pkgs = pkgsFor "aarch64-darwin";
+        modules = [
+          home-manager.darwinModules.home-manager
+          ./devices/fluidstack.nix
+          ./darwin
+          ./darwin/brew.nix
+          {
+            home-manager = {
+              useGlobalPkgs = true;
+              useUserPackages = true;
+              users.hao.imports = [
+                ./home
+                ./home/darwin.nix
+                ./home/helix.nix
+                ./home/agents.nix
+                ./home/1password.nix
+              ];
+            };
+          }
+        ];
+      };
+
       homeConfigurations."haoxiangliew@hx-framework" = home-manager.lib.homeManagerConfiguration {
         pkgs = pkgsFor "x86_64-linux";
-        extraSpecialArgs = { inherit inputs; };
         modules = [
+          ./devices/framework.nix
           ./home
-          ./home/agents.nix
           ./home/silverblue.nix
           ./home/gnome.nix
           ./home/helix.nix
+          ./home/agents.nix
           ./home/1password.nix
         ];
       };
