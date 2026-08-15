@@ -3,6 +3,7 @@
 {
   homebrew = {
     enable = true;
+    enableFishIntegration = true;
 
     onActivation = {
       autoUpdate = true;

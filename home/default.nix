@@ -79,7 +79,6 @@
       enableZshIntegration = true;
       settings = {
         font-family = "JetBrainsMono Nerd Font";
-        font-size = 10;
 
         font-thicken = true;
 

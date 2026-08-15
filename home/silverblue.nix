@@ -10,6 +10,7 @@
   programs.ghostty = {
     package = null;
     systemd.enable = false;
+    settings.font-size = 10;
   };
 
   # 1Password is installed via an rpm-ostree overlay: the agent socket sits in

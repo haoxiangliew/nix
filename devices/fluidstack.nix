@@ -1,7 +1,10 @@
 { ... }:
 
 {
-  system.stateVersion = 7;
+  system = {
+    primaryUser = "hao";
+    stateVersion = 7;
+  };
   users.users.hao.home = "/Users/hao";
   home-manager.users.hao = {
     home.stateVersion = "26.05";
