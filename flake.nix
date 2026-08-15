@@ -66,7 +66,9 @@
         let
           pkgs = pkgsFor system;
 
-          flake = ''(builtins.getFlake "/var/home/haoxiangliew/Developer/nix")'';
+          flakePath =
+            if pkgs.stdenv.isDarwin then "/Users/hao/Developer/nix" else "/var/home/haoxiangliew/Developer/nix";
+          flake = ''(builtins.getFlake "${flakePath}")'';
 
           languages = (pkgs.formats.toml { }).generate "languages.toml" {
             language = [
@@ -85,7 +87,6 @@
             ];
             language-server = {
               nixd = {
-                args = [ "--semantic-tokens=true" ];
                 config.nixd = {
                   nixpkgs.expr =
                     if pkgs.stdenv.isDarwin then

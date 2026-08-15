@@ -1,6 +1,8 @@
 { ... }:
 
 {
+  manual.manpages.enable = false;
+
   programs = {
     ghostty = {
       package = null;
