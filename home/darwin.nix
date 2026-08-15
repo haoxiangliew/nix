@@ -3,6 +3,8 @@
 {
   manual.manpages.enable = false;
 
+  home.file.".hushlogin".text = "";
+
   programs = {
     ghostty = {
       package = null;
