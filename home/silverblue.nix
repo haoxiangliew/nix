@@ -13,6 +13,12 @@
     settings.font-size = 10;
   };
 
+  # Nothing on this host resolves MIME types through the Nix profile: no GUI
+  # packages come from Home Manager, and XDG_DATA_DIRS never includes the
+  # profile (targets.genericLinux is off). The generated database is unreachable,
+  # so skip it and the three packages it pulls in.
+  xdg.mime.enable = false;
+
   # 1Password is installed via an rpm-ostree overlay: the agent socket sits in
   # $HOME and op-ssh-sign lives at the FHS path rather than a Nix store path.
   hx.onePassword = {

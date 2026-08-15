@@ -1,23 +1,22 @@
-{
-  nixpkgs-unstable,
-  helix,
-  llm-agents,
-  ...
-}:
+inputs:
 
-{
-  unstable = final: prev: {
-    unstable = import nixpkgs-unstable {
-      inherit (prev.stdenv.hostPlatform) system;
-      config.allowUnfree = true;
-    };
-  };
-
+rec {
   helix = final: prev: {
-    helix = helix.packages.${prev.stdenv.hostPlatform.system}.default;
+    helix = inputs.helix.packages.${prev.stdenv.hostPlatform.system}.default;
   };
 
   llm-agents = final: prev: {
-    llm-agents = llm-agents.packages.${prev.stdenv.hostPlatform.system};
+    llm-agents = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system};
+  };
+
+  unstable = final: prev: {
+    unstable = import inputs.nixpkgs-unstable {
+      inherit (prev.stdenv.hostPlatform) system;
+      config.allowUnfree = true;
+      overlays = [
+        helix
+        llm-agents
+      ];
+    };
   };
 }

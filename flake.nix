@@ -32,7 +32,9 @@
 
   outputs =
     inputs@{
+      self,
       nixpkgs,
+      nixpkgs-darwin,
       home-manager,
       darwin,
       ...
@@ -50,7 +52,7 @@
 
       pkgsFor =
         system:
-        import (if nixpkgs.lib.hasSuffix "-darwin" system then inputs.nixpkgs-darwin else nixpkgs) {
+        import (if nixpkgs.lib.hasSuffix "-darwin" system then nixpkgs-darwin else nixpkgs) {
           inherit system;
           config.allowUnfree = true;
           overlays = builtins.attrValues overlays;
@@ -61,14 +63,17 @@
 
       formatter = forEachSystem (system: (pkgsFor system).nixfmt-tree);
 
+      checks = {
+        aarch64-darwin.fluidstack = self.darwinConfigurations."hao@fluidstack".system;
+        x86_64-linux.hx-framework = self.homeConfigurations."haoxiangliew@hx-framework".activationPackage;
+      };
+
       devShells = forEachSystem (
         system:
         let
           pkgs = pkgsFor system;
 
-          flakePath =
-            if pkgs.stdenv.isDarwin then "/Users/hao/Developer/nix" else "/var/home/haoxiangliew/Developer/nix";
-          flake = ''(builtins.getFlake "${flakePath}")'';
+          flake = ''(builtins.getFlake "@flakePath@")'';
 
           languages = (pkgs.formats.toml { }).generate "languages.toml" {
             language = [
@@ -127,7 +132,9 @@
             ];
             shellHook = ''
               mkdir -p .helix
-              ln -sf ${languages} .helix/languages.toml
+              rm -f .helix/languages.toml
+              substitute ${languages} .helix/languages.toml \
+                --replace-fail '@flakePath@' "$PWD"
             '';
           };
         }
