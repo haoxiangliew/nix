@@ -16,6 +16,7 @@
     casks =
       let
         packages = [
+          "betterdisplay"
           "ghostty"
           "helium-browser"
           "keyboardcleantool"
