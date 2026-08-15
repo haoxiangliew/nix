@@ -1,9 +1,15 @@
-{ config, ... }:
+{ config, pkgs, ... }:
 
 {
-  # ostree bind-mounts /home -> /var/home, and Home Manager compares this
-  # against $HOME at activation time.
-  home.homeDirectory = "/var/home/${config.home.username}";
+  home = {
+    # ostree bind-mounts /home -> /var/home, and Home Manager compares this
+    # against $HOME at activation time.
+    homeDirectory = "/var/home/${config.home.username}";
+
+    packages = with pkgs; [
+      unstable.podman-tui
+    ];
+  };
 
   # Ghostty is provided by the host (rpm-ostree/Flatpak), not Home Manager,
   # and this host has no systemd user session managing it.

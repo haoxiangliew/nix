@@ -7,7 +7,6 @@
       nerd-fonts.symbols-only
       font-awesome
       material-design-icons
-      unstable.podman-tui
     ];
   };
 
