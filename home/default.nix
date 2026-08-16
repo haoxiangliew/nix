@@ -175,6 +175,11 @@
       vimAlias = true;
       vimdiffAlias = true;
     };
+    nix-index = {
+      enable = true;
+      enableFishIntegration = true;
+    };
+    nix-index-database.comma.enable = true;
     starship = {
       enable = true;
       enableFishIntegration = true;

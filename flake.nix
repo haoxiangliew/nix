@@ -17,14 +17,17 @@
 
     helix.url = "github:helix-editor/helix";
     llm-agents.url = "github:numtide/llm-agents.nix";
+    nix-index-database.url = "github:nix-community/nix-index-database";
   };
 
   nixConfig = {
     extra-substituters = [
+      "https://nix-community.cachix.org"
       "https://cache.numtide.com"
       "https://helix.cachix.org"
     ];
     extra-trusted-public-keys = [
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
       "helix.cachix.org-1:ejp9KQpR1FBI2onstMQ34yogDm4OgU2ru6lIwPvuCVs="
     ];
@@ -151,6 +154,7 @@
             home-manager = {
               useGlobalPkgs = true;
               users.hao.imports = [
+                inputs.nix-index-database.homeModules.default
                 ./home
                 ./home/darwin.nix
                 ./home/helix.nix
@@ -165,6 +169,7 @@
       homeConfigurations."haoxiangliew@hx-framework" = home-manager.lib.homeManagerConfiguration {
         pkgs = pkgsFor "x86_64-linux";
         modules = [
+          inputs.nix-index-database.homeModules.default
           ./devices/framework.nix
           ./home
           ./home/silverblue.nix
