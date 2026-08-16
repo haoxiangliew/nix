@@ -16,7 +16,7 @@
   programs.ghostty = {
     package = null;
     systemd.enable = false;
-    settings.font-size = 10;
+    settings.font-size = 9;
   };
 
   # Nothing on this host resolves MIME types through the Nix profile: no GUI
