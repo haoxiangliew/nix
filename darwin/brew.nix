@@ -20,6 +20,7 @@
     casks =
       let
         packages = [
+          "1password-cli"
           "betterdisplay"
           "ghostty"
           "granola"
