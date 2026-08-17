@@ -27,6 +27,7 @@
           "helium-browser"
           "keyboardcleantool"
           "middleclick"
+          "orbstack"
           "slack"
           "spotify"
         ];
