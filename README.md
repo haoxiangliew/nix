@@ -26,6 +26,25 @@ nix run home-manager/release-${home.stateVersion} -- switch --flake .#$USER@$HOS
 ```
 subsequent runs can just use `home-manager switch --flake .#$USER@$HOSTNAME`
 
+#### captive portals
+
+the root of all evil, we have DNSoverTLS configured over `systemd-resolved`:
+
+```bash
+resolvectl dnsovertls wlp3s0 no
+nmcli networking connectivity check
+# portal
+```
+
+GNOME should now have a popup to sign in to the captive portal.
+
+re-enable `systemd-resolved` network settings, including DNSoverTLS
+
+```bash
+resolvectl revert wlp1s0
+resolvectl flush-caches
+```
+
 ### Darwin
 
 prerequisites:
