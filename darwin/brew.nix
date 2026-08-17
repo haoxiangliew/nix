@@ -1,6 +1,10 @@
 { ... }:
 
 {
+
+  environment.variables = {
+    HOMEBREW_NO_ANALYTICS = "1";
+  };
   homebrew = {
     enable = true;
     enableFishIntegration = true;
@@ -18,6 +22,7 @@
         packages = [
           "betterdisplay"
           "ghostty"
+          "granola"
           "helium-browser"
           "keyboardcleantool"
           "middleclick"
