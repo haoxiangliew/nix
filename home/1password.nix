@@ -37,7 +37,6 @@ in
           format = "ssh";
           key = signingPublicKey;
           signer = config.hx.onePassword.sshSignProgram;
-          signByDefault = true;
         };
         settings = {
           gpg.ssh.allowedSignersFile = "${allowedSigners}";

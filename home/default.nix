@@ -69,6 +69,7 @@
         push.autoSetupRemote = true;
         pull.rebase = true;
         rebase.autoStash = true;
+        signing.signByDefault = true;
       };
     };
     gh = {
