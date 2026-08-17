@@ -71,6 +71,10 @@
         rebase.autoStash = true;
       };
     };
+    gh = {
+      enable = true;
+      settings.git_protocol = "ssh";
+    };
     ghostty = {
       enable = true;
       enableBashIntegration = true;
