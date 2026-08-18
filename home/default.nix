@@ -59,6 +59,7 @@
     git = {
       enable = true;
       lfs.enable = true;
+      signing.signByDefault = true;
       settings = {
         user = {
           name = "Hao Xiang Liew";
@@ -69,7 +70,6 @@
         push.autoSetupRemote = true;
         pull.rebase = true;
         rebase.autoStash = true;
-        signing.signByDefault = true;
       };
     };
     gh = {
