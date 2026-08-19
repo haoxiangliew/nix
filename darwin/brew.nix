@@ -20,6 +20,7 @@
     casks =
       let
         packages = [
+          "1password"
           "1password-cli"
           "betterdisplay"
           "ghostty"
@@ -27,6 +28,7 @@
           "helium-browser"
           "keyboardcleantool"
           "middleclick"
+          "mos"
           "orbstack"
           "slack"
           "spotify"
