@@ -18,6 +18,10 @@
     helix.url = "github:helix-editor/helix";
     llm-agents.url = "github:numtide/llm-agents.nix";
     nix-index-database.url = "github:nix-community/nix-index-database";
+    pstack = {
+      url = "github:cursor/plugins";
+      flake = false;
+    };
   };
 
   nixConfig = {
@@ -153,6 +157,7 @@
           {
             home-manager = {
               useGlobalPkgs = true;
+              extraSpecialArgs = { inherit inputs; };
               users.hao.imports = [
                 inputs.nix-index-database.homeModules.default
                 ./home
@@ -168,6 +173,7 @@
 
       homeConfigurations."haoxiangliew@hx-framework" = home-manager.lib.homeManagerConfiguration {
         pkgs = pkgsFor "x86_64-linux";
+        extraSpecialArgs = { inherit inputs; };
         modules = [
           inputs.nix-index-database.homeModules.default
           ./devices/framework.nix

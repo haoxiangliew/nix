@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
 
 {
   home = {
@@ -16,6 +16,22 @@
     ];
   };
 
+  xdg.configFile."herdr/config.toml".source = (pkgs.formats.toml { }).generate "herdr-config.toml" {
+    onboarding = false;
+    theme.name = "dracula";
+    worktrees.directory = "~/Developer/.herdr/worktrees";
+    experimental.kitty_graphics = true;
+    ui = {
+      toast.delivery = "terminal";
+      sound.enabled = false;
+      show_agent_labels_on_pane_borders = true;
+    };
+    update = {
+      version_check = false;
+      manifest_check = true;
+    };
+  };
+
   programs = {
     mcp = {
       enable = true;
@@ -24,6 +40,11 @@
       enable = true;
       enableMcpIntegration = true;
       package = pkgs.llm-agents.claude-code;
+      skills = {
+        herdr = pkgs.runCommandLocal "herdr-skill" { } "${pkgs.llm-agents.herdr}/bin/herdr --skill > $out";
+        unslop = "${inputs.pstack}/pstack/skills/unslop";
+        technical-writing = "${inputs.pstack}/pstack/skills/technical-writing";
+      };
     };
     codex = {
       enable = true;
