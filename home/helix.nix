@@ -18,6 +18,25 @@
     settings = {
       theme = "dracula-pro";
       editor.workspace-trust.level = "insecure";
+      keys.normal = {
+        # yazi
+        C-y = [
+          ":open %sh{yazi --chooser-file=/dev/stdout | tr -d '\\n'}"
+          ":redraw"
+          ":set mouse false"
+          ":set mouse true"
+        ];
+        # lazygit
+        C-g = [
+          ":new"
+          ":insert-output lazygit"
+          ":buffer-close!"
+          ":redraw"
+          ":set mouse false"
+          ":set mouse true"
+          ":reload-all"
+        ];
+      };
     };
 
     themes.dracula-pro = {
