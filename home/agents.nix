@@ -65,6 +65,11 @@
           sound = false;
         };
       };
+      skills = {
+        herdr = pkgs.runCommandLocal "herdr-skill" { } "${pkgs.llm-agents.herdr}/bin/herdr --skill > $out";
+        unslop = "${inputs.pstack}/pstack/skills/unslop";
+        technical-writing = "${inputs.pstack}/pstack/skills/technical-writing";
+      };
     };
   };
 }

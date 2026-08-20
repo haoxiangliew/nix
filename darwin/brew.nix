@@ -32,6 +32,7 @@
           "orbstack"
           "slack"
           "spotify"
+          "tableplus"
         ];
       in
       (map (
