@@ -10,6 +10,7 @@
     extraPackages = with pkgs; [
       bash-language-server
       marksman
+      mdterm
       shellcheck
       taplo
       vscode-langservers-extracted
@@ -28,13 +29,18 @@
         ];
         # lazygit
         C-g = [
-          ":new"
-          ":insert-output lazygit"
-          ":buffer-close!"
+          ":insert-output lazygit >/dev/tty"
           ":redraw"
           ":set mouse false"
           ":set mouse true"
           ":reload-all"
+        ];
+        # mdterm
+        space.m = [
+          '':insert-output mdterm "$(echo %{buffer_name} | sed "s|^~|$HOME|")" >/dev/tty''
+          ":redraw"
+          ":set mouse false"
+          ":set mouse true"
         ];
       };
     };

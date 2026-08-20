@@ -89,41 +89,24 @@
                 auto-format = true;
                 language-servers = [ "nixd" ];
               }
-              {
-                name = "markdown";
-                language-servers = [
-                  "marksman"
-                  "mpls"
-                ];
-              }
             ];
             language-server = {
               nixd = {
                 config.nixd = {
                   nixpkgs.expr =
-                    if pkgs.stdenv.isDarwin then
+                    if pkgs.stdenv.hostPlatform.isDarwin then
                       "import ${flake}.inputs.nixpkgs-darwin { }"
                     else
                       "import ${flake}.inputs.nixpkgs { }";
                   options = {
                     darwin.expr = ''${flake}.darwinConfigurations."hao@fluidstack".options'';
                     home-manager.expr =
-                      if pkgs.stdenv.isDarwin then
+                      if pkgs.stdenv.hostPlatform.isDarwin then
                         ''${flake}.darwinConfigurations."hao@fluidstack".options.home-manager.users.type.getSubOptions [ ]''
                       else
                         ''${flake}.homeConfigurations."haoxiangliew@hx-framework".options'';
                   };
                 };
-              };
-              mpls = {
-                command = "mpls";
-                args = [
-                  "--theme"
-                  "dracula"
-                  "--browser"
-                  "helium"
-                  "--enable-emoji"
-                ];
               };
             };
           };
@@ -134,8 +117,6 @@
               pkgs.bashInteractive
               pkgs.unstable.nixd
               pkgs.nixfmt
-              pkgs.marksman
-              pkgs.mpls
             ];
             shellHook = ''
               mkdir -p .helix
