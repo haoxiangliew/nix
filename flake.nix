@@ -22,6 +22,11 @@
       url = "github:cursor/plugins";
       flake = false;
     };
+
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   nixConfig = {
@@ -44,6 +49,7 @@
       nixpkgs-darwin,
       home-manager,
       darwin,
+      treefmt-nix,
       ...
     }:
     let
@@ -64,11 +70,26 @@
           config.allowUnfree = true;
           overlays = builtins.attrValues overlays;
         };
+
+      treefmtFor =
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        treefmt-nix.lib.evalModule pkgs {
+          projectRootFile = "flake.nix";
+          programs = {
+            nixfmt.enable = true;
+            shellcheck.enable = true;
+            shfmt.enable = true;
+          };
+          settings.formatter.shellcheck.excludes = [ "*.envrc" ];
+        };
     in
     {
       inherit overlays;
 
-      formatter = forEachSystem (system: (pkgsFor system).nixfmt-tree);
+      formatter = forEachSystem (system: (treefmtFor system).config.build.wrapper);
 
       checks = {
         aarch64-darwin.fluidstack = self.darwinConfigurations."hao@fluidstack".system;
@@ -161,6 +182,7 @@
           ./home
           ./home/silverblue.nix
           ./home/gnome.nix
+          ./home/captive-portal
           ./home/helix.nix
           ./home/agents.nix
           ./home/1password.nix

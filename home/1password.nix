@@ -22,7 +22,7 @@ in
     sshSignProgram = lib.mkOption {
       type = lib.types.str;
       example = "/opt/1Password/op-ssh-sign";
-      description = "Path to op-ssh-sign, used to sign git commits via 1Password.";
+      description = "Path to op-ssh-sign, which signs git commits through 1Password.";
     };
   };
 

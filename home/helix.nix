@@ -12,6 +12,7 @@
       marksman
       mdterm
       shellcheck
+      shfmt
       taplo
       vscode-langservers-extracted
     ];

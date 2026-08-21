@@ -11,22 +11,22 @@
     ];
   };
 
-  # Ghostty is provided by the host (rpm-ostree/Flatpak), not Home Manager,
-  # and this host has no systemd user session managing it.
+  # The host installs Ghostty through rpm-ostree or Flatpak, not Home Manager,
+  # and there is no systemd user session here to manage it.
   programs.ghostty = {
     package = null;
     systemd.enable = false;
     settings.font-size = 9;
   };
 
-  # Nothing on this host resolves MIME types through the Nix profile: no GUI
-  # packages come from Home Manager, and XDG_DATA_DIRS never includes the
-  # profile (targets.genericLinux is off). The generated database is unreachable,
-  # so skip it and the three packages it pulls in.
+  # Nothing here resolves MIME types through the Nix profile. No GUI packages
+  # come from Home Manager, and targets.genericLinux is off, so XDG_DATA_DIRS
+  # never includes the profile. Nothing can read the generated database, so skip
+  # it and the three packages it pulls in.
   xdg.mime.enable = false;
 
-  # 1Password is installed via an rpm-ostree overlay: the agent socket sits in
-  # $HOME and op-ssh-sign lives at the FHS path rather than a Nix store path.
+  # An rpm-ostree overlay installs 1Password, so the agent socket is in $HOME
+  # and op-ssh-sign is at an FHS path rather than in the Nix store.
   hx.onePassword = {
     agentSocket = "${config.home.homeDirectory}/.1password/agent.sock";
     sshSignProgram = "/opt/1Password/op-ssh-sign";

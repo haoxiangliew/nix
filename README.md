@@ -1,87 +1,93 @@
 # haoxiangliew's nix config
 
-this is probably v4? of my nix config with a few stated goals
+this is probably v4? of my nix config, with a few stated goals:
 
-1. offload unstable root OS backing layers to the following:
-  - https://github.com/haoxiangliew/silverblue on `x86_64-linux`
-    - please reference that repo for installation
-  - MacOS on `aarch64-darwin`
+1. offload the unstable root OS layers to:
+   - [haoxiangliew/silverblue](https://github.com/haoxiangliew/silverblue) on `x86_64-linux`
+     - see that repo for installation
+   - macOS on `aarch64-darwin`
 
-2. keep things as rootless, especially on Silverblue
+2. keep things as rootless as possible, especially on Silverblue
 
-**why not NixOS?**
+**why not NixOS?** i have work to do. nix should manage my developer environment, not my workstation.
 
-- i have work to do, nix should be managing my developer environment, not my workstation.
+### `trusted-users`
+
+do this before the first switch. the `nixConfig` binary caches apply only to trusted users, so an untrusted build ignores them and compiles everything from source. add yours to `/etc/nix/nix.conf`, or to `/etc/nix/nix.custom.conf` on darwin determinate-nix:
+
+```bash
+trusted-users = root $USER
+```
 
 ### Silverblue
 
-prerequisites: https://github.com/haoxiangliew/silverblue
+prerequisites: [haoxiangliew/silverblue](https://github.com/haoxiangliew/silverblue)
 
-#### `nix build` init
+#### bootstrap `home-manager`
 
-on boot, we don't have `home-manager` or anything from the derivation in the `$PATH`
+on a fresh install, `home-manager` isn't in `$PATH` yet
 
 ```bash
-nix run home-manager/release-${home.stateVersion} -- switch --flake .#$USER@$HOSTNAME
+nix run home-manager/release-26.05 -- switch --flake .#$USER@$HOSTNAME
 ```
-subsequent runs can just use `home-manager switch --flake .#$USER@$HOSTNAME`
+
+after that, `home-manager switch --flake .#$USER@$HOSTNAME` is enough
 
 #### captive portals
 
-the root of all evil, we have DNSoverTLS configured over `systemd-resolved`:
+the root of all evil. we run DNS-over-TLS through `systemd-resolved`, and a captive portal has to hijack DNS to send you to its sign-in page. it cannot hijack TLS, so nothing resolves and the sign-in page never appears.
+
+`captive-portal` steps through the fix with y/N prompts. it turns DNS-over-TLS off on the connected link, then re-runs NetworkManager's connectivity check so GNOME offers "Sign in to network". after you sign in, it reverts the link and flushes the caches. the revert runs on every exit path, so ctrl-c is safe.
 
 ```bash
-resolvectl dnsovertls wlp3s0 no
+captive-portal            # picks the connected wifi link
+captive-portal wlp1s0     # or name one
+```
+
+or by hand:
+
+```bash
+resolvectl dnsovertls wlp1s0 no
 nmcli networking connectivity check
 # portal
 ```
 
-GNOME should now have a popup to sign in to the captive portal.
-
-re-enable `systemd-resolved` network settings, including DNSoverTLS
+GNOME should now offer "Sign in to network". then put the `systemd-resolved` settings back:
 
 ```bash
 resolvectl revert wlp1s0
 resolvectl flush-caches
 ```
 
+#### 1Password
+
+the stable 1Password release no longer works under `rpm-ostree` systems like fedora silverblue, so it needs a nightly build. see the [1password community thread](https://www.1password.community/1password-at-home-31/update-to-fedora-silverblue-fails-25075).
+
+you also need to set up [yama](https://support.1password.com/linux-ptrace-scope-issue/#if-yama-is-loaded) before you can import or export files:
+
+```bash
+sudo sysctl -w kernel.yama.ptrace_scope=1 | sudo tee -a /etc/sysctl.conf
+```
+
 ### Darwin
 
 prerequisites:
-- install determinate nix: https://docs.determinate.systems/determinate-nix/#getting-started
-- install homebrew: https://brew.sh/
+- install [determinate nix](https://docs.determinate.systems/determinate-nix/#getting-started)
+- install [homebrew](https://brew.sh/)
 
-#### `nix build` init
+#### bootstrap `darwin-rebuild`
 
-on boot, we don't have `darwin-rebuild` or anything from the derivation in the `$PATH`
+on a fresh install, `darwin-rebuild` isn't in `$PATH` yet
 
 ```bash
 sudo -H nix run github:LnL7/nix-darwin/nix-darwin-26.05#darwin-rebuild -- switch --flake .#$USER@$HOSTNAME
 ```
-subsequent runs can just use `sudo darwin-rebuild switch --flake .#$USER@$HOSTNAME`
 
-### `trusted-users`
+after that, `sudo darwin-rebuild switch --flake .#$USER@$HOSTNAME` is enough
 
-add your user to `/etc/nix/nix.conf` / `/etc/nix/nix.custom.conf` (darwin determinate-nix) for `nixConfig` binary caches to apply
-```bash
-trusted-users = root $USER
-```
-
-### `fish` init
+### `fish` as the login shell
 
 ```bash
 echo "$HOME/.nix-profile/bin/fish" | sudo tee -a /etc/shells
 chsh -s "$HOME/.nix-profile/bin/fish"
-```
-
-#### 1Password
-
-due to changes by 1Password, a nightly release is required for operation in `rpm-ostree` environments like fedora silverblue:
-
-[https://www.1password.community/1password-at-home-31/update-to-fedora-silverblue-fails-25075](https://www.1password.community/1password-at-home-31/update-to-fedora-silverblue-fails-25075)
-
-[yama](https://support.1password.com/linux-ptrace-scope-issue/#if-yama-is-loaded) will also need to be set up for importing / exporting files:
-
-```bash
-sudo sysctl -w kernel.yama.ptrace_scope=1 | sudo tee -a /etc/sysctl.conf
 ```
