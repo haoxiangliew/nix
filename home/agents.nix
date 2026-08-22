@@ -1,4 +1,29 @@
-{ pkgs, inputs, ... }:
+{
+  pkgs,
+  lib,
+  config,
+  inputs,
+  ...
+}:
+
+let
+  skillOf =
+    packages: name: path:
+    lib.listToAttrs (
+      map (p: lib.nameValuePair name (path p)) (lib.filter (p: (p.pname or "") == name) packages)
+    );
+
+  skills =
+    skillOf config.home.packages "herdr" (
+      p: pkgs.runCommandLocal "herdr-skill" { } "${p}/bin/herdr --skill > $out"
+    )
+    // skillOf config.home.packages "tuicr" (p: "${p.src}/skills/tuicr")
+    // skillOf config.programs.gh.extensions "gh-stack" (p: "${p.src}/skills/gh-stack")
+    // {
+      unslop = "${inputs.pstack}/pstack/skills/unslop";
+      technical-writing = "${inputs.pstack}/pstack/skills/technical-writing";
+    };
+in
 
 {
   home = {
@@ -41,17 +66,13 @@
       enable = true;
       enableMcpIntegration = true;
       package = pkgs.llm-agents.claude-code;
-      skills = {
-        herdr = pkgs.runCommandLocal "herdr-skill" { } "${pkgs.llm-agents.herdr}/bin/herdr --skill > $out";
-        tuicr = "${pkgs.llm-agents.tuicr.src}/skills/tuicr";
-        unslop = "${inputs.pstack}/pstack/skills/unslop";
-        technical-writing = "${inputs.pstack}/pstack/skills/technical-writing";
-      };
+      inherit skills;
     };
     codex = {
       enable = true;
       enableMcpIntegration = true;
       package = pkgs.llm-agents.codex;
+      inherit skills;
     };
     opencode = {
       enable = true;
@@ -67,12 +88,7 @@
           sound = false;
         };
       };
-      skills = {
-        herdr = pkgs.runCommandLocal "herdr-skill" { } "${pkgs.llm-agents.herdr}/bin/herdr --skill > $out";
-        tuicr = "${pkgs.llm-agents.tuicr.src}/skills/tuicr";
-        unslop = "${inputs.pstack}/pstack/skills/unslop";
-        technical-writing = "${inputs.pstack}/pstack/skills/technical-writing";
-      };
+      inherit skills;
     };
   };
 }
