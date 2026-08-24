@@ -75,7 +75,7 @@
     gh = {
       enable = true;
       settings.git_protocol = "ssh";
-      extensions = [ pkgs.unstable.gh-stack ];
+      extensions = with pkgs; [ unstable.gh-stack ];
     };
     ghostty = {
       enable = true;
