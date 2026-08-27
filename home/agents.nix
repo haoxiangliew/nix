@@ -76,7 +76,7 @@ in
     };
     codex = {
       enable = true;
-      enableMcpIntegration = true;
+      enableMcpIntegration = false; # mcpConfig for codex locks away settings
       package = pkgs.llm-agents.codex;
       inherit skills;
     };
