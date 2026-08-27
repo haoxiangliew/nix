@@ -2,6 +2,7 @@
   pkgs,
   lib,
   config,
+  osConfig,
   inputs,
   ...
 }:
@@ -23,6 +24,8 @@ let
       unslop = "${inputs.pstack}/pstack/skills/unslop";
       technical-writing = "${inputs.pstack}/pstack/skills/technical-writing";
     };
+
+  hasCask = name: lib.any (cask: cask.name == name) (osConfig.homebrew.casks or [ ]);
 in
 
 {
@@ -61,6 +64,9 @@ in
   programs = {
     mcp = {
       enable = true;
+      servers = lib.optionalAttrs (pkgs.stdenv.hostPlatform.isDarwin && hasCask "tableplus") {
+        tableplus.command = "/Applications/TablePlus.app/Contents/MacOS/tableplus-mcp";
+      };
     };
     claude-code = {
       enable = true;
