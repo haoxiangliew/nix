@@ -31,6 +31,8 @@ in
 {
   home = {
     sessionVariables = {
+      # https://code.claude.com/docs/en/memory#enable-or-disable-auto-memory
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY = true;
       # https://code.claude.com/docs/en/agent-teams
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = true;
       # https://opencode.ai/docs/cli/#experimental
