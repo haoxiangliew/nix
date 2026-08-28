@@ -64,8 +64,17 @@ in
   programs = {
     mcp = {
       enable = true;
-      servers = lib.optionalAttrs (pkgs.stdenv.hostPlatform.isDarwin && hasCask "tableplus") {
-        tableplus.command = "/Applications/TablePlus.app/Contents/MacOS/tableplus-mcp";
+      servers = {
+        posthog = {
+          url = "https://mcp.posthog.com/mcp";
+          enabled = false;
+        };
+      }
+      // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isDarwin && hasCask "tableplus") {
+        tableplus = {
+          command = "/Applications/TablePlus.app/Contents/MacOS/tableplus-mcp";
+          enabled = false;
+        };
       };
     };
     claude-code = {
