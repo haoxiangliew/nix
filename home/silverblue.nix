@@ -11,6 +11,12 @@
     ];
   };
 
+  nix.gc = {
+    automatic = true;
+    randomizedDelaySec = "45min";
+    options = "--delete-older-than 30d";
+  };
+
   # The host installs Ghostty through rpm-ostree or Flatpak, not Home Manager,
   # and there is no systemd user session here to manage it.
   programs.ghostty = {
