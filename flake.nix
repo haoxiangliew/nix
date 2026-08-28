@@ -14,6 +14,10 @@
       url = "github:LnL7/nix-darwin/nix-darwin-26.05";
       inputs.nixpkgs.follows = "nixpkgs-darwin";
     };
+    determinate = {
+      url = "https://flakehub.com/f/DeterminateSystems/determinate/3";
+      inputs.nixpkgs.follows = "nixpkgs-darwin";
+    };
 
     helix.url = "github:helix-editor/helix";
     llm-agents.url = "github:numtide/llm-agents.nix";
@@ -152,6 +156,7 @@
       darwinConfigurations."hao@fluidstack" = darwin.lib.darwinSystem {
         pkgs = pkgsFor "aarch64-darwin";
         modules = [
+          inputs.determinate.darwinModules.default
           home-manager.darwinModules.home-manager
           ./devices/fluidstack.nix
           ./darwin

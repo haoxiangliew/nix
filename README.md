@@ -13,11 +13,13 @@ this is probably v4? of my nix config, with a few stated goals:
 
 ### `trusted-users`
 
-do this before the first switch. the `nixConfig` binary caches apply only to trusted users, so an untrusted build ignores them and compiles everything from source. add yours to `/etc/nix/nix.conf`, or to `/etc/nix/nix.custom.conf` on darwin determinate-nix:
+do this before the first switch. the `nixConfig` binary caches apply only to trusted users, so an untrusted build ignores them and compiles everything from source. add yours to `/etc/nix/nix.conf`:
 
 ```bash
 trusted-users = root $USER
 ```
+
+on darwin the installer handles this. `darwin/default.nix` takes the file over.
 
 ### Silverblue
 
