@@ -31,6 +31,9 @@ in
 {
   home = {
     sessionVariables = {
+      # https://code.claude.com/docs/en/agent-teams
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = true;
+      # https://opencode.ai/docs/cli/#experimental
       OPENCODE_EXPERIMENTAL_PLAN_MODE = true;
       OPENCODE_EXPERIMENTAL_CODE_MODE = true;
       OPENCODE_EXPERIMENTAL_LSP_TOOL = true;
