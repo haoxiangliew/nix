@@ -170,7 +170,7 @@
                 ./home
                 ./home/darwin.nix
                 ./home/helix.nix
-                ./home/agents.nix
+                ./home/agents
                 ./home/1password.nix
               ];
             };
@@ -189,7 +189,7 @@
           ./home/gnome.nix
           ./home/captive-portal
           ./home/helix.nix
-          ./home/agents.nix
+          ./home/agents
           ./home/1password.nix
         ];
       };
