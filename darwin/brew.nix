@@ -18,13 +18,16 @@
     brews = [ ];
 
     casks =
-      let
-        packages = [
+      map
+        (name: {
+          inherit name;
+          greedy = true;
+        })
+        [
           "1password"
           "1password-cli"
           "betterdisplay"
           "ghostty"
-          "granola"
           "helium-browser"
           "keyboardcleantool"
           "middleclick"
@@ -34,17 +37,5 @@
           "spotify"
           "tableplus"
         ];
-      in
-      (map (
-        pkg:
-        if builtins.isString pkg then
-          {
-            name = pkg;
-            greedy = true;
-          }
-        else
-          pkg
-      ) packages)
-      ++ [ ];
   };
 }

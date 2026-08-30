@@ -15,4 +15,9 @@
       sshSignProgram = "/Applications/1Password.app/Contents/MacOS/op-ssh-sign";
     };
   };
+
+  homebrew.casks = map (name: {
+    inherit name;
+    greedy = true;
+  }) [ "granola" ];
 }
