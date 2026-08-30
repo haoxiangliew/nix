@@ -97,6 +97,7 @@
 
       checks = {
         aarch64-darwin.fluidstack = self.darwinConfigurations."hao@fluidstack".system;
+        aarch64-darwin.macbookPro = self.darwinConfigurations."haoxiangliew@macbookPro".system;
         x86_64-linux.hx-framework = self.homeConfigurations."haoxiangliew@hx-framework".activationPackage;
       };
 
@@ -124,10 +125,10 @@
                     else
                       "import ${flake}.inputs.nixpkgs { }";
                   options = {
-                    darwin.expr = ''${flake}.darwinConfigurations."hao@fluidstack".options'';
+                    darwin.expr = ''${flake}.darwinConfigurations."haoxiangliew@macbookPro".options'';
                     home-manager.expr =
                       if pkgs.stdenv.hostPlatform.isDarwin then
-                        ''${flake}.darwinConfigurations."hao@fluidstack".options.home-manager.users.type.getSubOptions [ ]''
+                        ''${flake}.darwinConfigurations."haoxiangliew@macbookPro".options.home-manager.users.type.getSubOptions [ ]''
                       else
                         ''${flake}.homeConfigurations."haoxiangliew@hx-framework".options'';
                   };
@@ -152,6 +153,31 @@
           };
         }
       );
+
+      darwinConfigurations."haoxiangliew@macbookPro" = darwin.lib.darwinSystem {
+        pkgs = pkgsFor "aarch64-darwin";
+        modules = [
+          inputs.determinate.darwinModules.default
+          home-manager.darwinModules.home-manager
+          ./devices/macbookPro.nix
+          ./darwin
+          ./darwin/brew.nix
+          {
+            home-manager = {
+              useGlobalPkgs = true;
+              extraSpecialArgs = { inherit inputs; };
+              users.haoxiangliew.imports = [
+                inputs.nix-index-database.homeModules.default
+                ./home
+                ./home/darwin.nix
+                ./home/helix.nix
+                ./home/agents
+                ./home/1password.nix
+              ];
+            };
+          }
+        ];
+      };
 
       darwinConfigurations."hao@fluidstack" = darwin.lib.darwinSystem {
         pkgs = pkgsFor "aarch64-darwin";

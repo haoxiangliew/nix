@@ -33,7 +33,6 @@
           "middleclick"
           "mos"
           "orbstack"
-          "slack"
           "spotify"
           "tableplus"
         ];

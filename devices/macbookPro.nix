@@ -2,11 +2,11 @@
 
 {
   system = {
-    primaryUser = "hao";
+    primaryUser = "haoxiangliew";
     stateVersion = 7;
   };
-  users.users.hao.home = "/Users/hao";
-  home-manager.users.hao = {
+  users.users.haoxiangliew.home = "/Users/haoxiangliew";
+  home-manager.users.haoxiangliew = {
     home.stateVersion = "26.05";
   };
 
@@ -17,7 +17,6 @@
         greedy = true;
       })
       [
-        "granola"
         "slack"
       ];
 }
