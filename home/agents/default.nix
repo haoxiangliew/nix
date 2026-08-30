@@ -122,6 +122,8 @@ in
       package = pkgs.llm-agents.codex;
       settings = {
         approvals_reviewer = "auto_review";
+        model_context_window = 1000000;
+        model_auto_compact_token_limit = 900000;
       };
       inherit skills;
     };
@@ -129,6 +131,18 @@ in
       enable = true;
       enableMcpIntegration = true;
       package = pkgs.llm-agents.opencode;
+      settings = {
+        provider.openai.models."gpt-5.6-sol".limit = {
+          context = 1000000;
+          input = 920000;
+          output = 128000;
+        };
+        provider.openai.models."gpt-5.6-sol-fast".limit = {
+          context = 1000000;
+          input = 920000;
+          output = 128000;
+        };
+      };
       agents = {
         talk = ''
           ---
