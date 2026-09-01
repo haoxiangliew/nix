@@ -110,6 +110,7 @@ in
         permissions.defaultMode = "auto";
         outputStyle = "Concise";
         showThinkingSummaries = true;
+        promptSuggestionEnabled = true;
         verbose = true;
         attribution = {
           commit = "";
