@@ -13,6 +13,10 @@
       autoUpdate = true;
       cleanup = "zap";
       upgrade = true;
+      extraEnv = {
+        HOMEBREW_AUTO_UPDATE_SECS = "0";
+        HOMEBREW_NO_ANALYTICS = "1";
+      };
     };
 
     brews = [ ];
