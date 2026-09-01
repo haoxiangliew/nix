@@ -108,6 +108,7 @@ in
         theme = "auto";
         tui = "fullscreen";
         permissions.defaultMode = "auto";
+        outputStyle = "Concise";
         showThinkingSummaries = true;
         verbose = true;
         attribution = {
