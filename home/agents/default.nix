@@ -108,6 +108,8 @@ in
         theme = "auto";
         tui = "fullscreen";
         permissions.defaultMode = "auto";
+        showThinkingSummaries = true;
+        verbose = true;
         attribution = {
           commit = "";
           pr = "";
