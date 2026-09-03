@@ -17,6 +17,8 @@
         greedy = true;
       })
       [
+        "discord"
         "slack"
+        "stremio"
       ];
 }
