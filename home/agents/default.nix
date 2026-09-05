@@ -156,11 +156,6 @@ in
             input = 922000;
             output = 128000;
           };
-          "gpt-6-astra-pro".limit = {
-            context = 1050000;
-            input = 922000;
-            output = 128000;
-          };
         };
       };
       agents = {
