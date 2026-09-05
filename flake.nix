@@ -97,6 +97,7 @@
 
       checks = {
         aarch64-darwin.fluidstack = self.darwinConfigurations."hao@fluidstack".system;
+        aarch64-darwin.fluidstack-shell = self.devShells.aarch64-darwin.fluidstack;
         aarch64-darwin.macbookPro = self.darwinConfigurations."haoxiangliew@macbookPro".system;
         x86_64-linux.hx-framework = self.homeConfigurations."haoxiangliew@hx-framework".activationPackage;
       };
@@ -151,6 +152,49 @@
                 --replace-fail '@flakePath@' "$PWD"
             '';
           };
+
+          # One shell for every fluidstack repo. Projects opt in with
+          #   use flake "$HOME/Developer/nix#fluidstack"
+          # in their .envrc.
+          fluidstack = pkgs.unstable.mkShell {
+            packages = with pkgs.unstable; [
+              bashInteractive
+
+              # toolchain bootstrap
+              proto
+
+              # go
+              gopls
+              delve
+
+              # typescript
+              vtsls
+
+              # python
+              ruff
+              ty
+
+              # protobuf
+              protols
+
+              # terraform
+              terraform-ls
+
+              # aws / cluster access
+              awscli2
+              granted
+              kubectl
+              teleport.client
+            ];
+
+            shellHook = ''
+              if [ -f .prototools ]; then
+                # install first: activate only exports dirs for installed tools
+                proto use
+                eval "$(proto activate bash --export)"
+              fi
+            '';
+          };
         }
       );
 
@@ -195,6 +239,7 @@
                 inputs.nix-index-database.homeModules.default
                 ./home
                 ./home/darwin.nix
+                ./home/fluidstack.nix
                 ./home/helix.nix
                 ./home/agents
                 ./home/1password.nix

@@ -15,9 +15,7 @@ let
     );
 
   skills = lib.mkMerge [
-    (skillOf config.home.packages "herdr" (
-      p: pkgs.runCommandLocal "herdr-skill" { } "${p}/bin/herdr --skill > $out"
-    ))
+    (skillOf config.home.packages "herdr" (p: "${p.src}/skills/herdr"))
     (skillOf config.home.packages "tuicr" (p: "${p.src}/skills/tuicr"))
     (skillOf config.programs.gh.extensions "gh-stack" (p: "${p.src}/skills/gh-stack"))
     {

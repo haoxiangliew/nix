@@ -15,6 +15,7 @@
       shfmt
       taplo
       vscode-langservers-extracted
+      yaml-language-server
     ];
     defaultEditor = true;
     settings = {
