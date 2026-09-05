@@ -125,6 +125,18 @@ in
         approvals_reviewer = "auto_review";
         model_context_window = 1000000;
         model_auto_compact_token_limit = 900000;
+        tui = {
+          status_line = [
+            "model-with-reasoning"
+            "current-dir"
+            "context-window-size"
+            "used-tokens"
+            "context-used"
+            "fast-mode"
+            "pull-request-number"
+          ];
+          status_line_use_colors = true;
+        };
       };
       inherit skills;
     };
@@ -133,15 +145,22 @@ in
       enableMcpIntegration = true;
       package = pkgs.llm-agents.opencode;
       settings = {
-        provider.openai.models."gpt-5.6-sol".limit = {
-          context = 1000000;
-          input = 920000;
-          output = 128000;
-        };
-        provider.openai.models."gpt-5.6-sol-fast".limit = {
-          context = 1000000;
-          input = 920000;
-          output = 128000;
+        provider.openai.models = {
+          "gpt-6-astra".limit = {
+            context = 1050000;
+            input = 922000;
+            output = 128000;
+          };
+          "gpt-6-astra-fast".limit = {
+            context = 1050000;
+            input = 922000;
+            output = 128000;
+          };
+          "gpt-6-astra-pro".limit = {
+            context = 1050000;
+            input = 922000;
+            output = 128000;
+          };
         };
       };
       agents = {
