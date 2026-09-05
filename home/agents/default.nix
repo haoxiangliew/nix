@@ -123,6 +123,7 @@ in
       package = pkgs.llm-agents.codex;
       settings = {
         approvals_reviewer = "auto_review";
+        features.context_management.experimental_mode = true;
         model_context_window = 1000000;
         model_auto_compact_token_limit = 900000;
         tui = {
@@ -132,7 +133,6 @@ in
             "context-window-size"
             "used-tokens"
             "context-used"
-            "fast-mode"
             "pull-request-number"
           ];
           status_line_use_colors = true;
