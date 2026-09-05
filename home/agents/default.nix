@@ -109,7 +109,6 @@ in
         outputStyle = "Concise";
         showThinkingSummaries = true;
         promptSuggestionEnabled = true;
-        verbose = true;
         attribution = {
           commit = "";
           pr = "";
