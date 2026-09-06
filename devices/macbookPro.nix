@@ -19,6 +19,5 @@
       [
         "discord"
         "slack"
-        "stremio"
       ];
 }
