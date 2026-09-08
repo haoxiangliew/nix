@@ -17,11 +17,16 @@
     determinate = {
       url = "https://flakehub.com/f/DeterminateSystems/determinate/3";
       inputs.nixpkgs.follows = "nixpkgs-darwin";
+      inputs.nix.inputs.nixpkgs-23-11.follows = "nixpkgs";
+      inputs.nix.inputs.nixpkgs-regression.follows = "nixpkgs";
     };
 
     helix.url = "github:helix-editor/helix";
     llm-agents.url = "github:numtide/llm-agents.nix";
-    nix-index-database.url = "github:nix-community/nix-index-database";
+    nix-index-database = {
+      url = "github:nix-community/nix-index-database";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     pstack = {
       url = "github:cursor/plugins";
       flake = false;
@@ -142,7 +147,7 @@
           default = pkgs.mkShell {
             packages = [
               pkgs.bashInteractive
-              pkgs.unstable.nixd
+              pkgs.nixd
               pkgs.nixfmt
             ];
             shellHook = ''
