@@ -39,7 +39,6 @@
           "orbstack"
           "spotify"
           "tableplus"
-          "utm"
         ];
   };
 }
