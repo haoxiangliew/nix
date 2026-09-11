@@ -89,12 +89,6 @@ in
           url = "https://mcp.posthog.com/mcp";
           enabled = false;
         };
-      }
-      // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isDarwin && hasCask "tableplus") {
-        tableplus = {
-          command = "/Applications/TablePlus.app/Contents/MacOS/tableplus-mcp";
-          enabled = false;
-        };
       };
     };
     claude-code = {
