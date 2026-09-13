@@ -2,7 +2,7 @@
   pkgs,
   lib,
   config,
-  osConfig,
+  # osConfig,
   inputs,
   ...
 }:
@@ -24,7 +24,7 @@ let
     }
   ];
 
-  hasCask = name: lib.any (cask: cask.name == name) (osConfig.homebrew.casks or [ ]);
+  # hasCask = name: lib.any (cask: cask.name == name) (osConfig.homebrew.casks or [ ]);
 
   mutableConfig = import ./mutableConfig.nix { inherit config lib pkgs; };
 in
@@ -117,7 +117,6 @@ in
       package = pkgs.llm-agents.codex;
       settings = {
         approvals_reviewer = "auto_review";
-        features.context_management.experimental_mode = true;
         model_context_window = 1000000;
         model_auto_compact_token_limit = 900000;
         tui = {
