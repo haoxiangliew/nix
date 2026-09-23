@@ -114,16 +114,12 @@ in
       onboarding = false;
       theme.name = "dracula";
       worktrees.directory = "~/Developer/.herdr/worktrees";
-      experimental.kitty_graphics = true;
       ui = {
         toast.delivery = "terminal";
         sound.enabled = false;
         show_agent_labels_on_pane_borders = true;
       };
-      update = {
-        version_check = false;
-        manifest_check = true;
-      };
+      update.version_check = false;
     };
 
     programs = {
