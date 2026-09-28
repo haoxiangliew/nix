@@ -123,15 +123,7 @@ in
     };
 
     programs = {
-      mcp = {
-        enable = true;
-        servers = {
-          posthog = {
-            url = "https://mcp.posthog.com/mcp";
-            enabled = false;
-          };
-        };
-      };
+      mcp.enable = true;
       claude-code = {
         enable = true;
         # generates a hm plugin containing `.mcp.json` and wraps claude w/ `--plugin-dir`
