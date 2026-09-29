@@ -10,6 +10,11 @@
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # TODO: drop once programs.pi-coding-agent lands in the home-manager release branch
+    home-manager-master = {
+      url = "github:nix-community/home-manager";
+      flake = false;
+    };
     darwin = {
       url = "github:LnL7/nix-darwin/nix-darwin-26.05";
       inputs.nixpkgs.follows = "nixpkgs-darwin";
@@ -89,6 +94,10 @@
           projectRootFile = "flake.nix";
           programs = {
             nixfmt.enable = true;
+            oxfmt = {
+              enable = true;
+              includes = [ "*.ts" ];
+            };
             shellcheck.enable = true;
             shfmt.enable = true;
           };

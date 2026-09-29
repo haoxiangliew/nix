@@ -26,6 +26,8 @@ let
 
   integrations = pkgsOf config.home.packages "herdr" lib.id;
 
+  talkPrompt = "You are a read-only agent that works through code changes with the user. Inspect and reason about the codebase, but never modify, create, or delete files, whether with edit tools or with shell commands that write to disk. When you propose a change, write the complete updated code in your response so the user can review it, give feedback, and apply it. Refine your proposal from their replies instead of finalizing edits yourself. Never claim to have edited a file, and never try to.";
+
   herdrAgents = {
     claude-code = {
       target = "claude";
@@ -39,6 +41,10 @@ let
       target = "opencode";
       after = "mergeOpenCodeSettings";
     };
+    pi-coding-agent = {
+      target = "pi";
+      after = "mergePiSettings";
+    };
   };
 
   # hasCask = name: lib.any (cask: cask.name == name) (osConfig.homebrew.casks or [ ]);
@@ -47,15 +53,39 @@ let
 in
 
 {
-  options.programs = lib.genAttrs (lib.attrNames herdrAgents) (
-    lib.const {
-      integrations.herdr = lib.mkOption {
-        type = lib.types.nullOr lib.types.package;
-        default = null;
-        description = "Herdr package whose agent integration is installed during activation.";
+  # TODO: drop once programs.pi-coding-agent lands in the home-manager release branch
+  imports = [ "${inputs.home-manager-master}/modules/programs/pi-coding-agent.nix" ];
+
+  options.programs =
+    lib.recursiveUpdate
+      (lib.genAttrs (lib.attrNames herdrAgents) (
+        lib.const {
+          integrations.herdr = lib.mkOption {
+            type = lib.types.nullOr lib.types.package;
+            default = null;
+            description = "Herdr package whose agent integration is installed during activation.";
+          };
+        }
+      ))
+      {
+        pi-coding-agent = {
+          skills = lib.mkOption {
+            type = lib.types.attrsOf lib.types.path;
+            default = { };
+            description = "Skill directories linked into the pi agent skills directory.";
+          };
+          extensions = lib.mkOption {
+            type = lib.types.attrsOf lib.types.path;
+            default = { };
+            description = "Extension files or directories linked into the pi agent extensions directory.";
+          };
+          themes = lib.mkOption {
+            type = lib.types.attrsOf lib.types.path;
+            default = { };
+            description = "Theme JSON files linked into the pi agent themes directory, keyed by theme name.";
+          };
+        };
       };
-    }
-  );
 
   config = {
     home = lib.mkMerge [
@@ -91,6 +121,123 @@ in
         name = "mergeOpenCodeSettings";
         file = "${config.xdg.configHome}/opencode/opencode.json";
       })
+      (mutableConfig.mutableJson {
+        name = "mergePiSettings";
+        file = "${config.programs.pi-coding-agent.configDir}/settings.json";
+      })
+      {
+        file."${config.programs.pi-coding-agent.configDir}/skills".source =
+          pkgs.linkFarm "pi-skills" config.programs.pi-coding-agent.skills;
+      }
+      {
+        file = lib.concatMapAttrs (name: source: {
+          "${config.programs.pi-coding-agent.configDir}/extensions/${name}".source = source;
+        }) config.programs.pi-coding-agent.extensions;
+      }
+      {
+        file = lib.concatMapAttrs (name: source: {
+          "${config.programs.pi-coding-agent.configDir}/themes/${name}.json".source = source;
+        }) config.programs.pi-coding-agent.themes;
+      }
+      {
+        file."${config.programs.pi-coding-agent.configDir}/extensions/pi-permission-system/config.json".source =
+          (pkgs.formats.json { }).generate "pi-permission-system.json" {
+            shellTools =
+              lib.genAttrs
+                [
+                  "bg_task_spawn"
+                  "bg_task_watch"
+                ]
+                (
+                  lib.const {
+                    commandArgument = "command";
+                    workdirArgument = "cwd";
+                  }
+                );
+            authorizerChain = [ "pi-auto-review" ];
+            permission = {
+              "*" = "allow";
+              bg_task = "deny";
+              bash = {
+                "*" = "ask";
+                "git status*" = "allow";
+                "git diff*" = "allow";
+                "git log*" = "allow";
+                "git show*" = "allow";
+                "ls" = "allow";
+                "ls *" = "allow";
+                "pwd" = "allow";
+                "rg *" = "allow";
+                "cat *" = "allow";
+                "head *" = "allow";
+                "tail *" = "allow";
+                "wc *" = "allow";
+              };
+              mcp."*" = "ask";
+              external_directory = {
+                "*" = "ask";
+                "/tmp/*" = "allow";
+                "/private/tmp/*" = "allow";
+              };
+              external_directory_read."*" = "allow";
+              path = {
+                "*" = "allow";
+                "*.env" = "deny";
+                "*.env.*" = "deny";
+                "*.env.example" = "allow";
+                "*.pem" = "deny";
+                "*.key" = "deny";
+                "~/.ssh/*" = "deny";
+                "~/.aws/*" = "deny";
+                "~/.kube/*" = "deny";
+                "~/.gnupg/*" = "deny";
+                "~/.docker/config.json" = "deny";
+                "~/.config/gh/hosts.yml" = "deny";
+                "${config.programs.pi-coding-agent.configDir}/auth.json" = "deny";
+              };
+            };
+          };
+      }
+      {
+        file."${config.programs.pi-coding-agent.configDir}/extensions/pi-auto-review/config.json".source =
+          (pkgs.formats.json { }).generate "pi-auto-review.json"
+            {
+              model = "openai-codex/codex-auto-review";
+            };
+      }
+      {
+        file."${config.programs.pi-coding-agent.configDir}/web-search.json".source =
+          (pkgs.formats.json { }).generate "web-search.json"
+            {
+              webSearch.allowedProviders = [
+                "openai"
+                "exa"
+                "parallel-mcp"
+              ];
+              searchRouting = {
+                providers = [
+                  "openai"
+                  "exa"
+                  "parallel-mcp"
+                ];
+                fallbackOn = [
+                  "unsupported"
+                  "transient"
+                  "quota"
+                  "network"
+                  "invalid-response"
+                ];
+              };
+              youtube.enabled = false;
+              video.enabled = false;
+              commands = lib.genAttrs [
+                "websearch"
+                "curator"
+                "search"
+                "google-account"
+              ] (lib.const { enabled = false; });
+            };
+      }
       {
         activation = lib.mkMerge (
           lib.mapAttrsToList (
@@ -193,7 +340,7 @@ in
               edit: deny
             ---
 
-            You are a read-only agent designed to iterate on code together with the user. You inspect and reason about the codebase, but never modify, create, or delete files by any means, whether through file-editing tools or shell workarounds that write to disk. When proposing a change, write the complete updated code in your response so the user can review it, give feedback, and apply it themselves. Treat this as a back-and-forth: refine your suggestions based on their responses rather than trying to finalize edits yourself. Never claim to have edited a file, and never attempt to.
+            ${talkPrompt}
           '';
         };
         tui = {
@@ -205,6 +352,63 @@ in
             enabled = true;
             sound = false;
           };
+        };
+        inherit skills integrations;
+      };
+      pi-coding-agent = {
+        enable = true;
+        package = pkgs.llm-agents.pi;
+        settings = {
+          theme = "light/dracula-pro";
+          tuiMode = "fullscreen";
+          transport = "websocket";
+          terminal.showTerminalProgress = true;
+          enableInstallTelemetry = false;
+          # bun, with pi's `npm view` update check mapped to `bun info`
+          npmCommand = [
+            (lib.getExe (
+              pkgs.writeShellScriptBin "bun" ''
+                if [ "$1" = view ]; then
+                  shift
+                  tmp=$(mktemp -d)
+                  trap 'rm -rf "$tmp"' EXIT
+                  cd "$tmp"
+                  echo '{}' > package.json
+                  ${lib.getExe pkgs.bun} info "$@"
+                else
+                  exec ${lib.getExe pkgs.bun} "$@"
+                fi
+              ''
+            ))
+          ];
+          warnings.anthropicExtraUsage = false;
+          packages = [
+            "npm:pi-mcp-adapter"
+            "npm:pi-web-access"
+            "npm:@gotgenes/pi-subagents"
+            "npm:pi-better-background-tasks"
+            "npm:@gotgenes/pi-permission-system"
+            "npm:@erichll/pi-auto-review"
+            "npm:pi-pigment"
+            "npm:@juicesharp/rpiv-ask-user-question"
+            "npm:@narumitw/pi-btw"
+            "git:github.com/earendil-works/pi-review"
+          ];
+        };
+        keybindings = {
+          "app.thinking.cycle" = "ctrl+t";
+          "app.thinking.toggle" = "ctrl+shift+t";
+        };
+        themes.dracula-pro = ./pi/dracula-pro.json;
+        extensions = {
+          "talk.ts" = pkgs.replaceVars ./pi/talk.ts {
+            prompt = lib.removePrefix "\"" (lib.removeSuffix "\"" (builtins.toJSON talkPrompt));
+          };
+          "fast.ts" = ./pi/fast.ts;
+          "statusline.ts" = ./pi/statusline.ts;
+          "skill-mention.ts" = ./pi/skill-mention.ts;
+          "attention.ts" = ./pi/attention.ts;
+          "git-checkpoint.ts" = "${pkgs.llm-agents.pi}/libexec/pi/examples/extensions/git-checkpoint.ts";
         };
         inherit skills integrations;
       };
