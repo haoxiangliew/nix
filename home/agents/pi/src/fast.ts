@@ -5,9 +5,6 @@
  * --fast starts with it on.
  */
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-
 import {
   DynamicBorder,
   getAgentDir,
@@ -18,6 +15,8 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const FAST_BETA = "fast-mode-2026-02-01";
 
@@ -160,16 +159,16 @@ function pick(ctx: ExtensionContext, enabled: boolean): Promise<Choice | undefin
   const options = [true, false];
 
   return ctx.ui.custom<Choice | undefined>((tui, theme, keybindings, done) => {
-    let index = options.indexOf(enabled);
+    let selected = enabled;
 
     const list = new Container();
 
     function updateList(): void {
       list.clear();
 
-      for (const [i, value] of options.entries()) {
+      for (const value of options) {
         const state = {
-          selected: i === index,
+          selected: value === selected,
           current: value === enabled,
           saved: value === savedDefault,
         };
@@ -190,12 +189,12 @@ function pick(ctx: ExtensionContext, enabled: boolean): Promise<Choice | undefin
           keybindings.matches(data, "tui.select.up") ||
           keybindings.matches(data, "tui.select.down")
         ) {
-          index = (index + 1) % options.length;
+          selected = !selected;
           updateList();
         } else if (keybindings.matches(data, "tui.select.confirm")) {
-          done({ enabled: options[index], persist: false });
+          done({ enabled: selected, persist: false });
         } else if (keybindings.matches(data, "app.models.save")) {
-          done({ enabled: options[index], persist: true });
+          done({ enabled: selected, persist: true });
         } else if (keybindings.matches(data, "tui.select.cancel")) {
           done(undefined);
         }
@@ -229,7 +228,7 @@ function handleRequests(pi: ExtensionAPI, isEnabled: () => boolean): void {
 
     fastRequest = false;
 
-    if (target === undefined || !(payload instanceof Object)) {
+    if (target === undefined || typeof payload !== "object" || payload === null) {
       return;
     }
 

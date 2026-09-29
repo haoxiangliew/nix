@@ -89,19 +89,44 @@
         system:
         let
           pkgs = pkgsFor system;
+
+          piScript =
+            name: script:
+            pkgs.lib.getExe (
+              pkgs.writeShellApplication {
+                name = "pi-${name}";
+                runtimeInputs = [
+                  pkgs.flock
+                  pkgs.unstable.bun
+                ];
+                text = ''
+                  cd home/agents/pi
+                  flock bun.lock bun install --frozen-lockfile --silent
+                  bun run ${script} "''${@#home/agents/pi/}"
+                '';
+              }
+            );
         in
         treefmt-nix.lib.evalModule pkgs {
           projectRootFile = "flake.nix";
           programs = {
             nixfmt.enable = true;
-            oxfmt = {
-              enable = true;
-              includes = [ "*.ts" ];
-            };
             shellcheck.enable = true;
             shfmt.enable = true;
           };
-          settings.formatter.shellcheck.excludes = [ "*.envrc" ];
+          settings.formatter = {
+            pi-lint = {
+              command = piScript "lint" "lint:fix";
+              includes = [ "home/agents/pi/**/*.ts" ];
+              priority = 1;
+            };
+            pi-format = {
+              command = piScript "format" "format";
+              includes = [ "home/agents/pi/**" ];
+              priority = 2;
+            };
+            shellcheck.excludes = [ "*.envrc" ];
+          };
         };
     in
     {
@@ -158,6 +183,7 @@
               pkgs.bashInteractive
               pkgs.nixd
               pkgs.nixfmt
+              pkgs.unstable.bun
             ];
             shellHook = ''
               mkdir -p .helix

@@ -145,6 +145,7 @@ in
             shellTools =
               lib.genAttrs
                 [
+                  "bg_task"
                   "bg_task_spawn"
                   "bg_task_watch"
                 ]
@@ -156,8 +157,27 @@ in
                 );
             authorizerChain = [ "pi-auto-review" ];
             permission = {
-              "*" = "allow";
-              bg_task = "deny";
+              # tier 3: the reviewer decides everything else
+              "*" = "ask";
+
+              # tier 1: read-only tools
+              read = "allow";
+              grep = "allow";
+              find = "allow";
+              ls = "allow";
+              bg_task_list = "allow";
+              bg_task_status = "allow";
+              bg_task_log = "allow";
+              get_subagent_result = "allow";
+              get_search_content = "allow";
+              ask_user_question = "allow";
+              web_enable = "allow";
+
+              # tier 2: in-project writes. external_directory sends writes outside the project to review
+              edit = "allow";
+              write = "allow";
+
+              # tier 1: read-only commands. Never add interpreters or package-manager scripts, which run arbitrary code
               bash = {
                 "*" = "ask";
                 "git status*" = "allow";
@@ -173,27 +193,31 @@ in
                 "tail *" = "allow";
                 "wc *" = "allow";
               };
+
               mcp."*" = "ask";
+
               external_directory = {
                 "*" = "ask";
                 "/tmp/*" = "allow";
                 "/private/tmp/*" = "allow";
               };
               external_directory_read."*" = "allow";
+
+              # credential files go to the reviewer, even from read-only tools
               path = {
                 "*" = "allow";
-                "*.env" = "deny";
-                "*.env.*" = "deny";
+                "*.env" = "ask";
+                "*.env.*" = "ask";
                 "*.env.example" = "allow";
-                "*.pem" = "deny";
-                "*.key" = "deny";
-                "~/.ssh/*" = "deny";
-                "~/.aws/*" = "deny";
-                "~/.kube/*" = "deny";
-                "~/.gnupg/*" = "deny";
-                "~/.docker/config.json" = "deny";
-                "~/.config/gh/hosts.yml" = "deny";
-                "${config.programs.pi-coding-agent.configDir}/auth.json" = "deny";
+                "*.pem" = "ask";
+                "*.key" = "ask";
+                "~/.ssh/*" = "ask";
+                "~/.aws/*" = "ask";
+                "~/.kube/*" = "ask";
+                "~/.gnupg/*" = "ask";
+                "~/.docker/config.json" = "ask";
+                "~/.config/gh/hosts.yml" = "ask";
+                "${config.programs.pi-coding-agent.configDir}/auth.json" = "ask";
               };
             };
           };
@@ -203,6 +227,11 @@ in
           (pkgs.formats.json { }).generate "pi-auto-review.json"
             {
               model = "openai-codex/codex-auto-review";
+              failureMode = "defer";
+              autoConfirmBoundedAllows = [
+                "external_directory"
+                "path"
+              ];
             };
       }
       {
@@ -273,7 +302,7 @@ in
       mcp.enable = true;
       claude-code = {
         enable = true;
-        # generates a hm plugin containing `.mcp.json` and wraps claude w/ `--plugin-dir`
+        # generates a home-manager plugin with `.mcp.json` and wraps claude with `--plugin-dir`
         enableMcpIntegration = true;
         package = pkgs.llm-agents.claude-code;
         settings = {
@@ -364,7 +393,7 @@ in
           transport = "websocket";
           terminal.showTerminalProgress = true;
           enableInstallTelemetry = false;
-          # bun, with pi's `npm view` update check mapped to `bun info`
+          # use bun as npm. pi's update check calls `npm view`, so run that as `bun info`
           npmCommand = [
             (lib.getExe (
               pkgs.writeShellScriptBin "bun" ''
@@ -399,15 +428,15 @@ in
           "app.thinking.cycle" = "ctrl+t";
           "app.thinking.toggle" = "ctrl+shift+t";
         };
-        themes.dracula-pro = ./pi/dracula-pro.json;
+        themes.dracula-pro = ./pi/src/themes/dracula-pro.json;
         extensions = {
-          "talk.ts" = pkgs.replaceVars ./pi/talk.ts {
+          "talk.ts" = pkgs.replaceVars ./pi/src/talk.ts {
             prompt = lib.removePrefix "\"" (lib.removeSuffix "\"" (builtins.toJSON talkPrompt));
           };
-          "fast.ts" = ./pi/fast.ts;
-          "statusline.ts" = ./pi/statusline.ts;
-          "skill-mention.ts" = ./pi/skill-mention.ts;
-          "attention.ts" = ./pi/attention.ts;
+          "fast.ts" = ./pi/src/fast.ts;
+          "statusline.ts" = ./pi/src/statusline.ts;
+          "skill-mention.ts" = ./pi/src/skill-mention.ts;
+          "attention.ts" = ./pi/src/attention.ts;
           "git-checkpoint.ts" = "${pkgs.llm-agents.pi}/libexec/pi/examples/extensions/git-checkpoint.ts";
         };
         inherit skills integrations;

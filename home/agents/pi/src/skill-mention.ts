@@ -3,11 +3,11 @@
  * Only adds an autocomplete provider, so it never wraps the editor.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 import { stripFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 interface Skill {
   description: string;
@@ -98,7 +98,7 @@ export default function (pi: ExtensionAPI) {
         return [skillBlock(name, path)];
       } catch (err) {
         ctx.ui.notify(
-          `Could not read $${name}: ${err instanceof Error ? err.message : err}`,
+          `Could not read $${name}: ${err instanceof Error ? err.message : String(err)}`,
           "error",
         );
 

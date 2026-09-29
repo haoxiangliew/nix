@@ -2,8 +2,6 @@
  * One-line footer: talk, model, thinking, fast, folder, branch, context, cost, tok/s, and TTFT.
  */
 
-import { homedir } from "node:os";
-
 import type {
   ContextUsage,
   ExtensionAPI,
@@ -11,7 +9,9 @@ import type {
   SessionEntry,
   Theme,
 } from "@earendil-works/pi-coding-agent";
+
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { homedir } from "node:os";
 
 interface Speed {
   ttftMs?: number;
