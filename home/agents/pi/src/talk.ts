@@ -42,7 +42,8 @@ function enforce(pi: ExtensionAPI, isEnabled: () => boolean): void {
 
 export default function (pi: ExtensionAPI) {
   let enabled = false;
-  let toolsBefore: string[] | undefined;
+  // Restoring a snapshot of all active tools would drop tools enabled while talk mode was on, like web_enable's.
+  let removed: string[] = [];
 
   enforce(pi, () => enabled);
 
@@ -53,12 +54,13 @@ export default function (pi: ExtensionAPI) {
   });
 
   function apply(ctx: ExtensionContext): void {
+    const active = pi.getActiveTools();
     if (enabled) {
-      toolsBefore ??= pi.getActiveTools();
-      pi.setActiveTools(toolsBefore.filter((name) => !WRITE_TOOLS.has(name)));
-    } else if (toolsBefore) {
-      pi.setActiveTools(toolsBefore);
-      toolsBefore = undefined;
+      removed = [...new Set([...removed, ...active.filter((name) => WRITE_TOOLS.has(name))])];
+      pi.setActiveTools(active.filter((name) => !WRITE_TOOLS.has(name)));
+    } else if (removed.length > 0) {
+      pi.setActiveTools([...new Set([...active, ...removed])]);
+      removed = [];
     }
 
     ctx.ui.setStatus("talk", enabled ? ctx.ui.theme.fg("warning", "talk") : undefined);
