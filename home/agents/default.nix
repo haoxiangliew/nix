@@ -297,6 +297,31 @@ in
         show_agent_labels_on_pane_borders = true;
       };
       update.version_check = false;
+      keys = {
+        move_tab_previous = "prefix+shift+h";
+        move_tab_next = "prefix+shift+l";
+        command = [
+          {
+            key = "prefix+t";
+            type = "shell";
+            description = "Move pane to a new tab";
+            command = ''herdr pane move "$HERDR_ACTIVE_PANE_ID" --new-tab --focus'';
+          }
+          {
+            key = "prefix+m";
+            type = "shell";
+            description = "Merge tab into the previous tab";
+            command = ''
+              w=$HERDR_ACTIVE_WORKSPACE_ID t=$HERDR_ACTIVE_TAB_ID
+              to=$(herdr tab list --workspace "$w" | ${lib.getExe pkgs.jq} -r --arg t "$t" '.result.tabs | sort_by(.number) | .[(map(.tab_id) | index($t)) - 1].tab_id')
+              [ "$to" = "$t" ] && exit
+              herdr pane list --workspace "$w" | ${lib.getExe pkgs.jq} -r --arg t "$t" '.result.panes[] | select(.tab_id == $t) | .pane_id' |
+                while read -r p; do herdr pane move "$p" --tab "$to" --split right --no-focus; done
+              herdr tab focus "$to"
+            '';
+          }
+        ];
+      };
     };
 
     programs = {
