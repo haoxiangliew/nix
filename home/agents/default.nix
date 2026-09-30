@@ -125,6 +125,17 @@ in
         name = "mergePiSettings";
         file = "${config.programs.pi-coding-agent.configDir}/settings.json";
       })
+      (mutableConfig.mutableJson {
+        name = "mergePiMcpAdapterSettings";
+        file = "${config.programs.pi-coding-agent.configDir}/mcp-adapter.json";
+      })
+      {
+        file."${config.programs.pi-coding-agent.configDir}/mcp-adapter.json".source =
+          (pkgs.formats.json { }).generate "mcp-adapter.json"
+            {
+              settings.ancestorConfigRoots = [ "~/Developer" ];
+            };
+      }
       {
         file."${config.programs.pi-coding-agent.configDir}/skills".source =
           pkgs.linkFarm "pi-skills" config.programs.pi-coding-agent.skills;
