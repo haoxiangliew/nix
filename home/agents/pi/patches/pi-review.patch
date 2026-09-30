@@ -1,0 +1,121 @@
+diff --git a/review.ts b/review.ts
+index 2758a35..bc3f494 100644
+--- a/review.ts
++++ b/review.ts
+@@ -28,11 +28,13 @@
+  */
+ 
+ import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+-import { DynamicBorder, BorderedLoader } from "@earendil-works/pi-coding-agent";
++import { DynamicBorder, keyText } from "@earendil-works/pi-coding-agent";
+ import {
+ 	Container,
+ 	fuzzyFilter,
++	getKeybindings,
+ 	Input,
++	isKeyRelease,
+ 	type SelectItem,
+ 	SelectList,
+ 	Spacer,
+@@ -65,6 +67,8 @@ type ReviewSettingsState = {
+ 	customInstructions?: string;
+ };
+ 
++const SUMMARY_WIDGET = "review-summary";
++
+ function setReviewWidget(ctx: ExtensionContext, active: boolean) {
+ 	if (!ctx.hasUI) return;
+ 	if (!active) {
+@@ -565,6 +569,15 @@ type ReviewPresetValue =
+ 	| typeof TOGGLE_CUSTOM_INSTRUCTIONS_VALUE;
+ 
+ export default function reviewExtension(pi: ExtensionAPI) {
++	let promptOpen = false;
++
++	pi.on("ui_prompt_start", () => {
++		promptOpen = true;
++	});
++	pi.on("ui_prompt_end", () => {
++		promptOpen = false;
++	});
++
+ 	function persistReviewSettings() {
+ 		pi.appendEntry(REVIEW_SETTINGS_TYPE, {
+ 			customInstructions: reviewCustomInstructions,
+@@ -1488,32 +1501,54 @@ Instructions:
+ 		originId: string,
+ 		showLoader: boolean,
+ 	): Promise<{ cancelled: boolean; error?: string } | null> {
+-		if (showLoader && ctx.hasUI) {
+-			return ctx.ui.custom<{ cancelled: boolean; error?: string } | null>((tui, theme, _kb, done) => {
+-				const loader = new BorderedLoader(tui, theme, "Returning and summarizing review branch...");
+-				loader.onAbort = () => done(null);
+-
+-				ctx.navigateTree(originId, {
+-					summarize: true,
+-					customInstructions: REVIEW_SUMMARY_PROMPT,
+-					replaceInstructions: true,
+-				})
+-					.then(done)
+-					.catch((err) => done({ cancelled: false, error: err instanceof Error ? err.message : String(err) }));
+-
+-				return loader;
+-			});
+-		}
++		// The editor stays up instead of a loader, so dialogs opened by session_before_tree handlers stay
++		// visible. showLoader now turns on the progress widget and interrupt handling.
++		const stopListening = showLoader && ctx.hasUI ? listenForInterrupt(ctx) : undefined;
+ 
+-		try {
+-			return await ctx.navigateTree(originId, {
++		const result = await ctx
++			.navigateTree(originId, {
+ 				summarize: true,
+ 				customInstructions: REVIEW_SUMMARY_PROMPT,
+ 				replaceInstructions: true,
+-			});
+-		} catch (error) {
+-			return { cancelled: false, error: error instanceof Error ? error.message : String(error) };
+-		}
++			})
++			.catch((cause: unknown) => ({
++				cancelled: false,
++				error: cause instanceof Error ? cause.message : String(cause),
++			}));
++
++		const interrupted = stopListening?.() ?? false;
++
++		return interrupted && result.cancelled ? null : result;
++	}
++
++	// Pi's editor doesn't abort a branch summary on interrupt, so this does. Returns a function that
++	// stops listening and reports whether the user interrupted.
++	function listenForInterrupt(ctx: ExtensionCommandContext): () => boolean {
++		let interrupted = false;
++
++		ctx.ui.setWidget(SUMMARY_WIDGET, [
++			`Returning and summarizing review branch... (${keyText("app.interrupt")} to cancel)`,
++		]);
++
++		const stop = ctx.ui.onTerminalInput((data) => {
++			if (isKeyRelease(data) || !getKeybindings().matches(data, "app.interrupt")) {
++				return undefined;
++			}
++
++			interrupted = true;
++			ctx.abort();
++
++			// An open dialog still gets the key, so it closes too. Otherwise the editor would count it
++			// toward pi's double-escape action.
++			return promptOpen ? undefined : { consume: true };
++		});
++
++		return () => {
++			stop();
++			ctx.ui.setWidget(SUMMARY_WIDGET, undefined);
++
++			return interrupted;
++		};
+ 	}
+ 
+ 	async function executeEndReviewAction(

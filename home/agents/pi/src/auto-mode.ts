@@ -1,9 +1,10 @@
 /**
- * Reviews pi-permission-system asks with a model, following Claude Code's auto mode. The reviewer
- * sees the user's messages and the agent's tool calls, never tool results or the agent's own text.
- * A one-token first stage settles most asks over a per-session Codex WebSocket thread that sends
- * only what is new. A flagged ask gets a reasoned verdict. Errors and repeated denials fall back to
- * the permission dialog. Configured by `autoMode` in settings.json.
+ * Reviews pi-permission-system asks with a model. The reviewer sees the user's messages and the
+ * agent's tool calls, never tool results or the agent's own text. A one-token first stage settles
+ * most asks over a per-session Codex WebSocket thread that sends only what is new. A flagged ask
+ * gets a reasoned verdict. A call that fails with a transient error retries with backoff within its
+ * timeout. Other errors and repeated denials fall back to the permission dialog. Configured by
+ * `autoMode` in settings.json.
  */
 
 import type {
@@ -23,7 +24,7 @@ import type {
   PromptPermissionDetails,
 } from "@gotgenes/pi-permission-system";
 
-import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { completeSimple, retryAssistantCall } from "@earendil-works/pi-ai/compat";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
@@ -41,7 +42,12 @@ const Config = Type.Object(
     // Second stage only; the first stage runs without reasoning.
     reasoning: Type.Enum(["minimal", "low", "medium", "high", "xhigh", "max"], { default: "low" }),
     firstStage: Type.Boolean({ default: true }),
+    // Per model call, including its retries.
     timeoutMs: Type.Integer({ minimum: 1, default: 30_000 }),
+    maxRetries: Type.Integer({ minimum: 0, default: 3 }),
+    // Doubles with each retry, up to maxRetryDelayMs.
+    retryDelayMs: Type.Integer({ minimum: 0, default: 250 }),
+    maxRetryDelayMs: Type.Integer({ minimum: 0, default: 2000 }),
     maxDenials: Type.Integer({ minimum: 1, default: 3 }),
     // What counts as inside the user's control, such as source control orgs and domains.
     environment: Type.Array(Type.String(), { default: [] }),
@@ -111,6 +117,8 @@ interface Decision {
   verdict: AuthorizerVerdict;
   reason?: string;
 }
+
+type OnRetry = (attempt: number, error: string) => void;
 
 function policy(config: Config): string {
   if (config.environment.length === 0) {
@@ -269,7 +277,7 @@ function verdictNotice({ verdict, reason = "" }: Decision): string | undefined {
   return verdict.kind === "deny" ? `denied this. ${reason}`.trim() : undefined;
 }
 
-// An unregistered id, like codex-auto-review, borrows another model's settings from its provider.
+// An unregistered id, such as codex-auto-review, borrows another model's settings from its provider.
 function reviewerModel(ctx: ExtensionContext, ref: string): Model<Api> | undefined {
   const [provider = "", ...rest] = ref.split("/");
   const id = rest.join("/");
@@ -286,9 +294,11 @@ function reviewerModel(ctx: ExtensionContext, ref: string): Model<Api> | undefin
 
 async function complete(
   ctx: ExtensionContext,
+  cfg: Config,
   model: Model<Api>,
   context: Context,
-  options: SimpleStreamOptions & { timeoutMs: number },
+  options: SimpleStreamOptions,
+  onRetry: OnRetry,
 ): Promise<AssistantMessage> {
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 
@@ -296,17 +306,46 @@ async function complete(
     throw new Error(auth.error);
   }
 
-  const reply = await completeSimple(model, context, {
+  const signal = AbortSignal.timeout(cfg.timeoutMs);
+
+  const request = {
     ...options,
     apiKey: auth.apiKey,
     headers: auth.headers,
     env: auth.env,
-    signal: AbortSignal.timeout(options.timeoutMs),
+    signal,
     maxRetries: 0,
-  });
+  };
 
-  if (reply.stopReason === "error" || reply.stopReason === "aborted") {
-    throw new Error(reply.errorMessage ?? reply.stopReason);
+  const retry = {
+    enabled: true,
+    maxRetries: cfg.maxRetries,
+    baseDelayMs: cfg.retryDelayMs,
+    maxAgentDelayMs: cfg.maxRetryDelayMs,
+  };
+
+  // A timeout during a retry drops the error that caused the retry, so this keeps it.
+  let lastError: string | undefined;
+
+  // The timeout covers every attempt and the waits between them.
+  const reply = await retryAssistantCall(
+    () => completeSimple(model, context, request),
+    retry,
+    signal,
+    {
+      onRetryScheduled: (attempt, _max, _delay, error) => {
+        lastError = error;
+        onRetry(attempt, error);
+      },
+    },
+  );
+
+  if (reply.stopReason === "aborted") {
+    throw new Error(lastError ?? reply.errorMessage ?? "aborted");
+  }
+
+  if (reply.stopReason === "error") {
+    throw new Error(reply.errorMessage ?? "error");
   }
 
   return reply;
@@ -336,6 +375,7 @@ export default function (pi: ExtensionAPI) {
     model: Model<Api>,
     items: Item[],
     action: string,
+    onRetry: OnRetry,
   ): Promise<boolean> {
     const next = advance(thread, items, cfg.context.threadTokens * CHARS_PER_TOKEN);
 
@@ -345,14 +385,11 @@ export default function (pi: ExtensionAPI) {
     try {
       const reply = await complete(
         ctx,
+        cfg,
         model,
         { systemPrompt: `${policy(cfg)}\n\n${FIRST_STAGE_TASK}`, messages: thread.messages },
-        {
-          transport: "websocket-cached",
-          sessionId: threadKey(ctx),
-          maxTokens: 16,
-          timeoutMs: cfg.timeoutMs,
-        },
+        { transport: "websocket-cached", sessionId: threadKey(ctx), maxTokens: 16 },
+        onRetry,
       );
 
       thread.messages.push(reply);
@@ -374,11 +411,13 @@ export default function (pi: ExtensionAPI) {
     model: Model<Api>,
     items: Item[],
     action: string,
+    onRetry: OnRetry,
   ): Promise<Review> {
     const evidence = recent(items, cfg.context.threadTokens * CHARS_PER_TOKEN);
 
     const reply = await complete(
       ctx,
+      cfg,
       model,
       {
         systemPrompt: `${policy(cfg)}\n\n${SECOND_STAGE_TASK}`,
@@ -388,8 +427,8 @@ export default function (pi: ExtensionAPI) {
         sessionId: `${threadKey(ctx)}:review`,
         reasoning: cfg.reasoning,
         maxTokens: 1024,
-        timeoutMs: cfg.timeoutMs,
       },
+      onRetry,
     );
 
     return parseVerdict(replyText(reply));
@@ -400,15 +439,16 @@ export default function (pi: ExtensionAPI) {
     cfg: Config,
     model: Model<Api>,
     details: PromptPermissionDetails,
+    onRetry: OnRetry,
   ): Promise<Decision> {
     const items = ctx.sessionManager.getBranch().flatMap((entry) => entryItems(entry, cfg));
     const action = renderAction(details);
 
-    if (cfg.firstStage && (await firstStage(ctx, cfg, model, items, action))) {
+    if (cfg.firstStage && (await firstStage(ctx, cfg, model, items, action, onRetry))) {
       return { stage: 1, verdict: { kind: "allow" } };
     }
 
-    return { stage: 2, ...(await secondStage(ctx, cfg, model, items, action)) };
+    return { stage: 2, ...(await secondStage(ctx, cfg, model, items, action, onRetry)) };
   }
 
   async function authorize(
@@ -454,10 +494,20 @@ export default function (pi: ExtensionAPI) {
 
     const started = Date.now();
 
+    const onRetry: OnRetry = (attempt, error) => {
+      log.review("auto_mode_retry", {
+        requestId: details.requestId,
+        attempt,
+        error,
+        durationMs: Date.now() - started,
+      });
+      ctx.ui.setStatus(NAME, `reviewing… retry ${attempt}/${cfg.maxRetries}`);
+    };
+
     ctx.ui.setStatus(NAME, "reviewing…");
 
     try {
-      const decision = await review(ctx, cfg, model, details);
+      const decision = await review(ctx, cfg, model, details, onRetry);
 
       denials = decision.verdict.kind === "deny" ? denials + 1 : 0;
       log.review("auto_mode_decision", {

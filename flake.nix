@@ -36,6 +36,10 @@
       url = "github:cursor/plugins";
       flake = false;
     };
+    pi-review = {
+      url = "github:earendil-works/pi-review";
+      flake = false;
+    };
 
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";

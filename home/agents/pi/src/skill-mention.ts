@@ -1,5 +1,5 @@
 /**
- * $name anywhere in a prompt loads that skill, like /skill:name at the start of one.
+ * $name anywhere in a prompt loads that skill. pi's /skill:name works only at the start of a prompt.
  * Only adds an autocomplete provider, so it never wraps the editor.
  */
 

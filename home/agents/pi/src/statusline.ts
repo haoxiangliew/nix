@@ -9,6 +9,7 @@ import type {
   ContextUsage,
   ExtensionAPI,
   ExtensionContext,
+  MessageUpdateEvent,
   SessionEntry,
   Theme,
 } from "@earendil-works/pi-coding-agent";
@@ -18,7 +19,6 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { Type, type Static } from "typebox";
 
-import { isModelOutput } from "./lib/output.ts";
 import { loadOrReport } from "./lib/settings.ts";
 
 const SEGMENTS = [
@@ -59,6 +59,15 @@ interface Totals {
   output: number;
   // Anthropic reports output tokens only when a reply ends, so a streaming reply is estimated.
   estimated: boolean;
+}
+
+const OUTPUT = new Set(["text_delta", "thinking_delta", "toolcall_delta"]);
+
+// Start events carry no content.
+function isModelOutput(event: MessageUpdateEvent): boolean {
+  const update = event.assistantMessageEvent;
+
+  return OUTPUT.has(update.type) && "delta" in update && update.delta.length > 0;
 }
 
 function formatTokens(tokens: number): string {
@@ -292,7 +301,7 @@ export default function (pi: ExtensionAPI) {
             model: () => [ctx.model && theme.fg("accent", `${ctx.model.provider}/${ctx.model.id}`)],
             thinking: () => [theme.fg("muted", pi.getThinkingLevel())],
             fast: () => [statuses.get("fast")],
-            stall: () => [tint("error", statuses.get("stall-watchdog"))],
+            stall: () => [tint("error", statuses.get("stream-watchdog"))],
             tokens: () => [tint("muted", formatTotals(totals()))],
             cwd: () => {
               const branch = footerData.getGitBranch();

@@ -9,7 +9,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { Type, type Static } from "typebox";
 
-import { STALL_RETRY_DONE, STALL_RETRY_PENDING } from "./lib/events.ts";
 import { loadOrReport } from "./lib/settings.ts";
 
 const Config = Type.Object(
@@ -117,16 +116,7 @@ export default function (pi: ExtensionAPI) {
   let prompt: string | undefined;
   // Tracked from events because a timer can outlive its ctx, which throws once the session ends.
   let busy = false;
-  let retryPending = false;
   let live = true;
-
-  pi.events.on(STALL_RETRY_PENDING, () => {
-    retryPending = true;
-  });
-
-  pi.events.on(STALL_RETRY_DONE, () => {
-    retryPending = false;
-  });
 
   pi.on("session_start", async (_event, ctx) => {
     config = loadOrReport(ctx, "The attention extension", "attention", Config);
@@ -170,7 +160,7 @@ export default function (pi: ExtensionAPI) {
     busy = false;
 
     if (config !== undefined && watched(ctx)) {
-      notifyLater(pi, config, () => live && !busy && !retryPending, "Ready for input");
+      notifyLater(pi, config, () => live && !busy, "Ready for input");
     }
   });
 }

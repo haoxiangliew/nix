@@ -57,7 +57,7 @@ function enforce(pi: ExtensionAPI, current: () => Config | undefined): void {
 export default function (pi: ExtensionAPI) {
   let enabled = false;
   let config: Config | undefined;
-  // Restoring a snapshot of all active tools would drop tools enabled while talk mode was on, like web_enable's.
+  // Restoring a snapshot of all active tools would drop tools enabled while talk mode was on, such as web_enable's.
   let removed: string[] = [];
 
   enforce(pi, () => (enabled ? config : undefined));
