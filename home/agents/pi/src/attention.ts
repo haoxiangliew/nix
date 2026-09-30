@@ -1,15 +1,27 @@
 /**
  * Notifies when pi waits on a prompt or finishes, and reports prompts to herdr as blocked.
  * herdr notifies only for panes outside the active tab, so inside herdr this notifies only for the
- * active tab. Outside herdr it notifies through the terminal.
+ * active tab. Outside herdr it notifies through the terminal. Configured by `attention` in
+ * settings.json.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const TITLE = "pi";
+import { Type, type Static } from "typebox";
 
-// Matches herdr's default ui.toast.delay_seconds.
-const DELAY_MS = 1000;
+import { STALL_RETRY_DONE, STALL_RETRY_PENDING } from "./lib/events.ts";
+import { loadOrReport } from "./lib/settings.ts";
+
+const Config = Type.Object(
+  {
+    title: Type.String({ minLength: 1, default: "pi" }),
+    // How long pi waits before notifying. Matches herdr's ui.toast.delay_seconds.
+    delayMs: Type.Integer({ minimum: 0, default: 1000 }),
+  },
+  { additionalProperties: false, default: {} },
+);
+
+type Config = Static<typeof Config>;
 
 const HERDR_TIMEOUT_MS = 2000;
 
@@ -67,26 +79,31 @@ async function isFocusedTab(
   return focused !== false && activeTab === tab;
 }
 
-async function notify(pi: ExtensionAPI, body: string): Promise<void> {
+async function notify(pi: ExtensionAPI, title: string, body: string): Promise<void> {
   if (paneId === undefined) {
-    process.stdout.write(`\u001B]777;notify;${TITLE};${body}\u0007`);
+    process.stdout.write(`\u001B]777;notify;${title};${body}\u0007`);
 
     return;
   }
 
   if (await herdrSkips(pi, paneId)) {
-    await pi.exec("herdr", ["notification", "show", TITLE, "--body", body, "--sound", "none"], {
+    await pi.exec("herdr", ["notification", "show", title, "--body", body, "--sound", "none"], {
       timeout: HERDR_TIMEOUT_MS,
     });
   }
 }
 
-function notifyLater(pi: ExtensionAPI, stillWaiting: () => boolean, body: string): void {
+function notifyLater(
+  pi: ExtensionAPI,
+  config: Config,
+  stillWaiting: () => boolean,
+  body: string,
+): void {
   setTimeout(() => {
     if (stillWaiting()) {
-      void notify(pi, body);
+      void notify(pi, config.title, body);
     }
-  }, DELAY_MS).unref();
+  }, config.delayMs).unref();
 }
 
 // Subagent children and print or RPC runs have no one watching.
@@ -95,11 +112,25 @@ function watched(ctx: ExtensionContext): boolean {
 }
 
 export default function (pi: ExtensionAPI) {
+  let config: Config | undefined;
   // Label of the prompt reported to herdr, so each start gets exactly one end.
   let prompt: string | undefined;
   // Tracked from events because a timer can outlive its ctx, which throws once the session ends.
   let busy = false;
+  let retryPending = false;
   let live = true;
+
+  pi.events.on(STALL_RETRY_PENDING, () => {
+    retryPending = true;
+  });
+
+  pi.events.on(STALL_RETRY_DONE, () => {
+    retryPending = false;
+  });
+
+  pi.on("session_start", async (_event, ctx) => {
+    config = loadOrReport(ctx, "The attention extension", "attention", Config);
+  });
 
   pi.on("session_shutdown", async () => {
     live = false;
@@ -111,7 +142,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("ui_prompt_start", async (event, ctx) => {
     // An idle agent means the user opened the dialog, such as the /fast picker.
-    if (!watched(ctx) || ctx.isIdle()) {
+    if (config === undefined || !watched(ctx) || ctx.isIdle()) {
       return;
     }
 
@@ -119,7 +150,7 @@ export default function (pi: ExtensionAPI) {
 
     prompt = label;
     pi.events.emit("herdr:blocked", { active: true, label });
-    notifyLater(pi, () => live && prompt === label, label);
+    notifyLater(pi, config, () => live && prompt === label, label);
   });
 
   pi.on("ui_prompt_end", async () => {
@@ -138,8 +169,8 @@ export default function (pi: ExtensionAPI) {
 
     busy = false;
 
-    if (watched(ctx)) {
-      notifyLater(pi, () => live && !busy, "Ready for input");
+    if (config !== undefined && watched(ctx)) {
+      notifyLater(pi, config, () => live && !busy && !retryPending, "Ready for input");
     }
   });
 }

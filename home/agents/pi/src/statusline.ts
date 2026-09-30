@@ -1,7 +1,10 @@
 /**
- * One-line footer: talk, model, thinking, fast, folder, branch, context, cost, tok/s, and TTFT.
+ * One-line footer: talk, auto-mode review, stall warning, model, thinking, fast, folder, branch,
+ * context, cost, tokens since the last user message, tok/s, and TTFT. Configured by `statusline`
+ * in settings.json. Invalid settings keep pi's built-in footer.
  */
 
+import type { Usage } from "@earendil-works/pi-ai";
 import type {
   ContextUsage,
   ExtensionAPI,
@@ -10,12 +13,52 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
+import { Type, type Static } from "typebox";
+
+import { isModelOutput } from "./lib/output.ts";
+import { loadOrReport } from "./lib/settings.ts";
+
+const SEGMENTS = [
+  "talk",
+  "autoMode",
+  "stall",
+  "model",
+  "thinking",
+  "fast",
+  "cwd",
+  "context",
+  "cost",
+  "tokens",
+  "speed",
+] as const;
+
+const Config = Type.Object(
+  {
+    // Which segments to show, in order.
+    segments: Type.Array(Type.Enum(SEGMENTS), { uniqueItems: true, default: [...SEGMENTS] }),
+  },
+  { additionalProperties: false, default: {} },
+);
+
+type Segment = (typeof SEGMENTS)[number];
+
+type Config = Static<typeof Config>;
 
 interface Speed {
   ttftMs?: number;
   tokensPerSecond?: number;
+}
+
+// Tokens since the last user message, summed over its model requests. Input includes cached
+// tokens, so it grows with each request.
+interface Totals {
+  input: number;
+  output: number;
+  // Anthropic reports output tokens only when a reply ends, so a streaming reply is estimated.
+  estimated: boolean;
 }
 
 function formatTokens(tokens: number): string {
@@ -96,6 +139,16 @@ function formatCost(ctx: ExtensionContext): string | undefined {
   return `$${cost.toFixed(2)}${subscription ? " (sub)" : ""}`;
 }
 
+function formatTotals(totals: Totals | undefined): string | undefined {
+  if (totals === undefined) {
+    return undefined;
+  }
+
+  const output = `${totals.estimated ? "~" : ""}${formatTokens(totals.output)}`;
+
+  return `↑${formatTokens(totals.input)} ↓${output}`;
+}
+
 function formatSpeed(speed: Speed): string[] {
   const parts: string[] = [];
 
@@ -122,11 +175,7 @@ function trackSpeed(pi: ExtensionAPI, onChange: () => void): Speed {
   });
 
   pi.on("message_update", async (event) => {
-    if (
-      event.message.role !== "assistant" ||
-      requestStart === undefined ||
-      firstToken !== undefined
-    ) {
+    if (requestStart === undefined || firstToken !== undefined || !isModelOutput(event)) {
       return;
     }
 
@@ -157,12 +206,69 @@ function trackSpeed(pi: ExtensionAPI, onChange: () => void): Speed {
   return speed;
 }
 
+function inputTokens(usage: Usage): number {
+  return usage.input + usage.cacheRead + usage.cacheWrite;
+}
+
+function trackTotals(pi: ExtensionAPI, onChange: () => void): () => Totals | undefined {
+  let done: Totals | undefined;
+  let current: Totals | undefined;
+
+  pi.on("before_agent_start", async () => {
+    done = { input: 0, output: 0, estimated: false };
+    current = done;
+    onChange();
+  });
+
+  pi.on("message_update", async (event) => {
+    const { message } = event;
+
+    if (done === undefined || message.role !== "assistant") {
+      return;
+    }
+
+    current = {
+      input: done.input + inputTokens(message.usage),
+      output: done.output + estimateTokens(message),
+      estimated: true,
+    };
+    onChange();
+  });
+
+  pi.on("message_end", async (event) => {
+    const { message } = event;
+
+    if (done === undefined || message.role !== "assistant") {
+      return;
+    }
+
+    done = {
+      input: done.input + inputTokens(message.usage),
+      output: done.output + message.usage.output,
+      estimated: false,
+    };
+    current = done;
+    onChange();
+  });
+
+  return () => current;
+}
+
 export default function (pi: ExtensionAPI) {
   let requestRender: (() => void) | undefined;
 
   const speed = trackSpeed(pi, () => requestRender?.());
+  const totals = trackTotals(pi, () => requestRender?.());
 
   pi.on("session_start", async (_event, ctx) => {
+    const config = loadOrReport(ctx, "The custom status line", "statusline", Config);
+
+    if (config === undefined) {
+      return;
+    }
+
+    const { segments } = config;
+
     ctx.ui.setFooter((tui, theme, footerData) => {
       requestRender = () => tui.requestRender();
 
@@ -176,21 +282,37 @@ export default function (pi: ExtensionAPI) {
         invalidate() {},
         render(width: number): string[] {
           const statuses = footerData.getExtensionStatuses();
-          const branch = footerData.getGitBranch();
-          const usage = ctx.getContextUsage();
-          const model = ctx.model && theme.fg("accent", `${ctx.model.provider}/${ctx.model.id}`);
-          const cost = formatCost(ctx);
 
-          const parts = [
-            statuses.get("talk"),
-            model,
-            theme.fg("muted", pi.getThinkingLevel()),
-            statuses.get("fast"),
-            formatCwd(ctx.cwd) + (branch === null ? "" : theme.fg("muted", ` (${branch})`)),
-            usage && formatContext(usage, theme),
-            cost && theme.fg("muted", cost),
-            ...formatSpeed(speed).map((part) => theme.fg("muted", part)),
-          ].filter((part) => part !== undefined);
+          const tint = (color: Parameters<Theme["fg"]>[0], text: string | undefined) =>
+            text && theme.fg(color, text);
+
+          const pieces: Record<Segment, () => (string | undefined)[]> = {
+            talk: () => [statuses.get("talk")],
+            autoMode: () => [tint("warning", statuses.get("auto-mode"))],
+            model: () => [ctx.model && theme.fg("accent", `${ctx.model.provider}/${ctx.model.id}`)],
+            thinking: () => [theme.fg("muted", pi.getThinkingLevel())],
+            fast: () => [statuses.get("fast")],
+            stall: () => [tint("error", statuses.get("stall-watchdog"))],
+            tokens: () => [tint("muted", formatTotals(totals()))],
+            cwd: () => {
+              const branch = footerData.getGitBranch();
+
+              return [
+                formatCwd(ctx.cwd) + (branch === null ? "" : theme.fg("muted", ` (${branch})`)),
+              ];
+            },
+            context: () => {
+              const usage = ctx.getContextUsage();
+
+              return [usage && formatContext(usage, theme)];
+            },
+            cost: () => [tint("muted", formatCost(ctx))],
+            speed: () => formatSpeed(speed).map((part) => theme.fg("muted", part)),
+          };
+
+          const parts = segments
+            .flatMap((segment) => pieces[segment]())
+            .filter((part) => part !== undefined);
 
           return [truncateToWidth(parts.join(theme.fg("dim", " · ")), width)];
         },

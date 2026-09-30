@@ -1,13 +1,12 @@
 /**
- * /fast sends `speed: "fast"` to Anthropic Opus and the priority service tier to OpenAI.
+ * /fast sends `speed: "fast"` to supported Anthropic models and the priority service tier to OpenAI.
  * In the /fast picker, enter applies the choice to this session and ctrl+s also saves it as the
  * default in settings.json.
- * --fast starts with it on.
+ * --fast starts with it on. Configured by `fast` in settings.json.
  */
 
 import {
   DynamicBorder,
-  getAgentDir,
   keyHint,
   type ExtensionAPI,
   type ExtensionContext,
@@ -15,15 +14,32 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
 
-const FAST_BETA = "fast-mode-2026-02-01";
+import { loadOrReport, loadSettings, saveSetting } from "./lib/settings.ts";
 
-const FAST_MODELS = new Set(["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]);
+const Config = Type.Object(
+  {
+    // Anthropic models that support fast mode.
+    models: Type.Array(Type.String(), {
+      default: ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"],
+    }),
+    // The anthropic-beta header that enables it.
+    beta: Type.String({ minLength: 1, default: "fast-mode-2026-02-01" }),
+    // Fast mode bills every token category at this multiple of the standard rate.
+    costMultiplier: Type.Number({ minimum: 1, default: 2 }),
+  },
+  { additionalProperties: false, default: {} },
+);
 
-// Fast mode bills every token category at twice the standard rate on all FAST_MODELS.
-const FAST_COST_MULTIPLIER = 2;
+type Config = Static<typeof Config>;
+
+// The default /fast saves with ctrl+s.
+const FastMode = Type.Boolean({ default: false });
+
+// Extra fields pass through; Anthropic requests may already carry betas.
+const Payload = Type.Object({ betas: Type.Optional(Type.Array(Type.String())) });
 
 const OPENAI_PROVIDERS = new Set(["openai", "openai-codex"]);
 
@@ -32,10 +48,6 @@ type Backend = "anthropic" | "openai";
 type AssistantMessage = Extract<MessageEndEvent["message"], { role: "assistant" }>;
 
 type Cost = AssistantMessage["usage"]["cost"];
-
-interface Settings {
-  fastMode?: boolean;
-}
 
 interface Choice {
   enabled: boolean;
@@ -48,38 +60,12 @@ interface OptionState {
   saved: boolean;
 }
 
-function settingsPath(): string {
-  return join(getAgentDir(), "settings.json");
-}
-
-function readSettings(): Settings {
-  const path = settingsPath();
-
-  return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
-}
-
 function readDefault(): boolean {
-  try {
-    return readSettings().fastMode === true;
-  } catch {
-    return false;
-  }
+  return loadSettings("fastMode", FastMode);
 }
 
-// Keeps the other keys in settings.json. pi rewrites only the settings it changed, so `fastMode`
-// survives pi's own saves.
-function writeDefault(value: boolean): void {
-  const path = settingsPath();
-  const tmp = `${path}.${process.pid}.tmp`;
-
-  writeFileSync(tmp, `${JSON.stringify({ ...readSettings(), fastMode: value }, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  renameSync(tmp, path);
-}
-
-function backend(model: ExtensionContext["model"]): Backend | undefined {
-  if (model?.provider === "anthropic" && FAST_MODELS.has(model.id)) {
+function backend(model: ExtensionContext["model"], config: Config): Backend | undefined {
+  if (model?.provider === "anthropic" && config.models.includes(model.id)) {
     return "anthropic";
   }
 
@@ -92,20 +78,20 @@ function backend(model: ExtensionContext["model"]): Backend | undefined {
 
 // pi prices Anthropic replies at standard rates because it ignores `usage.speed`. A fast request
 // either runs fast or fails, so a completed reply to one was billed at the fast rate.
-function billedFast(message: AssistantMessage): boolean {
+function billedFast(message: AssistantMessage, config: Config): boolean {
   return (
     message.provider === "anthropic" &&
     message.stopReason !== "error" &&
     message.stopReason !== "aborted" &&
-    FAST_MODELS.has(message.responseModel ?? message.model)
+    config.models.includes(message.responseModel ?? message.model)
   );
 }
 
-function fastCost(cost: Cost): Cost {
-  const input = cost.input * FAST_COST_MULTIPLIER;
-  const output = cost.output * FAST_COST_MULTIPLIER;
-  const cacheRead = cost.cacheRead * FAST_COST_MULTIPLIER;
-  const cacheWrite = cost.cacheWrite * FAST_COST_MULTIPLIER;
+function fastCost(cost: Cost, multiplier: number): Cost {
+  const input = cost.input * multiplier;
+  const output = cost.output * multiplier;
+  const cacheRead = cost.cacheRead * multiplier;
+  const cacheWrite = cost.cacheWrite * multiplier;
 
   return {
     ...cost,
@@ -126,9 +112,16 @@ function optionLine(theme: Theme, value: boolean, state: OptionState): string {
   return `${cursor}${check}${state.selected ? theme.fg("accent", label) : label}${badge}`;
 }
 
-function pickerFrame(ctx: ExtensionContext, theme: Theme, list: Container): Container {
+function pickerFrame(
+  ctx: ExtensionContext,
+  config: Config,
+  theme: Theme,
+  list: Container,
+): Container {
   const model = ctx.model === undefined ? "no model" : `${ctx.model.provider}/${ctx.model.id}`;
-  const support = backend(ctx.model) === undefined ? theme.fg("warning", " (unsupported)") : "";
+
+  const support =
+    backend(ctx.model, config) === undefined ? theme.fg("warning", " (unsupported)") : "";
 
   const hints = [
     keyHint("tui.select.confirm", "to select"),
@@ -154,7 +147,11 @@ function pickerFrame(ctx: ExtensionContext, theme: Theme, list: Container): Cont
   return frame;
 }
 
-function pick(ctx: ExtensionContext, enabled: boolean): Promise<Choice | undefined> {
+function pick(
+  ctx: ExtensionContext,
+  config: Config,
+  enabled: boolean,
+): Promise<Choice | undefined> {
   const savedDefault = readDefault();
   const options = [true, false];
 
@@ -177,7 +174,7 @@ function pick(ctx: ExtensionContext, enabled: boolean): Promise<Choice | undefin
       }
     }
 
-    const container = pickerFrame(ctx, theme, list);
+    const container = pickerFrame(ctx, config, theme, list);
 
     updateList();
 
@@ -205,7 +202,12 @@ function pick(ctx: ExtensionContext, enabled: boolean): Promise<Choice | undefin
   });
 }
 
-function choose(arg: string, ctx: ExtensionContext, enabled: boolean): Promise<Choice | undefined> {
+function choose(
+  arg: string,
+  ctx: ExtensionContext,
+  config: Config,
+  enabled: boolean,
+): Promise<Choice | undefined> {
   if (arg === "on" || arg === "off") {
     return Promise.resolve({ enabled: arg === "on", persist: false });
   }
@@ -214,21 +216,27 @@ function choose(arg: string, ctx: ExtensionContext, enabled: boolean): Promise<C
     return Promise.resolve({ enabled: !enabled, persist: false });
   }
 
-  return pick(ctx, enabled);
+  return pick(ctx, config, enabled);
 }
 
 // Rewrites outgoing payloads while fast mode is on and bills the replies at the fast rate.
-function handleRequests(pi: ExtensionAPI, isEnabled: () => boolean): void {
+function handleRequests(pi: ExtensionAPI, current: () => Config | undefined): void {
   // Whether the request in flight asked Anthropic for fast mode.
   let fastRequest = false;
 
   pi.on("before_provider_request", async (event, ctx) => {
-    const target = isEnabled() ? backend(ctx.model) : undefined;
+    const config = current();
     const { payload } = event;
 
     fastRequest = false;
 
-    if (target === undefined || typeof payload !== "object" || payload === null) {
+    if (config === undefined || !Value.Check(Payload, payload)) {
+      return;
+    }
+
+    const target = backend(ctx.model, config);
+
+    if (target === undefined) {
       return;
     }
 
@@ -236,36 +244,38 @@ function handleRequests(pi: ExtensionAPI, isEnabled: () => boolean): void {
       return { ...payload, service_tier: "priority" };
     }
 
-    const betas = "betas" in payload && Array.isArray(payload.betas) ? payload.betas : [];
+    const betas = payload.betas ?? [];
 
     fastRequest = true;
 
-    return { ...payload, speed: "fast", betas: [...new Set([...betas, FAST_BETA])] };
+    return { ...payload, speed: "fast", betas: [...new Set([...betas, config.beta])] };
   });
 
   pi.on("message_end", async (event) => {
     const { message } = event;
+    const config = current();
 
-    if (message.role !== "assistant" || !fastRequest) {
+    if (message.role !== "assistant" || !fastRequest || config === undefined) {
       return;
     }
 
     fastRequest = false;
 
-    if (!billedFast(message)) {
+    if (!billedFast(message, config)) {
       return;
     }
 
-    return {
-      message: { ...message, usage: { ...message.usage, cost: fastCost(message.usage.cost) } },
-    };
+    const cost = fastCost(message.usage.cost, config.costMultiplier);
+
+    return { message: { ...message, usage: { ...message.usage, cost } } };
   });
 }
 
 export default function (pi: ExtensionAPI) {
   let enabled = false;
+  let config: Config | undefined;
 
-  handleRequests(pi, () => enabled);
+  handleRequests(pi, () => (enabled ? config : undefined));
 
   pi.registerFlag("fast", {
     description: "Start in fast mode (Anthropic Opus, OpenAI)",
@@ -274,8 +284,12 @@ export default function (pi: ExtensionAPI) {
   });
 
   function apply(ctx: ExtensionContext): void {
+    if (config === undefined) {
+      return;
+    }
+
     const status =
-      backend(ctx.model) === undefined
+      backend(ctx.model, config) === undefined
         ? ctx.ui.theme.fg("muted", "fast (unsupported model)")
         : ctx.ui.theme.fg("accent", "fast");
 
@@ -285,7 +299,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("fast", {
     description: "Select fast mode (on, off)",
     handler: async (args, ctx) => {
-      const choice = await choose(args.trim(), ctx, enabled);
+      if (config === undefined) {
+        ctx.ui.notify("Fast mode is off because `fast` in settings.json is invalid.", "error");
+
+        return;
+      }
+
+      const choice = await choose(args.trim(), ctx, config, enabled);
 
       if (choice === undefined) {
         return;
@@ -296,7 +316,7 @@ export default function (pi: ExtensionAPI) {
       pi.appendEntry("fast-mode", enabled);
 
       if (choice.persist) {
-        writeDefault(enabled);
+        saveSetting("fastMode", enabled);
       }
 
       ctx.ui.notify(
@@ -311,6 +331,15 @@ export default function (pi: ExtensionAPI) {
 
   // Resumed sessions keep their last choice. New sessions use --fast or the saved default.
   pi.on("session_start", async (_event, ctx) => {
+    config = loadOrReport(ctx, "Fast mode", "fast", Config);
+
+    if (config === undefined) {
+      enabled = false;
+      ctx.ui.setStatus("fast", undefined);
+
+      return;
+    }
+
     const saved = ctx.sessionManager
       .getEntries()
       .findLast((e) => e.type === "custom" && e.customType === "fast-mode");

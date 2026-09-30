@@ -155,7 +155,7 @@ in
                     workdirArgument = "cwd";
                   }
                 );
-            authorizerChain = [ "pi-auto-review" ];
+            authorizerChain = [ "auto-mode" ];
             permission = {
               # tier 3: the reviewer decides everything else
               "*" = "ask";
@@ -184,6 +184,7 @@ in
                 "git diff*" = "allow";
                 "git log*" = "allow";
                 "git show*" = "allow";
+                "cd *" = "allow";
                 "ls" = "allow";
                 "ls *" = "allow";
                 "pwd" = "allow";
@@ -200,6 +201,7 @@ in
                 "*" = "ask";
                 "/tmp/*" = "allow";
                 "/private/tmp/*" = "allow";
+                "*/.herdr/worktrees/*" = "allow";
               };
               external_directory_read."*" = "allow";
 
@@ -221,18 +223,6 @@ in
               };
             };
           };
-      }
-      {
-        file."${config.programs.pi-coding-agent.configDir}/extensions/pi-auto-review/config.json".source =
-          (pkgs.formats.json { }).generate "pi-auto-review.json"
-            {
-              model = "openai-codex/codex-auto-review";
-              failureMode = "defer";
-              autoConfirmBoundedAllows = [
-                "external_directory"
-                "path"
-              ];
-            };
       }
       {
         file."${config.programs.pi-coding-agent.configDir}/web-search.json".source =
@@ -411,16 +401,21 @@ in
             ))
           ];
           warnings.anthropicExtraUsage = false;
+          autoMode = {
+            model = "openai-codex/codex-auto-review";
+            reasoning = "low";
+          };
+          talk.prompt = talkPrompt;
           packages = [
             "npm:pi-mcp-adapter"
             "npm:pi-web-access"
             "npm:@gotgenes/pi-subagents"
             "npm:pi-better-background-tasks"
             "npm:@gotgenes/pi-permission-system"
-            "npm:@erichll/pi-auto-review"
             "npm:pi-pigment"
             "npm:@juicesharp/rpiv-ask-user-question"
             "npm:@narumitw/pi-btw"
+            "npm:pi-rewind-hook"
             "git:github.com/earendil-works/pi-review"
           ];
         };
@@ -430,14 +425,14 @@ in
         };
         themes.dracula-pro = ./pi/src/themes/dracula-pro.json;
         extensions = {
-          "talk.ts" = pkgs.replaceVars ./pi/src/talk.ts {
-            prompt = lib.removePrefix "\"" (lib.removeSuffix "\"" (builtins.toJSON talkPrompt));
-          };
+          "lib" = ./pi/src/lib;
+          "talk.ts" = ./pi/src/talk.ts;
           "fast.ts" = ./pi/src/fast.ts;
           "statusline.ts" = ./pi/src/statusline.ts;
           "skill-mention.ts" = ./pi/src/skill-mention.ts;
           "attention.ts" = ./pi/src/attention.ts;
-          "git-checkpoint.ts" = "${pkgs.llm-agents.pi}/libexec/pi/examples/extensions/git-checkpoint.ts";
+          "auto-mode.ts" = ./pi/src/auto-mode.ts;
+          "stall-watchdog.ts" = ./pi/src/stall-watchdog.ts;
         };
         inherit skills integrations;
       };
