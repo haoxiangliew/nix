@@ -237,11 +237,11 @@
     "home-manager-master": {
       "flake": false,
       "locked": {
-        "lastModified": 1790779675,
-        "narHash": "sha256-wswYlVaovcex/IMSqGrN/GLlvHN29bgoIXMBoMyLmTI=",
+        "lastModified": 1790799977,
+        "narHash": "sha256-WzSrmE8HZn5yipLz1zdsNQDLh0fC8SzBobKQ0z4wZYQ=",
         "owner": "nix-community",
         "repo": "home-manager",
-        "rev": "b75a0703c9ef757386ec3807a55106c2ca64f770",
+        "rev": "cb2f28657ddb45fc924ac981518ecba8fc82cdef",
         "type": "github"
       },
       "original": {
@@ -259,11 +259,11 @@
         "treefmt-nix": "treefmt-nix"
       },
       "locked": {
-        "lastModified": 1790746077,
-        "narHash": "sha256-I4O5GSbZgmvzV7dj8fZN8furV2UdEpahh4rvsZOfs/Q=",
+        "lastModified": 1790801541,
+        "narHash": "sha256-D7Ew8Ja1UAfUa5txCZZXLIcajvgrwvh6eScwP6RcpgA=",
         "owner": "numtide",
         "repo": "llm-agents.nix",
-        "rev": "af40d966859ec4075ecc172dbb39e53f474dc5d9",
+        "rev": "e5306d4eda0c0a80d5e3e77706f89605e52e532c",
         "type": "github"
       },
       "original": {
@@ -430,11 +430,11 @@
     "pstack": {
       "flake": false,
       "locked": {
-        "lastModified": 1790784688,
-        "narHash": "sha256-P7bLCDR8s0wCeG0j4nAGfkf6C2FemeA90yFiEpOKDds=",
+        "lastModified": 1790791710,
+        "narHash": "sha256-Vw2sCdlAPWmpF1ndDT6rO/Gd/Ozmh1BXzhBpxrjimkw=",
         "owner": "cursor",
         "repo": "plugins",
-        "rev": "5f9a00e39a4c6e67703e83fbc99c0e3fd51c5aed",
+        "rev": "2eb7ed4613cfc8f098dfe464a23680ea44d84c5e",
         "type": "github"
       },
       "original": {
