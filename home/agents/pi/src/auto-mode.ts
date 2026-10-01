@@ -24,7 +24,7 @@ import type {
   PromptPermissionDetails,
 } from "@gotgenes/pi-permission-system";
 
-import { completeSimple, retryAssistantCall } from "@earendil-works/pi-ai/compat";
+import { retryAssistantCall } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
@@ -300,22 +300,8 @@ async function complete(
   options: SimpleStreamOptions,
   onRetry: OnRetry,
 ): Promise<AssistantMessage> {
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-
-  if (!auth.ok) {
-    throw new Error(auth.error);
-  }
-
   const signal = AbortSignal.timeout(cfg.timeoutMs);
-
-  const request = {
-    ...options,
-    apiKey: auth.apiKey,
-    headers: auth.headers,
-    env: auth.env,
-    signal,
-    maxRetries: 0,
-  };
+  const request = { ...options, signal, maxRetries: 0 };
 
   const retry = {
     enabled: true,
@@ -329,7 +315,7 @@ async function complete(
 
   // The timeout covers every attempt and the waits between them.
   const reply = await retryAssistantCall(
-    () => completeSimple(model, context, request),
+    () => ctx.modelRegistry.streamSimple(model, context, request).result(),
     retry,
     signal,
     {
