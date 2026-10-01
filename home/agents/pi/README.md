@@ -49,6 +49,14 @@ Reviews pi-permission-system asks with a model. A one-token first stage allows m
 | `fast.costMultiplier` | `2`                                                       | Price multiple for fast replies                 |
 | `fastMode`            | `false`                                                   | Default on or off. `/fast` saves it with ctrl+s |
 
+### `mcp-ancestors.ts`
+
+Registers MCP servers from `.mcp.json` files in each folder from a root down to the session's folder. Nearer files override farther ones, and a server of the same name in `~/.pi/agent/mcp.json` wins. The root's own file always loads, and files below it load only in a trusted project. It expands `${VAR}` and `${VAR:-default}` as Claude Code does. A bad file or entry shows an error and is skipped.
+
+| Key                  | Default | Meaning                                                       |
+| -------------------- | ------- | ------------------------------------------------------------- |
+| `mcpAncestors.roots` | `[]`    | Root folders. The deepest one that contains the session wins. |
+
 ### `skill-mention.ts`
 
 `$name` anywhere in a prompt loads that skill. No settings.

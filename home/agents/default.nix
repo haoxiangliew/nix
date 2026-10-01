@@ -125,17 +125,6 @@ in
         name = "mergePiSettings";
         file = "${config.programs.pi-coding-agent.configDir}/settings.json";
       })
-      (mutableConfig.mutableJson {
-        name = "mergePiMcpAdapterSettings";
-        file = "${config.programs.pi-coding-agent.configDir}/mcp-adapter.json";
-      })
-      {
-        file."${config.programs.pi-coding-agent.configDir}/mcp-adapter.json".source =
-          (pkgs.formats.json { }).generate "mcp-adapter.json"
-            {
-              settings.ancestorConfigRoots = [ "~/Developer" ];
-            };
-      }
       {
         file."${config.programs.pi-coding-agent.configDir}/skills".source =
           pkgs.linkFarm "pi-skills" config.programs.pi-coding-agent.skills;
@@ -205,8 +194,6 @@ in
                 "tail *" = "allow";
                 "wc *" = "allow";
               };
-
-              mcp."*" = "ask";
 
               external_directory = {
                 "*" = "ask";
@@ -442,8 +429,8 @@ in
             reasoning = "low";
           };
           talk.prompt = talkPrompt;
+          mcpAncestors.roots = [ "~/Developer" ];
           packages = [
-            "npm:pi-mcp-adapter"
             "npm:pi-web-access"
             "npm:@gotgenes/pi-subagents"
             "npm:pi-better-background-tasks"
@@ -468,6 +455,7 @@ in
           "attention.ts" = ./pi/src/attention.ts;
           "auto-mode.ts" = ./pi/src/auto-mode.ts;
           "stream-watchdog.ts" = ./pi/src/stream-watchdog.ts;
+          "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
           "review.ts" =
             "${
               pkgs.applyPatches {
