@@ -426,6 +426,7 @@ in
           ];
           warnings.anthropicExtraUsage = false;
           cacheWarming = "idle";
+          showCacheMissNotices = true;
           autoMode = {
             model = "openai-codex/codex-auto-review";
             reasoning = "low";
