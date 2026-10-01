@@ -240,15 +240,16 @@ function handleRequests(pi: ExtensionAPI, current: () => Config | undefined): vo
       return;
     }
 
+    // Edits in place, so compaction.ts records the final payload whichever extension runs first.
     if (target === "openai") {
-      return { ...payload, service_tier: "priority" };
+      return Object.assign(payload, { service_tier: "priority" });
     }
 
     const betas = payload.betas ?? [];
 
     fastRequest = true;
 
-    return { ...payload, speed: "fast", betas: [...new Set([...betas, config.beta])] };
+    return Object.assign(payload, { speed: "fast", betas: [...new Set([...betas, config.beta])] });
   });
 
   pi.on("message_end", async (event) => {

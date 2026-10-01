@@ -38,6 +38,16 @@ Reviews pi-permission-system asks with a model. A one-token first stage allows m
 | `autoMode.context.toolCallTokens` | `1000`                             | Limit per tool call                                                   |
 | `autoMode.context.threadTokens`   | `30000`                            | Review thread size before it starts over                              |
 
+### `compaction.ts`
+
+Writes every compaction and branch summary (`/tree`, `/end-review`) by forking the session, as Claude Code and Codex do. The fork resends the session's conversation with pi's summary prompt after it, so it sees full tool results and can write up to the model's output limit. On Anthropic models it reuses the session's last request (system prompt, tools, thinking, fast mode, and message prefix), so it reads the conversation from the prompt cache. Otherwise it skips the conversation cache write, since nothing would read it. A notification shows how much of each fork's input came from the cache.
+
+Pi's trigger is a fixed reserve per model, so this compacts at the end of a turn once context reaches `compactAt` of the model's window. It keeps recent messages per pi's `compaction.keepRecentTokens`. Pi's own compaction (overflow, `/compact`) forks too. A fork over `compactAt` drops its oldest turns. Pi's summarizer runs when a fork fails. Esc cancels. Pi uses the `compaction` key, so this one reads `summaryFork`.
+
+| Key                     | Default | Meaning                                                      |
+| ----------------------- | ------- | ------------------------------------------------------------ |
+| `summaryFork.compactAt` | `0.9`   | Share of the model's context window that triggers compaction |
+
 ### `fast.ts`
 
 `/fast` requests fast mode from supported Anthropic models and the priority service tier from OpenAI. `--fast` starts with it on.
@@ -94,9 +104,9 @@ Replaces pi's footer with one line. Invalid settings keep pi's footer. `tokens` 
 
 ### `talk.ts`
 
-`/talk` or shift+tab turns on read-only talk mode. It removes the blocked tools and adds the prompt to each turn. `--talk` starts with it on.
+`/talk` or shift+tab turns on read-only talk mode. It blocks `talk.blockedTools` and adds the prompt to each turn. It keeps the tool list and earlier messages unchanged, so toggling doesn't cost a prompt cache miss. `--talk` starts with it on.
 
 | Key                 | Default             | Meaning                                                  |
 | ------------------- | ------------------- | -------------------------------------------------------- |
 | `talk.prompt`       | none, required      | Prompt added to each turn. nix sets it from `talkPrompt` |
-| `talk.blockedTools` | `["edit", "write"]` | Tools removed and blocked in talk mode                   |
+| `talk.blockedTools` | `["edit", "write"]` | Tools blocked in talk mode                               |

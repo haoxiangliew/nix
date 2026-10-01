@@ -1,6 +1,8 @@
 /**
- * /talk or shift+tab removes the write tools and adds the talk prompt. Bash stays for research.
- * --talk starts with it on. Configured by `talk` in settings.json.
+ * /talk or shift+tab blocks the write tools and adds the talk prompt to each turn. Bash stays for
+ * research. It leaves the tool list and earlier messages alone, since changing either makes the
+ * next request miss the prompt cache. --talk starts with it on. Configured by `talk` in
+ * settings.json.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -13,7 +15,7 @@ const Config = Type.Object(
   {
     // Added to each turn while talk mode is on. Required, so talk mode stays off until it's set.
     prompt: Type.String({ minLength: 1 }),
-    // Removed and blocked while talk mode is on.
+    // Blocked while talk mode is on.
     blockedTools: Type.Array(Type.String(), { default: ["edit", "write"] }),
   },
   { additionalProperties: false, default: {} },
@@ -23,8 +25,9 @@ type Config = Static<typeof Config>;
 
 const CONTEXT_TYPE = "talk-mode-context";
 
-// Blocks writes and adds the talk prompt to each turn while talk mode is on.
-function enforce(pi: ExtensionAPI, current: () => Config | undefined): void {
+const OFF_PROMPT = "Talk mode is off. You can edit files again.";
+
+function blockWrites(pi: ExtensionAPI, current: () => Config | undefined): void {
   pi.on("tool_call", async (event) => {
     if (current()?.blockedTools.includes(event.toolName)) {
       return {
@@ -33,34 +36,25 @@ function enforce(pi: ExtensionAPI, current: () => Config | undefined): void {
       };
     }
   });
-
-  pi.on("before_agent_start", async () => {
-    const config = current();
-
-    if (config !== undefined) {
-      return { message: { customType: CONTEXT_TYPE, content: config.prompt, display: false } };
-    }
-  });
-
-  // Drops talk prompts left in history once talk mode is off.
-  pi.on("context", async (event) => {
-    if (current() === undefined) {
-      return {
-        messages: event.messages.filter(
-          (m) => !(m.role === "custom" && m.customType === CONTEXT_TYPE),
-        ),
-      };
-    }
-  });
 }
 
 export default function (pi: ExtensionAPI) {
   let enabled = false;
   let config: Config | undefined;
-  // Restoring a snapshot of all active tools would drop tools enabled while talk mode was on, such as web_enable's.
-  let removed: string[] = [];
+  let turnedOff = false;
 
-  enforce(pi, () => (enabled ? config : undefined));
+  blockWrites(pi, () => (enabled ? config : undefined));
+
+  // Earlier talk prompts stay in history, so the first turn after talk mode turns off says so.
+  pi.on("before_agent_start", async () => {
+    const content = enabled ? config?.prompt : turnedOff ? OFF_PROMPT : undefined;
+
+    turnedOff = false;
+
+    if (content !== undefined) {
+      return { message: { customType: CONTEXT_TYPE, content, display: false } };
+    }
+  });
 
   pi.registerFlag("talk", {
     description: "Start in talk mode (read-only)",
@@ -68,18 +62,7 @@ export default function (pi: ExtensionAPI) {
     default: false,
   });
 
-  function apply(ctx: ExtensionContext): void {
-    const active = pi.getActiveTools();
-    const blocked = config?.blockedTools ?? [];
-
-    if (enabled) {
-      removed = [...new Set([...removed, ...active.filter((name) => blocked.includes(name))])];
-      pi.setActiveTools(active.filter((name) => !blocked.includes(name)));
-    } else if (removed.length > 0) {
-      pi.setActiveTools([...new Set([...active, ...removed])]);
-      removed = [];
-    }
-
+  function showStatus(ctx: ExtensionContext): void {
     ctx.ui.setStatus("talk", enabled ? ctx.ui.theme.fg("warning", "talk") : undefined);
   }
 
@@ -91,10 +74,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     enabled = !enabled;
-    apply(ctx);
+    turnedOff = !enabled;
+    showStatus(ctx);
     pi.appendEntry("talk-mode", enabled);
     ctx.ui.notify(
-      enabled ? `Talk mode on. ${config.blockedTools.join(", ")} are off.` : "Talk mode off.",
+      enabled ? `Talk mode on. ${config.blockedTools.join(", ")} are blocked.` : "Talk mode off.",
     );
   }
 
@@ -112,13 +96,21 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     config = loadOrReport(ctx, "Talk mode", "talk", Config);
 
-    const saved = ctx.sessionManager
-      .getEntries()
-      .findLast((e) => e.type === "custom" && e.customType === "talk-mode");
+    const entries = ctx.sessionManager.getEntries();
+    const saved = entries.findLast((e) => e.type === "custom" && e.customType === "talk-mode");
+
+    const lastPrompt = entries.findLast(
+      (e) => e.type === "custom_message" && e.customType === CONTEXT_TYPE,
+    );
 
     enabled =
       config !== undefined &&
       (saved?.type === "custom" ? saved.data === true : pi.getFlag("talk") === true);
-    apply(ctx);
+
+    // History can end on a talk prompt while talk mode is off, such as after a restart.
+    turnedOff =
+      !enabled && lastPrompt?.type === "custom_message" && lastPrompt.content !== OFF_PROMPT;
+
+    showStatus(ctx);
   });
 }

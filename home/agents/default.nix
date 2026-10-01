@@ -425,6 +425,7 @@ in
             ))
           ];
           warnings.anthropicExtraUsage = false;
+          cacheWarming = "idle";
           autoMode = {
             model = "openai-codex/codex-auto-review";
             reasoning = "low";
@@ -455,16 +456,16 @@ in
           "skill-mention.ts" = ./pi/src/skill-mention.ts;
           "attention.ts" = ./pi/src/attention.ts;
           "auto-mode.ts" = ./pi/src/auto-mode.ts;
+          "compaction.ts" = ./pi/src/compaction.ts;
           "stream-watchdog.ts" = ./pi/src/stream-watchdog.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
-          "review.ts" =
-            "${
-              pkgs.applyPatches {
-                name = "pi-review";
-                src = inputs.pi-review;
-                patches = [ ./pi/patches/pi-review.patch ];
-              }
-            }/review.ts";
+          "review.ts" = "${
+            pkgs.applyPatches {
+              name = "pi-review";
+              src = inputs.pi-review;
+              patches = [ ./pi/patches/pi-review.patch ];
+            }
+          }/review.ts";
         };
         inherit skills integrations;
       };
