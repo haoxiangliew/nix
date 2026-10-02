@@ -444,6 +444,12 @@ in
             "npm:pi-rewind-hook"
           ];
         };
+        models.providers.openai-codex.modelOverrides = lib.genAttrs [
+          "gpt-6-astra"
+          "gpt-6-luna"
+          "gpt-6-sol"
+          "gpt-6.1-sol"
+        ] (lib.const { contextWindow = 872000; });
         keybindings = {
           "app.thinking.cycle" = "ctrl+t";
           "app.thinking.toggle" = "ctrl+shift+t";
