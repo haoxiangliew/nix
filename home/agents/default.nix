@@ -402,8 +402,6 @@ in
         package = pkgs.llm-agents.pi;
         settings = {
           theme = "light/dracula-pro";
-          # pi 1.0 makes fullscreen the default. Remove once llm-agents ships it.
-          tuiMode = "fullscreen";
           transport = "websocket";
           terminal.showTerminalProgress = true;
           enableInstallTelemetry = false;

@@ -38,6 +38,7 @@
           "mos"
           "orbstack"
           "spotify"
+          "superwhisper"
           "tableplus"
         ];
   };
