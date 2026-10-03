@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
+import { registerFetchWrapper } from "./lib/fetch.ts";
 import { errorMessage, loadOrReport } from "./lib/settings.ts";
 
 const Config = Type.Object(
@@ -50,11 +51,8 @@ interface Session {
   awaitingReply: boolean;
 }
 
-// Subagents load their own copy of this extension in the same process, and each copy installs its
-// wrapper as the global fetch. All copies share this state, so whichever wrapper is current serves
-// every session, and a session that shuts down removes only itself.
+// Subagents run in the same process, so every copy of this extension shares this state.
 interface Shared {
-  original: typeof fetch;
   sessions: Map<string, Session>;
 }
 
@@ -351,6 +349,10 @@ async function watched(
     fetchFailed(watch, outer, cause),
   );
 
+  if (signal.aborted) {
+    fetchFailed(watch, outer, signal.reason);
+  }
+
   watch.receivedHeaders(response);
 
   if (!response.ok || response.body === null) {
@@ -435,7 +437,7 @@ function configFor(shared: Shared, session: Session | undefined): Config | undef
   return session?.config ?? shared.sessions.values().next().value?.config;
 }
 
-function createWrapper(shared: Shared): typeof fetch {
+function createWrapper(shared: Shared, upstream: typeof fetch): typeof fetch {
   const wrapper = (input: FetchInput, init?: RequestInit): Promise<Response> => {
     const untagged = untag(init);
     const session = untagged.tag === null ? undefined : shared.sessions.get(untagged.tag);
@@ -443,7 +445,7 @@ function createWrapper(shared: Shared): typeof fetch {
     const body = config === undefined ? undefined : streamBody(input, untagged.init);
 
     if (config === undefined || body === undefined) {
-      return shared.original(input, untagged.init);
+      return upstream(input, untagged.init);
     }
 
     // Only a request made while a turn waits for its reply shows a countdown, since pi's cache
@@ -451,17 +453,17 @@ function createWrapper(shared: Shared): typeof fetch {
     const display = session?.awaitingReply === true ? session : undefined;
     const watch = new Watch(Buffer.byteLength(body), config, display);
 
-    return watched(shared.original, input, untagged.init, watch);
+    return watched(upstream, input, untagged.init, watch);
   };
 
-  return Object.assign(wrapper, shared.original);
+  return Object.assign(wrapper, upstream);
 }
 
 export default function (pi: ExtensionAPI) {
-  const shared = (globalThis.streamWatchdog ??= {
-    original: globalThis.fetch,
+  const shared: Shared = (globalThis.streamWatchdog ??= {
     sessions: new Map(),
   });
+
   const token = crypto.randomUUID();
   let session: Session | undefined;
 
@@ -480,7 +482,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  globalThis.fetch = createWrapper(shared);
+  registerFetchWrapper("stream-watchdog", (upstream) => createWrapper(shared, upstream));
 
   pi.on("session_start", async (_event, ctx) => {
     const config = loadOrReport(ctx, "The stream watchdog", "streamWatchdog", Config);

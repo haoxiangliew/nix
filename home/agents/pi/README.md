@@ -10,6 +10,26 @@ Extensions and a theme for [pi](https://pi.dev), linked into `~/.pi/agent` by `h
 
 Each extension reads a top-level key in `~/.pi/agent/settings.json`, set from `programs.pi-coding-agent.settings` in `home/agents/default.nix`. Missing fields use the defaults below, and `/reload` picks up changes. An unknown key or invalid value turns the extension off with an error. Activation never deletes keys, so remove renamed ones by hand.
 
+### `anthropic-billing.ts`
+
+Sends pi's Anthropic OAuth requests with the headers, system prompt, and body signature of the installed `claude --print`. Compaction forks and cache warming use it too. No settings.
+
+To learn these values, it runs `claude --print` through its launcher script against a local mock API, so no model call is made. It reads the signing code from the `claude` binary, which it can only do on macOS ARM64 and Linux x86-64. Each request gets the CLI's device and account IDs, pi's session ID, and new prompt and request IDs. It keeps pi's beta flags and adds the CLI's. Pi still handles login, token refresh, instructions, history, tools, and caching, so the body doesn't match the CLI's byte for byte.
+
+It blocks a request when:
+
+- the `claude` binary is a build it can't read
+- `claude` or pi changed on disk since pi loaded it
+- pi's headers or system prompt differ from what pi's built-in Anthropic provider sends
+- pi and the CLI are logged in to different accounts
+- the fingerprint or checksum check fails
+
+After updating `claude` or pi, run `/reload`. Restart pi after adding or removing the extension.
+
+It reads your plan from `claude auth status` once per `/reload`, so run `/reload` after you switch accounts or plans. Enterprise may use usage credits. On other plans, each successful response must have an `anthropic-ratelimit-unified-representative-claim` header that isn't `overage`. Otherwise it cancels the stream and blocks the rest of the session. Anthropic may still charge that one request, so turn off usage credits on Max if you never want to spend them.
+
+Captured headers and bodies stay in memory. Requests with an API key, and requests to other endpoints, pass through unchanged. This extension and `stream-watchdog.ts` both wrap the global `fetch`, so code that brings its own `fetch` skips these checks.
+
 ### `attention.ts`
 
 Notifies when pi waits on a prompt or finishes. In herdr it marks prompts as blocked and only notifies for the active tab.

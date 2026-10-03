@@ -41,6 +41,7 @@ import {
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
+import { billingSessionHeaders } from "./lib/billing-session.ts";
 import { errorMessage, loadOrReport } from "./lib/settings.ts";
 
 type AgentMessage = ContextWithSystemEvent["messages"][number];
@@ -443,7 +444,14 @@ async function piBranchSummary(
     reserveTokens: settings.getBranchSummarySettings().reserveTokens + maxTokens,
     retry: settings.getRetrySettings(),
     streamFn: (requestModel, context, options) =>
-      ctx.modelRegistry.streamSimple(requestModel, context, { ...options, maxTokens }),
+      ctx.modelRegistry.streamSimple(requestModel, context, {
+        ...options,
+        maxTokens,
+        headers: {
+          ...options?.headers,
+          ...billingSessionHeaders(requestModel.provider, ctx.sessionManager.getSessionId()),
+        },
+      }),
   });
 
   if (result.aborted) {
@@ -511,6 +519,7 @@ export default function compaction(pi: ExtensionAPI) {
               signal,
               reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
               sessionId: ctx.sessionManager.getSessionId(),
+              headers: billingSessionHeaders(model.provider, ctx.sessionManager.getSessionId()),
               onPayload: (built) =>
                 Value.Check(Payload, built) ? forkPayload(payload, built) : undefined,
             },

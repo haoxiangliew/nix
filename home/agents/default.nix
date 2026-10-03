@@ -425,6 +425,10 @@ in
           warnings.anthropicExtraUsage = false;
           cacheWarming = "idle";
           showCacheMissNotices = true;
+          streamWatchdog = {
+            firstEventMs = 60000;
+            log = "all";
+          };
           autoMode = {
             model = "openai-codex/codex-auto-review";
             reasoning = "low";
@@ -457,6 +461,7 @@ in
           "lib" = ./pi/src/lib;
           "talk.ts" = ./pi/src/talk.ts;
           "fast.ts" = ./pi/src/fast.ts;
+          "anthropic-billing.ts" = ./pi/src/anthropic-billing.ts;
           "statusline.ts" = ./pi/src/statusline.ts;
           "skill-mention.ts" = ./pi/src/skill-mention.ts;
           "attention.ts" = ./pi/src/attention.ts;
