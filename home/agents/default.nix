@@ -31,19 +31,22 @@ let
   herdrAgents = {
     claude-code = {
       target = "claude";
-      after = "mergeClaudeCodeSettings";
+      after = [ "mergeClaudeCodeSettings" ];
     };
     codex = {
       target = "codex";
-      after = "mergeCodexSettings";
+      after = [ "mergeCodexSettings" ];
     };
     opencode = {
       target = "opencode";
-      after = "mergeOpenCodeSettings";
+      after = [
+        "mergeOpenCodeSettings"
+        "mergeOpenCodeTuiSettings"
+      ];
     };
     pi-coding-agent = {
       target = "pi";
-      after = "mergePiSettings";
+      after = [ "mergePiSettings" ];
     };
   };
 
@@ -120,6 +123,10 @@ in
       (mutableConfig.mutableJson {
         name = "mergeOpenCodeSettings";
         file = "${config.xdg.configHome}/opencode/opencode.json";
+      })
+      (mutableConfig.mutableJson {
+        name = "mergeOpenCodeTuiSettings";
+        file = "${config.xdg.configHome}/opencode/tui.json";
       })
       (mutableConfig.mutableJson {
         name = "mergePiSettings";
@@ -260,7 +267,7 @@ in
             in
             {
               "installHerdrIntegration-${name}" = lib.mkIf (cfg.enable && cfg.integrations.herdr != null) (
-                lib.hm.dag.entryAfter [ "linkGeneration" agent.after ] ''
+                lib.hm.dag.entryAfter ([ "linkGeneration" ] ++ agent.after) ''
                   run ${lib.getExe cfg.integrations.herdr} integration install ${agent.target}
                 ''
               );
@@ -381,16 +388,21 @@ in
             ${talkPrompt}
           '';
         };
-        tui = {
-          theme = "system";
-          scroll_acceleration = {
-            enabled = true;
-          };
-          attention = {
-            enabled = true;
-            sound = false;
-          };
-        };
+        tui = lib.mkMerge [
+          {
+            theme = "system";
+            scroll_acceleration = {
+              enabled = true;
+            };
+            attention = {
+              enabled = true;
+              sound = false;
+            };
+          }
+          (lib.mkIf (config.programs.opencode.integrations.herdr != null) {
+            plugin = [ "./herdr-tui-session.js" ];
+          })
+        ];
         inherit skills integrations;
       };
       pi-coding-agent = {
