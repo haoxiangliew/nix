@@ -1,8 +1,8 @@
 /**
  * Reviews pi-permission-system asks with a model. The reviewer sees the user's messages and the
  * agent's tool calls, never tool results or the agent's own text. A one-token first stage settles
- * most asks over a per-session Codex WebSocket thread that sends only what is new. A flagged ask
- * gets a reasoned verdict. A call that fails with a transient error retries with backoff within its
+ * most asks. On openai-codex it uses a per-session WebSocket thread that sends only what is new. A
+ * flagged ask gets a reasoned verdict. A call that fails with a transient error retries with backoff within its
  * timeout. Other errors and repeated denials fall back to the permission dialog. Configured by
  * `autoMode` in settings.json.
  */
@@ -38,7 +38,11 @@ const SERVICES = Symbol.for("@gotgenes/pi-permission-system:session-services");
 
 const Config = Type.Object(
   {
-    model: Type.String({ pattern: "^[^/\\s]+/\\S+$", default: "openai-codex/codex-auto-review" }),
+    // Tried in order. The first one with credentials reviews.
+    models: Type.Array(Type.String({ pattern: "^[^/\\s]+/\\S+$" }), {
+      minItems: 1,
+      default: ["openai/codex-auto-review", "openai-codex/codex-auto-review"],
+    }),
     // Second stage only; the first stage runs without reasoning.
     reasoning: Type.Enum(["minimal", "low", "medium", "high", "xhigh", "max"], { default: "low" }),
     firstStage: Type.Boolean({ default: true }),
@@ -277,19 +281,37 @@ function verdictNotice({ verdict, reason = "" }: Decision): string | undefined {
   return verdict.kind === "deny" ? `denied this. ${reason}`.trim() : undefined;
 }
 
-// An unregistered id, such as codex-auto-review, borrows another model's settings from its provider.
-function reviewerModel(ctx: ExtensionContext, ref: string): Model<Api> | undefined {
+// Undefined when the provider has no credentials. An unregistered id, such as codex-auto-review,
+// borrows the settings of another model from the same provider.
+function usableModel(ctx: ExtensionContext, ref: string): Model<Api> | undefined {
   const [provider = "", ...rest] = ref.split("/");
   const id = rest.join("/");
   const registered = ctx.modelRegistry.find(provider, id);
 
   if (registered !== undefined) {
-    return registered;
+    return ctx.modelRegistry.hasConfiguredAuth(registered) ? registered : undefined;
   }
 
   const donor = ctx.modelRegistry.getAvailable().find((model) => model.provider === provider);
 
   return donor && { ...donor, id, name: id };
+}
+
+interface Reviewer {
+  ref: string;
+  model: Model<Api>;
+}
+
+function findReviewer(ctx: ExtensionContext, refs: string[]): Reviewer | undefined {
+  for (const ref of refs) {
+    const model = usableModel(ctx, ref);
+
+    if (model !== undefined) {
+      return { ref, model };
+    }
+  }
+
+  return undefined;
 }
 
 async function complete(
@@ -448,7 +470,7 @@ export default function (pi: ExtensionAPI) {
       return { kind: "defer" };
     }
 
-    const model = reviewerModel(ctx, cfg.model);
+    const reviewer = findReviewer(ctx, cfg.models);
 
     const tell = (message: string): void => ctx.ui.notify(`Auto mode ${message}`, "warning");
 
@@ -471,10 +493,12 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    if (model === undefined) {
+    if (reviewer === undefined) {
+      const models = cfg.models.join(", ");
+
       return skip(
-        `model ${cfg.model} is unavailable`,
-        `couldn't find model ${cfg.model}, so you decide.`,
+        `no credentials for ${models}`,
+        `has no credentials for any of ${models}, so you decide.`,
       );
     }
 
@@ -493,12 +517,12 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus(NAME, "reviewing…");
 
     try {
-      const decision = await review(ctx, cfg, model, details, onRetry);
+      const decision = await review(ctx, cfg, reviewer.model, details, onRetry);
 
       denials = decision.verdict.kind === "deny" ? denials + 1 : 0;
       log.review("auto_mode_decision", {
         requestId: details.requestId,
-        model: cfg.model,
+        model: reviewer.ref,
         stage: decision.stage,
         decision: decision.verdict.kind,
         reason: decision.reason,

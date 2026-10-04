@@ -156,10 +156,8 @@ in
                   }
                 );
             authorizerChain = [ "auto-mode" ];
+            # tier 3: everything else asks, and the reviewer decides
             permission = {
-              # tier 3: the reviewer decides everything else
-              "*" = "ask";
-
               # tier 1: read-only tools
               read = "allow";
               grep = "allow";
@@ -179,7 +177,6 @@ in
 
               # tier 1: read-only commands. Never add interpreters or package-manager scripts, which run arbitrary code
               bash = {
-                "*" = "ask";
                 "git status*" = "allow";
                 "git diff*" = "allow";
                 "git log*" = "allow";
@@ -196,7 +193,6 @@ in
               };
 
               external_directory = {
-                "*" = "ask";
                 "/tmp/*" = "allow";
                 "/private/tmp/*" = "allow";
                 "*/.herdr/worktrees/*" = "allow";
@@ -425,14 +421,6 @@ in
           warnings.anthropicExtraUsage = false;
           cacheWarming = "idle";
           showCacheMissNotices = true;
-          streamWatchdog = {
-            firstEventMs = 60000;
-            log = "all";
-          };
-          autoMode = {
-            model = "openai-codex/codex-auto-review";
-            reasoning = "low";
-          };
           talk.prompt = talkPrompt;
           mcpAncestors.roots = [ "~/Developer" ];
           packages = [
@@ -446,12 +434,20 @@ in
             "npm:pi-rewind-hook"
           ];
         };
-        models.providers.openai-codex.modelOverrides = lib.genAttrs [
-          "gpt-6-astra"
-          "gpt-6-luna"
-          "gpt-6-sol"
-          "gpt-6.1-sol"
-        ] (lib.const { contextWindow = 872000; });
+        models.providers = {
+          openai.modelOverrides = lib.genAttrs [
+            "gpt-6-astra"
+            "gpt-6-luna"
+            "gpt-6-sol"
+            "gpt-6.1-sol"
+          ] (lib.const { contextWindow = 922000; });
+          openai-codex.modelOverrides = lib.genAttrs [
+            "gpt-6-astra"
+            "gpt-6-luna"
+            "gpt-6-sol"
+            "gpt-6.1-sol"
+          ] (lib.const { contextWindow = 872000; });
+        };
         keybindings = {
           "app.thinking.cycle" = "ctrl+t";
           "app.thinking.toggle" = "ctrl+shift+t";

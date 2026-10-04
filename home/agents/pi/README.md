@@ -43,20 +43,20 @@ Notifies when pi waits on a prompt or finishes. In herdr it marks prompts as blo
 
 Reviews pi-permission-system asks with a model. A one-token first stage allows most asks, and a flagged ask gets a reasoned verdict. When auto mode denies an ask or leaves it to you, a notification says why. Dropped connections and 5xx errors retry with backoff within the timeout. Other errors and repeated denials open the dialog.
 
-| Key                               | Default                            | Meaning                                                               |
-| --------------------------------- | ---------------------------------- | --------------------------------------------------------------------- |
-| `autoMode.model`                  | `"openai-codex/codex-auto-review"` | Reviewer model as `provider/id`                                       |
-| `autoMode.reasoning`              | `"low"`                            | Reasoning for the second stage                                        |
-| `autoMode.firstStage`             | `true`                             | Run the one-token first stage                                         |
-| `autoMode.timeoutMs`              | `30000`                            | Timeout for each model call, including its retries                    |
-| `autoMode.maxRetries`             | `3`                                | Retries per model call after a transient error                        |
-| `autoMode.retryDelayMs`           | `250`                              | Wait before the first retry                                           |
-| `autoMode.maxRetryDelayMs`        | `2000`                             | Longest wait between retries                                          |
-| `autoMode.maxDenials`             | `3`                                | Denials in a row before asks go to the dialog until your next message |
-| `autoMode.environment`            | `[]`                               | Orgs, domains, and services the reviewer treats as yours              |
-| `autoMode.context.messageTokens`  | `5000`                             | Limit per user message                                                |
-| `autoMode.context.toolCallTokens` | `1000`                             | Limit per tool call                                                   |
-| `autoMode.context.threadTokens`   | `30000`                            | Review thread size before it starts over                              |
+| Key                               | Default                                                          | Meaning                                                                  |
+| --------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `autoMode.models`                 | `["openai/codex-auto-review", "openai-codex/codex-auto-review"]` | Reviewer models as `provider/id`. The first one with credentials reviews |
+| `autoMode.reasoning`              | `"low"`                                                          | Reasoning for the second stage                                           |
+| `autoMode.firstStage`             | `true`                                                           | Run the one-token first stage                                            |
+| `autoMode.timeoutMs`              | `30000`                                                          | Timeout for each model call, including its retries                       |
+| `autoMode.maxRetries`             | `3`                                                              | Retries per model call after a transient error                           |
+| `autoMode.retryDelayMs`           | `250`                                                            | Wait before the first retry                                              |
+| `autoMode.maxRetryDelayMs`        | `2000`                                                           | Longest wait between retries                                             |
+| `autoMode.maxDenials`             | `3`                                                              | Denials in a row before asks go to the dialog until your next message    |
+| `autoMode.environment`            | `[]`                                                             | Orgs, domains, and services the reviewer treats as yours                 |
+| `autoMode.context.messageTokens`  | `5000`                                                           | Limit per user message                                                   |
+| `autoMode.context.toolCallTokens` | `1000`                                                           | Limit per tool call                                                      |
+| `autoMode.context.threadTokens`   | `30000`                                                          | Review thread size before it starts over                                 |
 
 ### `compaction.ts`
 
@@ -108,7 +108,7 @@ Pi's `retry` settings control the retry, and Esc cancels it. The statusline's `s
 | -------------------------------- | ---------- | ------------------------------------------------------------ |
 | `streamWatchdog.headersMs`       | `60000`    | Wait for response headers                                    |
 | `streamWatchdog.uploadMsPer32KB` | `1000`     | Extra header wait per 32 KB of request body                  |
-| `streamWatchdog.firstEventMs`    | `180000`   | Wait from the headers to the first event                     |
+| `streamWatchdog.firstEventMs`    | `60000`    | Wait from the headers to the first event                     |
 | `streamWatchdog.eventIdleMs`     | `90000`    | Longest gap between events, not counting pings               |
 | `streamWatchdog.byteIdleMs`      | `60000`    | Longest gap between bytes, counting pings                    |
 | `streamWatchdog.warnMs`          | `30000`    | Silence before the status line shows the countdown           |

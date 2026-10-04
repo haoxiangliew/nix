@@ -24,7 +24,7 @@ const Config = Type.Object(
     headersMs: Type.Integer({ minimum: 1000, default: 60_000 }),
     uploadMsPer32KB: Type.Integer({ minimum: 0, default: 1000 }),
     // Wait from the headers to the first event, which covers queueing and prefill.
-    firstEventMs: Type.Integer({ minimum: 1000, default: 180_000 }),
+    firstEventMs: Type.Integer({ minimum: 1000, default: 60_000 }),
     // Pings don't count, so this catches a server that holds the stream open without generating.
     eventIdleMs: Type.Integer({ minimum: 1000, default: 90_000 }),
     // Applies once events flow. Pings count, so this catches a dead connection.

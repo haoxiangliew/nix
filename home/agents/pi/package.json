@@ -10,10 +10,10 @@
     "taze": "taze"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.0",
-    "@earendil-works/pi-coding-agent": "1.0.0",
-    "@earendil-works/pi-tui": "1.0.0",
-    "@gotgenes/pi-permission-system": "37.0.0",
+    "@earendil-works/pi-ai": "1.0.1",
+    "@earendil-works/pi-coding-agent": "1.0.1",
+    "@earendil-works/pi-tui": "1.0.1",
+    "@gotgenes/pi-permission-system": "39.0.3",
     "@types/bun": "1.4.2",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
