@@ -229,25 +229,9 @@ in
         file."${config.programs.pi-coding-agent.configDir}/web-search.json".source =
           (pkgs.formats.json { }).generate "web-search.json"
             {
-              webSearch.allowedProviders = [
-                "openai"
-                "exa"
-                "parallel-mcp"
-              ];
-              searchRouting = {
-                providers = [
-                  "openai"
-                  "exa"
-                  "parallel-mcp"
-                ];
-                fallbackOn = [
-                  "unsupported"
-                  "transient"
-                  "quota"
-                  "network"
-                  "invalid-response"
-                ];
-              };
+              provider = "openai";
+              webSearch.allowedProviders = [ "openai" ];
+              openaiSearchModel = "gpt-6.1-sol";
               youtube.enabled = false;
               video.enabled = false;
               commands = lib.genAttrs [
