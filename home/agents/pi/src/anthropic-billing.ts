@@ -137,7 +137,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     try {
-      await identity(ctx.model.id, ctx.signal);
+      await identity(ctx.model.id);
     } catch (cause) {
       ctx.ui.notify(
         cause instanceof Error
@@ -146,6 +146,13 @@ export default function (pi: ExtensionAPI) {
         "error",
       );
     }
+  };
+
+  // Startup and model switches don't wait for discovery. Requests wait for the same cached lookup.
+  const prefetch = (ctx: ExtensionContext): void => {
+    void discover(ctx).catch(() => {
+      // The session ended before the error notice could show.
+    });
   };
 
   function setSession(ctx: ExtensionContext): void {
@@ -167,10 +174,10 @@ export default function (pi: ExtensionAPI) {
         return billingFetch(upstream, (model, signal) => identity(model, signal, owner), owner);
       },
     });
-    await discover(ctx);
+    prefetch(ctx);
   });
 
-  pi.on("model_select", async (_event, ctx) => discover(ctx));
+  pi.on("model_select", async (_event, ctx) => prefetch(ctx));
 
   pi.on("before_agent_start", async (_event, ctx) => {
     setSession(ctx);

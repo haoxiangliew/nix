@@ -1,42 +1,82 @@
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { Type } from "typebox";
+import { Type, type StaticDecode } from "typebox";
 import { Value } from "typebox/value";
 
 import { discoverCliProfile, type CliProfile } from "./claude-profile.ts";
-import { extractCliSigner, validateCliChecksum, type CliSignerConfig } from "./claude-signer.ts";
+import { extractCliSigner, validateCliChecksum } from "./claude-signer.ts";
 import { awaitAbort, cached } from "./promise.ts";
 
-export interface ClaudeIdentity {
-  launchers: readonly LauncherStamp[];
-  executable: string;
-  executableStamp: string;
-  version: string;
+const Text = Type.String();
+
+const Count = Type.Integer({ minimum: 0 });
+
+const Bytes = Type.Codec(Type.String())
+  .Decode((text): Buffer => Buffer.from(text, "base64"))
+  .Encode((bytes) => bytes.toString("base64"));
+
+const LauncherStamp = Type.Object({ path: Text, target: Text, stamp: Text });
+
+// Every field comes from the CLI binary, so it's safe to save. Don't add account, device, or
+// session IDs.
+const Source = Type.Object({
+  launchers: Type.Array(LauncherStamp),
+  executable: Text,
+  executableStamp: Text,
+  version: Text,
+  signer: Type.Object({
+    seed: Type.Codec(Type.String({ pattern: "^\\d+$" }))
+      .Decode(BigInt)
+      .Encode(String),
+    bodyMarker: Bytes,
+    modelMarker: Bytes,
+    omissions: Type.Immutable(
+      Type.Array(
+        Type.Object({
+          kind: Type.Union([Type.Literal("array"), Type.Literal("string"), Type.Literal("number")]),
+          marker: Bytes,
+        }),
+      ),
+    ),
+    placeholder: Bytes,
+    window: Count,
+    checksumOffset: Count,
+    checksumDigits: Count,
+  }),
+  piPrompt: Text,
+  runtimePath: Text,
+  runtimeStamp: Text,
+  profilePath: Text,
+  prefix: Text,
+  salt: Text,
+  indices: Type.Array(Count),
+  padding: Text,
+  algorithm: Text,
+  digestLength: Count,
+  origin: Text,
+});
+
+type LauncherStamp = StaticDecode<typeof LauncherStamp>;
+
+type SourceIdentity = StaticDecode<typeof Source>;
+
+export interface ClaudeIdentity extends SourceIdentity {
   profile: CliProfile;
   subscriptionType: string;
   organizationId: string;
-  signer: CliSignerConfig;
-  piPrompt: string;
-  runtimePath: string;
-  runtimeStamp: string;
-  profilePath: string;
-  prefix: string;
-  salt: string;
-  indices: number[];
-  padding: string;
-  algorithm: string;
-  digestLength: number;
-  origin: string;
-}
-
-interface LauncherStamp {
-  path: string;
-  target: string;
-  stamp: string;
 }
 
 function matched(source: string, pattern: RegExp, name: string): RegExpExecArray {
@@ -243,8 +283,6 @@ function fileStamp(path: string): string {
   return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 }
 
-type SourceIdentity = Omit<ClaudeIdentity, "profile" | "subscriptionType" | "organizationId">;
-
 const runFile = promisify(execFile);
 
 const AuthStatus = Type.Object({
@@ -274,8 +312,6 @@ async function readSubscription(launcher: string) {
     accountKey: createHash("sha256").update(status.email).digest("hex"),
   };
 }
-
-const Text = Type.String();
 
 const ProbeBody = Type.Object({
   messages: Type.Array(
@@ -312,6 +348,64 @@ export function isUuid(value: string): boolean {
 }
 
 const sources = new Map<string, Promise<SourceIdentity>>();
+
+const SavedSource = Type.Object({ code: Text, source: Source });
+
+const savedPath = () =>
+  join(getAgentDir(), "extensions", "anthropic-billing", "source-identity.json");
+
+// Edits to the scanning code invalidate saved sources.
+function scanHash(): string {
+  const hash = createHash("sha256");
+
+  for (const file of [
+    "claude-identity",
+    "claude-signer",
+    "claude-signer-arm64",
+    "claude-signer-x64",
+    "binary",
+    "macho",
+    "elf",
+  ]) {
+    hash.update(readFileSync(new URL(`./${file}.ts`, import.meta.url)));
+  }
+
+  return hash.digest("hex");
+}
+
+function readSavedSource(launcher: string, version: string): SourceIdentity | undefined {
+  try {
+    const { code, source } = Value.Decode(
+      SavedSource,
+      JSON.parse(readFileSync(savedPath(), "utf8")),
+    );
+
+    assertCliUnchanged(source);
+
+    return code === scanHash() &&
+      source.version === version &&
+      source.launchers[0]?.path === resolve(launcher)
+      ? source
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveSource(source: SourceIdentity): void {
+  const path = savedPath();
+  const tmp = `${path}.${crypto.randomUUID()}.tmp`;
+
+  try {
+    const saved = Value.Encode(SavedSource, { code: scanHash(), source });
+
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(tmp, JSON.stringify(saved), { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    rmSync(tmp, { force: true });
+  }
+}
 
 const subscriptions = new Map<string, ReturnType<typeof readSubscription>>();
 
@@ -443,6 +537,31 @@ function verifyTraceFields(profile: CliProfile): void {
   }
 }
 
+// Rescans once when the CLI rejects the source, because a saved source can be stale. Saves only a
+// verified source.
+async function captureProfile(
+  launcher: string,
+  version: string,
+  model: string,
+  sourceKey: string,
+  source: SourceIdentity,
+): Promise<CliProfile> {
+  const captured = await discoverCliProfile(launcher, model);
+  let verified = source;
+
+  try {
+    verifyProfile(verified, captured);
+  } catch {
+    sources.delete(sourceKey);
+    verified = await cached(sources, sourceKey, () => sourceIdentity(launcher, version));
+    verifyProfile(verified, captured);
+  }
+
+  saveSource(verified);
+
+  return captured;
+}
+
 export async function readClaudeIdentity(
   launcher: string,
   version: string,
@@ -452,31 +571,30 @@ export async function readClaudeIdentity(
 ): Promise<ClaudeIdentity> {
   const sourceKey = `${launcher}:${version}`;
 
-  const source = await awaitAbort(
-    cached(sources, sourceKey, () => sourceIdentity(launcher, version)),
+  const loadSource = () =>
+    cached(
+      sources,
+      sourceKey,
+      async () => readSavedSource(launcher, version) ?? sourceIdentity(launcher, version),
+    );
+
+  const [loaded, { accountKey, ...subscription }] = await awaitAbort(
+    Promise.all([loadSource(), cached(subscriptions, sourceKey, () => readSubscription(launcher))]),
     signal,
   );
 
-  assertCliUnchanged(source);
-
-  const { accountKey, ...subscription } = await awaitAbort(
-    cached(subscriptions, sourceKey, () => readSubscription(launcher)),
-    signal,
-  );
+  assertCliUnchanged(loaded);
 
   validateSubscription?.(subscription.subscriptionType);
-  const profileKey = `${source.executableStamp}:${subscription.organizationId}:${accountKey}:${model}`;
+  const profileKey = `${loaded.executableStamp}:${subscription.organizationId}:${accountKey}:${model}`;
 
   const profile = await awaitAbort(
-    cached(profiles, profileKey, async () => {
-      const captured = await discoverCliProfile(launcher, model);
-      verifyProfile(source, captured);
-
-      return captured;
-    }),
+    cached(profiles, profileKey, () => captureProfile(launcher, version, model, sourceKey, loaded)),
     signal,
   );
 
+  // captureProfile replaces a source that the CLI rejects.
+  const source = await awaitAbort(loadSource(), signal);
   assertCliUnchanged(source);
 
   return { ...source, profile, ...subscription };

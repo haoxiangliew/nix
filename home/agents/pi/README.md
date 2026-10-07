@@ -28,7 +28,9 @@ After updating `claude` or pi, run `/reload`. Restart pi after adding or removin
 
 It reads your plan from `claude auth status` once per `/reload`, so run `/reload` after you switch accounts or plans. Enterprise may use usage credits. On other plans, each successful response must have an `anthropic-ratelimit-unified-representative-claim` header that isn't `overage`. Otherwise it cancels the stream and blocks the rest of the session. Anthropic may still charge that one request, so turn off usage credits on Max if you never want to spend them.
 
-Captured headers and bodies stay in memory. Requests with an API key, and requests to other endpoints, pass through unchanged. This extension and `stream-watchdog.ts` both wrap the global `fetch`, so code that brings its own `fetch` skips these checks.
+Captured headers and bodies, and the account, device, and session IDs, stay in memory. The values it reads from the `claude` binary hold no IDs or credentials. It saves them to `~/.pi/agent/extensions/anthropic-billing/source-identity.json` after the probe verifies them, so the next start skips rescanning the binary. It ignores the file after the launchers, the binary, the pi runtime, or the scanning code change. If the probe rejects the saved values, it rescans the binary and overwrites the file. The probe and `claude auth status` still run on every start. Startup doesn't wait for them, but the first request does.
+
+Requests with an API key, and requests to other endpoints, pass through unchanged. This extension and `stream-watchdog.ts` both wrap the global `fetch`, so code that brings its own `fetch` skips these checks.
 
 ### `attention.ts`
 
