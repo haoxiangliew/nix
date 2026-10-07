@@ -197,11 +197,14 @@ in
                 "head *" = "allow";
                 "tail *" = "allow";
                 "wc *" = "allow";
+                "rg *--pre*" = "ask";
               };
 
               external_directory = {
                 "/tmp/*" = "allow";
                 "/private/tmp/*" = "allow";
+                "/var/folders/*" = "allow";
+                "/private/var/folders/*" = "allow";
                 "*/.herdr/worktrees/*" = "allow";
               };
               external_directory_read."*" = "allow";

@@ -41,22 +41,30 @@ Notifies when pi waits on a prompt or finishes. In herdr it marks prompts as blo
 
 ### `auto-mode.ts`
 
-Reviews pi-permission-system asks with a model. A one-token first stage allows most asks, and a flagged ask gets a reasoned verdict. When auto mode denies an ask or leaves it to you, a notification says why. Dropped connections and 5xx errors retry with backoff within the timeout. Other errors and repeated denials open the dialog.
+Reviews pi-permission-system asks with a model. The static rules in `home/agents/default.nix` allow only what is safe without review, and every other ask comes here.
 
-| Key                               | Default                                                          | Meaning                                                                  |
-| --------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `autoMode.models`                 | `["openai/codex-auto-review", "openai-codex/codex-auto-review"]` | Reviewer models as `provider/id`. The first one with credentials reviews |
-| `autoMode.reasoning`              | `"low"`                                                          | Reasoning for the second stage                                           |
-| `autoMode.firstStage`             | `true`                                                           | Run the one-token first stage                                            |
-| `autoMode.timeoutMs`              | `30000`                                                          | Timeout for each model call, including its retries                       |
-| `autoMode.maxRetries`             | `3`                                                              | Retries per model call after a transient error                           |
-| `autoMode.retryDelayMs`           | `250`                                                            | Wait before the first retry                                              |
-| `autoMode.maxRetryDelayMs`        | `2000`                                                           | Longest wait between retries                                             |
-| `autoMode.maxDenials`             | `3`                                                              | Denials in a row before asks go to the dialog until your next message    |
-| `autoMode.environment`            | `[]`                                                             | Orgs, domains, and services the reviewer treats as yours                 |
-| `autoMode.context.messageTokens`  | `5000`                                                           | Limit per user message                                                   |
-| `autoMode.context.toolCallTokens` | `1000`                                                           | Limit per tool call                                                      |
-| `autoMode.context.threadTokens`   | `30000`                                                          | Review thread size before it starts over                                 |
+The reviewer trusts your messages and your answers to `ask_user_question`. It treats the agent's tool calls, and the output of its own checks, as untrusted. It never sees the agent's tool output or the agent's own text. A one-word classifier allows most asks. The rest get an assessment of their risk and of how far you authorized them, which decides allow or deny. Before deciding, the assessment can run programs without a shell, limited to the programs and paths the agent may use without asking. The review log records each one as `auto_mode_run`. When auto mode denies an ask, or allows one that pi-permission-system still sends to you, a notification says why.
+
+pi-permission-system won't let a reviewer allow `path` or `external_directory` asks, such as writes outside the project. Auto mode can deny them. Otherwise they open the dialog. Dropped connections and 5xx errors retry with backoff within the timeout. Other errors and repeated denials open the dialog.
+
+| Key                                     | Default                                                          | Meaning                                                                  |
+| --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `autoMode.models`                       | `["openai/codex-auto-review", "openai-codex/codex-auto-review"]` | Reviewer models as `provider/id`. The first one with credentials reviews |
+| `autoMode.reasoning`                    | `"low"`                                                          | Reasoning for the second stage                                           |
+| `autoMode.firstStage`                   | `true`                                                           | Run the one-word first stage                                             |
+| `autoMode.timeoutMs`                    | `30000`                                                          | Timeout for each model call, including its retries                       |
+| `autoMode.maxRetries`                   | `3`                                                              | Retries per model call after a transient error                           |
+| `autoMode.retryDelayMs`                 | `250`                                                            | Wait before the first retry                                              |
+| `autoMode.maxRetryDelayMs`              | `2000`                                                           | Longest wait between retries                                             |
+| `autoMode.maxDenials`                   | `3`                                                              | Denials in a row before asks go to the dialog until your next message    |
+| `autoMode.environment`                  | `[]`                                                             | Orgs, domains, and services the reviewer trusts                          |
+| `autoMode.context.messageTokens`        | `5000`                                                           | Limit per user message                                                   |
+| `autoMode.context.toolCallTokens`       | `1000`                                                           | Limit per tool call                                                      |
+| `autoMode.context.threadTokens`         | `30000`                                                          | Review thread size before it starts over                                 |
+| `autoMode.investigation.maxCommands`    | `5`                                                              | Programs the assessment may run per review. `0` turns this off           |
+| `autoMode.investigation.timeoutMs`      | `10000`                                                          | Timeout per program                                                      |
+| `autoMode.investigation.totalTimeoutMs` | `60000`                                                          | Time for the whole second stage, checked before each model call          |
+| `autoMode.investigation.outputTokens`   | `2000`                                                           | Output kept per program                                                  |
 
 ### `compaction.ts`
 
