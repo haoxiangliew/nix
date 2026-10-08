@@ -26,6 +26,27 @@ let
 
   integrations = pkgsOf config.home.packages "herdr" lib.id;
 
+  # version and hash come from bun.lock, so `bun update lovely-mermaid` bumps it
+  lovelyMermaid =
+    let
+      # bun.lock is JSON with trailing commas, which builtins.fromJSON rejects
+      lock = builtins.fromJSON (
+        lib.concatMapStrings (part: if builtins.isList part then builtins.head part else part) (
+          builtins.split ",([[:space:]]*[]}])" (builtins.readFile ./pi/bun.lock)
+        )
+      );
+      entry = lock.packages."lovely-mermaid";
+      version = lib.removePrefix "lovely-mermaid@" (builtins.elemAt entry 0);
+      tarball = pkgs.fetchurl {
+        url = "https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-${version}.tgz";
+        hash = builtins.elemAt entry 3;
+      };
+    in
+    pkgs.runCommand "lovely-mermaid-${version}" { } ''
+      mkdir $out
+      tar -xzf ${tarball} -C $out --strip-components=1
+    '';
+
   talkPrompt = "You are a read-only agent that works through code changes with the user. Inspect and reason about the codebase, but never modify, create, or delete files, whether with edit tools or with shell commands that write to disk. When you propose a change, write the complete updated code in your response so the user can review it, give feedback, and apply it. Refine your proposal from their replies instead of finalizing edits yourself. Never claim to have edited a file, and never try to.";
 
   herdrAgents = {
@@ -402,6 +423,7 @@ in
           theme = "light/dracula-pro";
           transport = "websocket";
           terminal.showTerminalProgress = true;
+          markdown.mermaid = "off";
           enableInstallTelemetry = false;
           # use bun as npm. pi's update check calls `npm view`, so run that as `bun info`
           npmCommand = [
@@ -467,6 +489,8 @@ in
           "compaction.ts" = ./pi/src/compaction.ts;
           "stream-watchdog.ts" = ./pi/src/stream-watchdog.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
+          "mermaid.ts" = ./pi/src/mermaid.ts;
+          "node_modules/lovely-mermaid" = lovelyMermaid;
           "review.ts" = "${
             pkgs.applyPatches {
               name = "pi-review";

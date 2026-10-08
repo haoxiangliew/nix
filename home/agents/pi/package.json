@@ -10,15 +10,16 @@
     "taze": "taze"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.1",
-    "@earendil-works/pi-coding-agent": "1.0.1",
-    "@earendil-works/pi-tui": "1.0.1",
-    "@gotgenes/pi-permission-system": "39.0.3",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
+    "@gotgenes/pi-permission-system": "40.1.1",
     "@types/bun": "1.4.2",
-    "oxfmt": "0.71.0",
-    "oxlint": "1.86.0",
+    "lovely-mermaid": "0.3.3",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
     "oxlint-tsgolint": "7.0.2003",
     "taze": "21.3.0",
-    "typebox": "1.3.34"
+    "typebox": "1.3.36"
   }
 }

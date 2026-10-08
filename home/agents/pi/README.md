@@ -103,6 +103,12 @@ Registers MCP servers from `.mcp.json` files in each folder from a root down to 
 | -------------------- | ------- | ------------------------------------------------------------- |
 | `mcpAncestors.roots` | `[]`    | Root folders. The deepest one that contains the session wins. |
 
+### `mermaid.ts`
+
+Draws mermaid blocks in the TUI with [lovely-mermaid](https://github.com/xl0/lovely-mermaid), which reads more of mermaid than the version built into pi. It replaces pi's renderer, so `home/agents/default.nix` sets `markdown.mermaid` to `"off"`. When a flowchart doesn't draw, it puts labels that contain a semicolon in quotes, which also fixes HTML entities like `&#40;`. When a flowchart is wider than the pane, it redraws it top to bottom. A diagram that still can't be drawn shows its source, with a note on how many columns it needs or which line it couldn't read. Only the display changes, not the message. Its prompt rule lists the diagram types that draw. It asks for node labels under 30 characters, edge labels under 20, sequence messages under 30, and no `<br/>` in sequence diagrams. No settings.
+
+Nix installs lovely-mermaid next to the extension, at the version and hash in `bun.lock`.
+
 ### `skill-mention.ts`
 
 `$name` anywhere in a prompt loads that skill. No settings.
