@@ -34,7 +34,7 @@ Requests with an API key, and requests to other endpoints, pass through unchange
 
 ### `attention.ts`
 
-Notifies when pi waits on a prompt or finishes. In herdr it marks prompts as blocked and only notifies for the active tab.
+Notifies when pi waits on a prompt or finishes. In herdr it marks prompts as blocked and only notifies for the active tab. In the TUI it also tells the agent to ask for approvals and decisions with `ask_user_question`, since herdr shows a turn that ends on a question as done.
 
 | Key                 | Default | Meaning                            |
 | ------------------- | ------- | ---------------------------------- |
@@ -47,7 +47,13 @@ Reviews pi-permission-system asks with a model. The static rules in `home/agents
 
 The reviewer trusts your messages and your answers to `ask_user_question`. It treats the agent's tool calls, and the output of its own checks, as untrusted. It never sees the agent's tool output or the agent's own text. A one-word classifier allows most asks. The rest get an assessment of their risk and of how far you authorized them, which decides allow or deny. Before deciding, the assessment can run programs without a shell, limited to the programs and paths the agent may use without asking. The review log records each one as `auto_mode_run`. When auto mode denies an ask, or allows one that pi-permission-system still sends to you, a notification says why.
 
-pi-permission-system won't let a reviewer allow `path` or `external_directory` asks, such as writes outside the project. Auto mode can deny them. Otherwise they open the dialog. Dropped connections and 5xx errors retry with backoff within the timeout. Other errors and repeated denials open the dialog.
+pi-permission-system won't let a reviewer allow `path` or `external_directory` asks, such as writes outside the project. Auto mode can deny them. Otherwise they open the dialog. One tool call can raise several asks. Once you approve one of them in the dialog, auto mode allows the rest of that call without a review. Dropped connections and 5xx errors retry with backoff within the timeout. Other errors and repeated denials open the dialog.
+
+A denial tells the agent not to work around it, and what to do if it still needs the action:
+
+- Most asks: ask you with `ask_user_question`, then retry once if you approve. The reviewer trusts your answer.
+- `path` and `external_directory` asks: retry once without asking. Auto mode sends the retry to the dialog, which would open after your answer anyway.
+- A subagent's asks: stop and say so in its final answer. Auto mode also tells the agent that started it to ask you with `ask_user_question`, since agents tend to pass the request on instead. The reviewer runs in that agent's session, so it sees your answer when the subagent retries.
 
 | Key                                     | Default                                                          | Meaning                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |

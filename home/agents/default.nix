@@ -208,6 +208,7 @@ in
                 "/var/folders/*" = "allow";
                 "/private/var/folders/*" = "allow";
                 "*/.herdr/worktrees/*" = "allow";
+                "/nix/store/*" = "allow";
               };
               external_directory_read."*" = "allow";
 

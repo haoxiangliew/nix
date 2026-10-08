@@ -2,8 +2,9 @@
  * Reviews pi-permission-system asks with a model. The reviewer trusts the user's messages and
  * ask_user_question answers, and treats the agent's tool calls as untrusted. It never sees other tool
  * results or the agent's own text. A one-word classifier settles most asks. The rest get a risk and
- * authorization assessment, which may first run programs the agent could run without asking. Errors
- * and repeated denials fall back to the permission dialog. Configured by `autoMode` in settings.json.
+ * authorization assessment, which may first run programs the agent could run without asking. Errors,
+ * repeated denials, and retried asks it can't allow fall back to the permission dialog. Configured by
+ * `autoMode` in settings.json.
  */
 
 import type {
@@ -25,6 +26,7 @@ import type {
   PermissionQuery,
   PermissionsService,
   PromptPermissionDetails,
+  PromptRequestFacts,
 } from "@gotgenes/pi-permission-system";
 
 import { retryAssistantCall } from "@earendil-works/pi-ai";
@@ -111,6 +113,10 @@ const Answers = Type.Object({
 
 const ReadyEvent = Type.Object({ sessionId: Type.String() });
 
+const DecisionEvent = Type.Object({ requestId: Type.String(), resolution: Type.String() });
+
+const USER_APPROVALS = new Set(["user_approved", "user_approved_for_session"]);
+
 // Its results are the user's answers, so the reviewer sees them.
 const ASK_TOOL = "ask_user_question";
 
@@ -184,7 +190,25 @@ const DECIDE_TOOL: Tool = {
 // pi-permission-system turns a reviewer's allow on these surface families into a dialog.
 const CAPPED_FAMILIES = new Set(["path", "external_directory"]);
 
-const DENY_NOTE = `Auto mode denied this, not the user. Don't retry it or work around it. If the user wants it, ask them to confirm, in chat or with ${ASK_TOOL}, then retry once.`;
+// pi-permission-system ends the reason with a period.
+function denyNote(nextStep: string): string {
+  return `Auto mode denied this, not the user. Don't work around it. If you still need it, ${nextStep} Otherwise carry on without it`;
+}
+
+// Asking in chat ends the turn, so herdr shows the session as done.
+const ASK_NOTE = denyNote(
+  `call ${ASK_TOOL} now, saying what it does and why, and retry it once if the user approves.`,
+);
+
+// A subagent has no UI.
+const SUBAGENT_NOTE = denyNote(
+  `stop and say so in your final answer, so the agent that started you can ask the user with ${ASK_TOOL}.`,
+);
+
+// The dialog opens even when the reviewer allows a capped ask, so asking first would prompt twice.
+const RETRY_NOTE = denyNote("retry it once unchanged, and the user will decide in a dialog.");
+
+const SUBAGENT_DENIAL = "auto-mode-subagent-denial";
 
 interface Item {
   id: string;
@@ -515,17 +539,44 @@ function parseAssessment(decide: ToolCall | undefined, text: string): Review {
   }
 
   return {
-    verdict: { kind: "deny", reason: `${reason} ${DENY_NOTE}` },
+    verdict: { kind: "deny", reason },
     reason,
     risk,
     authorization,
   };
 }
 
+// The surface whose rule raised the ask.
+function gateOf(details: PromptPermissionDetails): string | undefined {
+  return details.accessIntent?.surface ?? details.surface ?? undefined;
+}
+
 // The same check as pi-permission-system's delegation envelope, which counts a missing surface as
 // capped.
 function isCapped(gate: string | undefined): boolean {
   return gate === undefined || CAPPED_FAMILIES.has(gate.replace(/_(read|write)$/, ""));
+}
+
+function askKey(details: PromptPermissionDetails): string {
+  const { toolName, value } = details.payload.request;
+
+  return JSON.stringify([gateOf(details), toolName, value]);
+}
+
+// The parent tends to pass on a subagent's request to ask the user instead of asking, so auto mode
+// tells the parent itself.
+function subagentDenialMessage({ requester, toolName, value }: PromptRequestFacts): string {
+  const call = `${toolName ?? "tool"} call ${clip(value, 300)}`;
+
+  return `Auto mode denied the ${call} by subagent ${requester.agentName ?? "unknown"}, not the user. If the task still needs it, call ${ASK_TOOL} now, saying what it does and why, and have the subagent retry it once if the user approves.`;
+}
+
+function denialNote(capped: boolean, subagent: boolean): string {
+  if (capped) {
+    return RETRY_NOTE;
+  }
+
+  return subagent ? SUBAGENT_NOTE : ASK_NOTE;
 }
 
 // The permission dialog has no room for a reason, so a notification shows it.
@@ -537,7 +588,7 @@ function verdictNotice(
     return `denied this. ${reason}`.trim();
   }
 
-  const gate = details.accessIntent?.surface ?? details.surface ?? undefined;
+  const gate = gateOf(details);
 
   return isCapped(gate)
     ? `allowed this, but pi-permission-system leaves ${gate ?? "these"} asks to you. ${reason}`.trim()
@@ -637,6 +688,10 @@ export default function (pi: ExtensionAPI) {
   let dispose: (() => void) | undefined;
   let thread = newThread();
   let denials = 0;
+  const deniedCappedAsks = new Set<string>();
+  // Tool call ids by request id. One tool call can raise several asks.
+  const askCalls = new Map<string, string>();
+  const userApprovedCalls = new Set<string>();
   let queue: Promise<unknown> = Promise.resolve();
 
   // pi-ai sends only the new messages when the rest of the request matches the thread's last one.
@@ -863,10 +918,83 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // No review when the user approved this tool call in a dialog, or will decide this retry there.
+  function skipReview(
+    details: PromptPermissionDetails,
+    key: string | undefined,
+    log: AuthorizerLog,
+  ): AuthorizerVerdict | undefined {
+    const { requestId, toolCallId } = details;
+
+    if (toolCallId !== undefined) {
+      askCalls.set(requestId, toolCallId);
+
+      if (userApprovedCalls.has(toolCallId)) {
+        log.review("auto_mode_skipped", { requestId, reason: "the user approved this tool call" });
+
+        return { kind: "allow" };
+      }
+    }
+
+    if (key !== undefined && deniedCappedAsks.delete(key)) {
+      log.review("auto_mode_skipped", { requestId, reason: "retry of a denied ask" });
+      context?.ui.notify("Auto mode passed a retry of an ask it denied to you.", "warning");
+
+      return { kind: "defer" };
+    }
+
+    return undefined;
+  }
+
+  function explainDenial(
+    details: PromptPermissionDetails,
+    key: string | undefined,
+    reason: string,
+  ): AuthorizerVerdict {
+    const capped = key !== undefined;
+    const { request } = details.payload;
+    const subagent = request.requester.forwarded;
+
+    if (capped) {
+      deniedCappedAsks.add(key);
+    }
+
+    if (!capped && subagent) {
+      const content = subagentDenialMessage(request);
+
+      pi.sendMessage(
+        { customType: SUBAGENT_DENIAL, content, display: false },
+        { deliverAs: "steer" },
+      );
+    }
+
+    return { kind: "deny", reason: `${reason} ${denialNote(capped, subagent)}`.trimStart() };
+  }
+
+  async function handleAsk(
+    details: PromptPermissionDetails,
+    query: PermissionQuery,
+    log: AuthorizerLog,
+  ): Promise<AuthorizerVerdict> {
+    const key = isCapped(gateOf(details)) ? askKey(details) : undefined;
+    const skipped = skipReview(details, key, log);
+
+    if (skipped !== undefined) {
+      return skipped;
+    }
+
+    const verdict = await authorize(details, query, log);
+
+    return verdict.kind === "deny" ? explainDenial(details, key, verdict.reason ?? "") : verdict;
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     context = ctx;
     thread = newThread();
     denials = 0;
+    deniedCappedAsks.clear();
+    askCalls.clear();
+    userApprovedCalls.clear();
     config = loadOrReport(ctx, "Auto mode", "autoMode", Config);
   });
 
@@ -881,6 +1009,21 @@ export default function (pi: ExtensionAPI) {
     context = undefined;
   });
 
+  // The dialog shows the whole tool call, so approving one ask approves the call.
+  pi.events.on("permissions:decision", (data) => {
+    if (!Value.Check(DecisionEvent, data)) {
+      return;
+    }
+
+    const call = askCalls.get(data.requestId);
+
+    askCalls.delete(data.requestId);
+
+    if (call !== undefined && USER_APPROVALS.has(data.resolution)) {
+      userApprovedCalls.add(call);
+    }
+  });
+
   // Emitted at least once per session. Reviews run one at a time so the thread stays in order.
   pi.events.on("permissions:ready", (data) => {
     if (dispose !== undefined || !Value.Check(ReadyEvent, data)) {
@@ -890,7 +1033,7 @@ export default function (pi: ExtensionAPI) {
     dispose = services()
       ?.get(data.sessionId)
       ?.registerAuthorizer(NAME, (details, query, log) => {
-        const reviewed = queue.then(() => authorize(details, query, log));
+        const reviewed = queue.then(() => handleAsk(details, query, log));
 
         queue = reviewed.catch(() => undefined);
 

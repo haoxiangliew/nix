@@ -1,5 +1,6 @@
 /**
- * Notifies when pi waits on a prompt or finishes, and reports prompts to herdr as blocked.
+ * Notifies when pi waits on a prompt or finishes, and reports prompts to herdr as blocked. Tells the
+ * agent to ask with ask_user_question, since herdr shows a turn that ends on a question as done.
  * herdr notifies only for panes outside the active tab, so inside herdr this notifies only for the
  * active tab. Outside herdr it notifies through the terminal. Configured by `attention` in
  * settings.json.
@@ -23,6 +24,10 @@ const Config = Type.Object(
 type Config = Static<typeof Config>;
 
 const HERDR_TIMEOUT_MS = 2000;
+
+const ASK_TOOL = "ask_user_question";
+
+const ASK_RULE = `When you need the user's approval or decision before you can continue, ask with ${ASK_TOOL} instead of ending your turn with a question.`;
 
 const paneId = process.env.HERDR_ENV === "1" ? process.env.HERDR_PANE_ID : undefined;
 
@@ -128,6 +133,15 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_start", async () => {
     busy = true;
+  });
+
+  // The rule never changes, so the prompt cache still hits.
+  pi.on("before_agent_start", async (event, ctx) => {
+    const options = event.systemPromptOptions;
+
+    if (watched(ctx) && options.selectedTools.includes(ASK_TOOL)) {
+      (options.toolGuidelines[ASK_TOOL] ??= []).push(ASK_RULE);
+    }
   });
 
   pi.on("ui_prompt_start", async (event, ctx) => {
