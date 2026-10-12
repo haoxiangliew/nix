@@ -166,14 +166,15 @@ export default function (pi: ExtensionAPI) {
     pi.events.emit("herdr:blocked", { active: false });
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (event, ctx) => {
     if (!ctx.isIdle()) {
       return;
     }
 
     busy = false;
 
-    if (config !== undefined && watched(ctx)) {
+    // Esc means the user is already at the terminal.
+    if (config !== undefined && watched(ctx) && !event.aborted) {
       notifyLater(pi, config, () => live && !busy, "Ready for input");
     }
   });

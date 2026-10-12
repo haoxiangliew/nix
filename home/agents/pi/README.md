@@ -34,7 +34,7 @@ Requests with an API key, and requests to other endpoints, pass through unchange
 
 ### `attention.ts`
 
-Notifies when pi waits on a prompt or finishes. In herdr it marks prompts as blocked and only notifies for the active tab. In the TUI it also tells the agent to ask for approvals and decisions with `ask_user_question`, since herdr shows a turn that ends on a question as done.
+Notifies when pi waits on a prompt or finishes. Cancelling a run with Esc doesn't notify. In herdr it marks prompts as blocked and only notifies for the active tab. In the TUI it also tells the agent to ask for approvals and decisions with `ask_user_question`, since herdr shows a turn that ends on a question as done.
 
 | Key                 | Default | Meaning                            |
 | ------------------- | ------- | ---------------------------------- |

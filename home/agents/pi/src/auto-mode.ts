@@ -38,7 +38,7 @@ import { errorMessage, loadOrReport } from "./lib/settings.ts";
 
 const NAME = "auto-mode";
 
-const CHARS_PER_TOKEN = 4;
+const CHARS_PER_TOKEN = 3.5;
 
 const SERVICES = Symbol.for("@gotgenes/pi-permission-system:session-services");
 
