@@ -109,6 +109,14 @@ Draws mermaid blocks in the TUI with [lovely-mermaid](https://github.com/xl0/lov
 
 Nix installs lovely-mermaid next to the extension, at the version and hash in `bun.lock`.
 
+### `prompt-sections.ts`
+
+Keeps extensions that append to the system prompt from breaking the prompt cache. An extension that returns `systemPrompt` from `before_agent_start` forces the prompt for that run. Pi then re-sends the whole system prompt and tool list whenever either changes. This extension moves the appended text into an `appended` prompt section, so pi sends only the change. A prompt replaced outright stays forced. No settings.
+
+Handlers run in load order, and files in `~/.pi/agent/extensions` load before packages. So `home/agents/default.nix` lists this file last in `packages`. Pi's built-in extensions still load after it.
+
+Turns that an extension message starts, such as a background task finishing, skip `before_agent_start`. Pi then sends a small update that removes the section, and another that adds it back at your next prompt. Both updates keep the cache.
+
 ### `skill-mention.ts`
 
 `$name` anywhere in a prompt loads that skill. No settings.

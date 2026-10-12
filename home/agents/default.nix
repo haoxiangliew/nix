@@ -16,7 +16,6 @@ let
 
   skills = lib.mkMerge [
     (pkgsOf config.home.packages "herdr" (p: "${p.src}/skills/herdr"))
-    (pkgsOf config.home.packages "tuicr" (p: "${p.src}/skills/tuicr"))
     (pkgsOf config.programs.gh.extensions "gh-stack" (p: "${p.src}/skills/gh-stack"))
     {
       unslop = "${inputs.pstack}/pstack/skills/unslop";
@@ -57,13 +56,6 @@ let
     codex = {
       target = "codex";
       after = [ "mergeCodexSettings" ];
-    };
-    opencode = {
-      target = "opencode";
-      after = [
-        "mergeOpenCodeSettings"
-        "mergeOpenCodeTuiSettings"
-      ];
     };
     pi-coding-agent = {
       target = "pi";
@@ -121,18 +113,9 @@ in
           CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = true;
           # https://pi.dev/docs/latest/environment-variables
           PI_CACHE_RETENTION = "long";
-          # https://opencode.ai/docs/cli/#experimental
-          OPENCODE_EXPERIMENTAL_PLAN_MODE = true;
-          OPENCODE_EXPERIMENTAL_CODE_MODE = true;
-          OPENCODE_EXPERIMENTAL_LSP_TOOL = true;
-          OPENCODE_EXPERIMENTAL_OXFMT = true;
-          OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = true;
-          OPENCODE_EXPERIMENTAL_WEBSOCKETS = true;
         };
         packages = with pkgs.llm-agents; [
-          grok
           herdr
-          tuicr
         ];
       }
       (mutableConfig.mutableJson {
@@ -142,14 +125,6 @@ in
       (mutableConfig.mutableToml {
         name = "mergeCodexSettings";
         file = ".codex/config.toml";
-      })
-      (mutableConfig.mutableJson {
-        name = "mergeOpenCodeSettings";
-        file = "${config.xdg.configHome}/opencode/opencode.json";
-      })
-      (mutableConfig.mutableJson {
-        name = "mergeOpenCodeTuiSettings";
-        file = "${config.xdg.configHome}/opencode/tui.json";
       })
       (mutableConfig.mutableJson {
         name = "mergePiSettings";
@@ -353,6 +328,7 @@ in
         package = pkgs.llm-agents.codex;
         settings = {
           approvals_reviewer = "auto_review";
+          features.daemon_auto_start = false;
           model_context_window = 1000000;
           model_auto_compact_token_limit = 900000;
           tui = {
@@ -367,53 +343,6 @@ in
             status_line_use_colors = true;
           };
         };
-        inherit skills integrations;
-      };
-      opencode = {
-        enable = true;
-        enableMcpIntegration = true;
-        package = pkgs.llm-agents.opencode;
-        settings = {
-          provider.openai.models = {
-            "gpt-6-astra".limit = {
-              context = 1050000;
-              input = 922000;
-              output = 128000;
-            };
-            "gpt-6-astra-fast".limit = {
-              context = 1050000;
-              input = 922000;
-              output = 128000;
-            };
-          };
-        };
-        agents = {
-          talk = ''
-            ---
-            description: Read-only agent for iterating on code with the user
-            mode: primary
-            permission:
-              edit: deny
-            ---
-
-            ${talkPrompt}
-          '';
-        };
-        tui = lib.mkMerge [
-          {
-            theme = "system";
-            scroll_acceleration = {
-              enabled = true;
-            };
-            attention = {
-              enabled = true;
-              sound = false;
-            };
-          }
-          (lib.mkIf (config.programs.opencode.integrations.herdr != null) {
-            plugin = [ "./herdr-tui-session.js" ];
-          })
-        ];
         inherit skills integrations;
       };
       pi-coding-agent = {
@@ -456,6 +385,7 @@ in
             "npm:@juicesharp/rpiv-ask-user-question"
             "npm:@narumitw/pi-btw"
             "npm:pi-rewind-hook"
+            "${./pi/src/prompt-sections.ts}"
           ];
         };
         models.providers = {
