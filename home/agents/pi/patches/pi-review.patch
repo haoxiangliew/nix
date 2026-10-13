@@ -1,8 +1,16 @@
 diff --git a/review.ts b/review.ts
-index 2758a35..bc3f494 100644
+index 2758a35..78cd0a0 100644
 --- a/review.ts
 +++ b/review.ts
-@@ -28,11 +28,13 @@
+@@ -17,6 +17,7 @@
+  * - `/review branch main` - review against main branch
+  * - `/review commit abc123` - review specific commit
+  * - `/review folder src docs` - review specific folders/files (snapshot, not diff)
++ * - `/review custom check the retry logic in src/net` - review whatever the prompt describes
+  * - `/review` selector includes Add/Remove custom review instructions (applies to all modes)
+  * - `/review --extra "focus on performance regressions"` - add extra review instruction (works with any mode)
+  *
+@@ -28,11 +29,13 @@
   */
  
  import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -17,7 +25,15 @@ index 2758a35..bc3f494 100644
  	type SelectItem,
  	SelectList,
  	Spacer,
-@@ -65,6 +67,8 @@ type ReviewSettingsState = {
+@@ -51,6 +54,7 @@ let reviewCustomInstructions: string | undefined = undefined;
+ const REVIEW_STATE_TYPE = "review-session";
+ const REVIEW_ANCHOR_TYPE = "review-anchor";
+ const REVIEW_SETTINGS_TYPE = "review-settings";
++const REVIEW_PROMPT_EVENT = "review:prompt";
+ const GH_SETUP_INSTRUCTIONS =
+ 	"Install GitHub CLI (`gh`) from https://cli.github.com/ (macOS: `brew install gh`), then sign in with `gh auth login` and verify with `gh auth status`.";
+ const PR_CHECKOUT_BLOCKED_BY_PENDING_CHANGES_MESSAGE =
+@@ -65,6 +69,8 @@ type ReviewSettingsState = {
  	customInstructions?: string;
  };
  
@@ -26,7 +42,45 @@ index 2758a35..bc3f494 100644
  function setReviewWidget(ctx: ExtensionContext, active: boolean) {
  	if (!ctx.hasUI) return;
  	if (!active) {
-@@ -565,6 +569,15 @@ type ReviewPresetValue =
+@@ -134,7 +140,8 @@ type ReviewTarget =
+ 	| { type: "baseBranch"; branch: string }
+ 	| { type: "commit"; sha: string; title?: string }
+ 	| { type: "pullRequest"; prNumber: number; baseBranch: string; title: string }
+-	| { type: "folder"; paths: string[] };
++	| { type: "folder"; paths: string[] }
++	| { type: "custom"; focus: string };
+ 
+ // Prompts (adapted from Codex)
+ const UNCOMMITTED_PROMPT =
+@@ -521,6 +528,9 @@ async function buildReviewPrompt(
+ 
+ 		case "folder":
+ 			return FOLDER_REVIEW_PROMPT.replace("{paths}", target.paths.join(", "));
++
++		case "custom":
++			return target.focus;
+ 	}
+ }
+ 
+@@ -547,6 +557,9 @@ function getUserFacingHint(target: ReviewTarget): string {
+ 			const joined = target.paths.join(", ");
+ 			return joined.length > 40 ? `folders: ${joined.slice(0, 37)}...` : `folders: ${joined}`;
+ 		}
++
++		case "custom":
++			return target.focus.length > 40 ? `custom: ${target.focus.slice(0, 37)}...` : `custom: ${target.focus}`;
+ 	}
+ }
+ 
+@@ -557,6 +570,7 @@ const REVIEW_PRESETS = [
+ 	{ value: "commit", label: "Review a commit", description: "" },
+ 	{ value: "pullRequest", label: "Review a pull request", description: "(GitHub PR)" },
+ 	{ value: "folder", label: "Review a folder (or more)", description: "(snapshot, not diff)" },
++	{ value: "custom", label: "Review with a custom prompt", description: "(describe what to review)" },
+ ] as const;
+ 
+ const TOGGLE_CUSTOM_INSTRUCTIONS_VALUE = "toggleCustomInstructions" as const;
+@@ -565,6 +579,15 @@ type ReviewPresetValue =
  	| typeof TOGGLE_CUSTOM_INSTRUCTIONS_VALUE;
  
  export default function reviewExtension(pi: ExtensionAPI) {
@@ -42,7 +96,57 @@ index 2758a35..bc3f494 100644
  	function persistReviewSettings() {
  		pi.appendEntry(REVIEW_SETTINGS_TYPE, {
  			customInstructions: reviewCustomInstructions,
-@@ -1488,32 +1501,54 @@ Instructions:
+@@ -799,6 +822,12 @@ export default function reviewExtension(pi: ExtensionAPI) {
+ 					break;
+ 				}
+ 
++				case "custom": {
++					const target = await showCustomInput(ctx);
++					if (target) return target;
++					break;
++				}
++
+ 				case "pullRequest": {
+ 					const target = await showPrInput(ctx);
+ 					if (target) return target;
+@@ -1055,6 +1084,12 @@ export default function reviewExtension(pi: ExtensionAPI) {
+ 		return { type: "folder", paths };
+ 	}
+ 
++	async function showCustomInput(ctx: ExtensionContext): Promise<ReviewTarget | null> {
++		const focus = (await ctx.ui.editor("Describe what to review:", ""))?.trim();
++
++		return focus ? { type: "custom", focus } : null;
++	}
++
+ 	/**
+ 	 * Show PR input and handle checkout
+ 	 */
+@@ -1168,6 +1203,10 @@ export default function reviewExtension(pi: ExtensionAPI) {
+ 		const modeHint = useFreshSession ? " (fresh session)" : "";
+ 		ctx.ui.notify(`Starting review: ${hint}${modeHint}`, "info");
+ 
++		// Lets other extensions recognize this prompt in their input handlers. pi.events runs handlers
++		// synchronously, so they get it before the input event.
++		pi.events.emit(REVIEW_PROMPT_EVENT, { prompt: fullPrompt, freshSession: useFreshSession });
++
+ 		// Send as a user message that triggers a turn
+ 		pi.sendUserMessage(fullPrompt);
+ 		return true;
+@@ -1285,6 +1324,12 @@ export default function reviewExtension(pi: ExtensionAPI) {
+ 				return { target: { type: "folder", paths }, extraInstruction };
+ 			}
+ 
++			case "custom": {
++				const focus = parts.slice(1).join(" ");
++				if (!focus) return { target: null, extraInstruction };
++				return { target: { type: "custom", focus }, extraInstruction };
++			}
++
+ 			case "pr": {
+ 				const ref = parts[1];
+ 				if (!ref) return { target: null, extraInstruction };
+@@ -1488,32 +1533,54 @@ Instructions:
  		originId: string,
  		showLoader: boolean,
  	): Promise<{ cancelled: boolean; error?: string } | null> {

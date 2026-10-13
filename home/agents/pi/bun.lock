@@ -9,6 +9,7 @@
         "@earendil-works/pi-coding-agent": "1.1.0",
         "@earendil-works/pi-tui": "1.1.0",
         "@gotgenes/pi-permission-system": "40.2.0",
+        "@gotgenes/pi-subagents": "23.4.0",
         "@types/bun": "1.4.3",
         "lovely-mermaid": "0.3.3",
         "oxfmt": "0.72.0",
@@ -135,6 +136,8 @@
     "@google/genai": ["@google/genai@2.21.0", "", { "dependencies": { "google-auth-library": "^10.3.0", "p-retry": "^4.6.2", "protobufjs": "^7.5.4", "ws": "^8.18.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.2" }, "optionalPeers": ["@modelcontextprotocol/sdk"] }, "sha512-+PDtco2/Z0ONdzCGekCoCT+O1VJS9xJQNN4XzQpXG/t3El/SWWMkCWlFRO1KmivOHPa4Q0VjUYu1HBKCZ/v33Q=="],
 
     "@gotgenes/pi-permission-system": ["@gotgenes/pi-permission-system@40.2.0", "", { "dependencies": { "tree-sitter-bash": "^0.25.1", "web-tree-sitter": "^0.26.9", "zod": "^4.4.3" }, "peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.0.0", "@earendil-works/pi-tui": ">=1.0.0" } }, "sha512-ZImCyaLTNlHZAA0c5utndLW0HaAwt2UjmN3jeslABlRmgXP0GTXbWPeAehX7amUlf70M5IbrWM9nxfzFnlWgkA=="],
+
+    "@gotgenes/pi-subagents": ["@gotgenes/pi-subagents@23.4.0", "", { "peerDependencies": { "@earendil-works/pi-ai": ">=1.0.0", "@earendil-works/pi-coding-agent": ">=1.0.0", "@earendil-works/pi-tui": ">=1.0.0", "typebox": "*" } }, "sha512-SMj8di0vzuSFhDZadef6luq1OoCL8T8wXz+JaOGqf+vytCR8/vmCOLcb6jlOx4ndvCwwkdVCwM//LmH26DxlFg=="],
 
     "@henrygd/queue": ["@henrygd/queue@1.2.0", "", {}, "sha512-jW/BLSTpcvExDhqJGxtIPgGr2O0IFF8XUNDwEbfCfhrXT8a4xztQ9Lv6U/vbYzYC0xVWn+3zv6YnLUh3bEFUKA=="],
 

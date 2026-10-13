@@ -87,10 +87,20 @@ export function loadOrReport<S extends TSchema>(
 }
 
 // Keeps the other keys. pi rewrites only the settings it changed, so this one survives pi's saves.
-export function saveSetting(key: string, value: boolean): void {
+// key can be a nested path like "a/b/c", and saveSetting creates any missing objects on the way.
+export function saveSetting(key: string, value: boolean | string): void {
   const path = settingsPath();
   const tmp = `${path}.${process.pid}.tmp`;
   const settings = readSettings();
+  let parent = "";
+
+  for (const name of key.split("/").slice(0, -1)) {
+    parent += `/${name}`;
+
+    if (Value.Pointer.Get(settings, parent) === undefined) {
+      Value.Pointer.Set(settings, parent, {});
+    }
+  }
 
   Value.Pointer.Set(settings, `/${key}`, value);
   writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });

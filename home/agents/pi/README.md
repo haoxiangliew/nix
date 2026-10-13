@@ -4,7 +4,7 @@ Extensions and a theme for [pi](https://pi.dev), linked into `~/.pi/agent` by `h
 
 ## Patches
 
-`patches/pi-review.patch` makes [pi-review](https://github.com/earendil-works/pi-review)'s `/end-review` keep the editor open while it summarizes, so dialogs from other extensions stay visible. It also shows progress in a widget and lets Esc cancel. The build fails if the patch stops applying after `nix flake update pi-review`.
+`patches/pi-review.patch` makes [pi-review](https://github.com/earendil-works/pi-review)'s `/end-review` keep the editor open while it summarizes, so dialogs from other extensions stay visible. It also shows progress in a widget and lets Esc cancel. It adds a "Review with a custom prompt" option and `/review custom <prompt>`, where you describe what to review. And it emits each `/review` prompt on `pi.events` as `review:prompt` for `super-review.ts`. The build fails if the patch stops applying after `nix flake update pi-review`.
 
 ## Configure
 
@@ -12,29 +12,11 @@ Each extension reads a top-level key in `~/.pi/agent/settings.json`, set from `p
 
 ### `anthropic-billing.ts`
 
-Sends pi's Anthropic OAuth requests with the headers, system prompt, and body signature of the installed `claude --print`. Compaction forks and cache warming use it too. No settings.
-
-To learn these values, it runs `claude --print` through its launcher script against a local mock API, so no model call is made. It reads the signing code from the `claude` binary, which it can only do on macOS ARM64 and Linux x86-64. Each request gets the CLI's device and account IDs, pi's session ID, and new prompt and request IDs. It keeps pi's beta flags and adds the CLI's. Pi still handles login, token refresh, instructions, history, tools, and caching, so the body doesn't match the CLI's byte for byte.
-
-It blocks a request when:
-
-- the `claude` binary is a build it can't read
-- `claude` or pi changed on disk since pi loaded it
-- pi's headers or system prompt differ from what pi's built-in Anthropic provider sends
-- pi and the CLI are logged in to different accounts
-- the fingerprint or checksum check fails
-
-After updating `claude` or pi, run `/reload`. Restart pi after adding or removing the extension.
-
-It reads your plan from `claude auth status` once per `/reload`, so run `/reload` after you switch accounts or plans. Enterprise may use usage credits. On other plans, each successful response must have an `anthropic-ratelimit-unified-representative-claim` header that isn't `overage`. Otherwise it cancels the stream and blocks the rest of the session. Anthropic may still charge that one request, so turn off usage credits on Max if you never want to spend them.
-
-Captured headers and bodies, and the account, device, and session IDs, stay in memory. The values it reads from the `claude` binary hold no IDs or credentials. It saves them to `~/.pi/agent/extensions/anthropic-billing/source-identity.json` after the probe verifies them, so the next start skips rescanning the binary. It ignores the file after the launchers, the binary, the pi runtime, or the scanning code change. If the probe rejects the saved values, it rescans the binary and overwrites the file. The probe and `claude auth status` still run on every start. Startup doesn't wait for them, but the first request does.
-
-Requests with an API key, and requests to other endpoints, pass through unchanged. This extension and `stream-watchdog.ts` both wrap the global `fetch`, so code that brings its own `fetch` skips these checks.
+Sends pi's Anthropic OAuth requests, including compaction forks and cache warming, with the headers, system prompt, and body signature of the installed `claude --print`. It learns them by running `claude` against a local mock API and reading its binary, which works only on macOS ARM64 and Linux x86-64. It blocks any request it can't match. On plans other than Enterprise, it also blocks the session once a response is billed to usage credits. Run `/reload` after updating `claude` or pi, or after switching accounts. No settings.
 
 ### `attention.ts`
 
-Notifies when pi waits on a prompt or finishes. Cancelling a run with Esc doesn't notify. In herdr it marks prompts as blocked and only notifies for the active tab. In the TUI it also tells the agent to ask for approvals and decisions with `ask_user_question`, since herdr shows a turn that ends on a question as done.
+Notifies when pi waits on a prompt or finishes, but not when you cancel with Esc. In herdr it marks prompts as blocked and only notifies for the active tab. It also tells the agent to ask for decisions with `ask_user_question`, since herdr shows a turn that ends on a question as done.
 
 | Key                 | Default | Meaning                            |
 | ------------------- | ------- | ---------------------------------- |
@@ -43,17 +25,7 @@ Notifies when pi waits on a prompt or finishes. Cancelling a run with Esc doesn'
 
 ### `auto-mode.ts`
 
-Reviews pi-permission-system asks with a model. The static rules in `home/agents/default.nix` allow only what is safe without review, and every other ask comes here.
-
-The reviewer trusts your messages and your answers to `ask_user_question`. It treats the agent's tool calls, and the output of its own checks, as untrusted. It never sees the agent's tool output or the agent's own text. A one-word classifier allows most asks. The rest get an assessment of their risk and of how far you authorized them, which decides allow or deny. Before deciding, the assessment can run programs without a shell, limited to the programs and paths the agent may use without asking. The review log records each one as `auto_mode_run`. When auto mode denies an ask, or allows one that pi-permission-system still sends to you, a notification says why.
-
-pi-permission-system won't let a reviewer allow `path` or `external_directory` asks, such as writes outside the project. Auto mode can deny them. Otherwise they open the dialog. One tool call can raise several asks. Once you approve one of them in the dialog, auto mode allows the rest of that call without a review. Dropped connections and 5xx errors retry with backoff within the timeout. Other errors and repeated denials open the dialog.
-
-A denial tells the agent not to work around it, and what to do if it still needs the action:
-
-- Most asks: ask you with `ask_user_question`, then retry once if you approve. The reviewer trusts your answer.
-- `path` and `external_directory` asks: retry once without asking. Auto mode sends the retry to the dialog, which would open after your answer anyway.
-- A subagent's asks: stop and say so in its final answer. Auto mode also tells the agent that started it to ask you with `ask_user_question`, since agents tend to pass the request on instead. The reviewer runs in that agent's session, so it sees your answer when the subagent retries.
+Reviews pi-permission-system asks with a model instead of asking you. The static rules in `home/agents/default.nix` allow only what's safe without review, and every other ask comes here. The reviewer trusts your messages and your answers to `ask_user_question`, never the agent's tool calls or output. Before it allows or denies an ask, it can run checks limited to what the agent may run without asking. It can deny `path` and `external_directory` asks, such as writes outside the project, but when it would allow one, the dialog opens instead. Errors and repeated denials also open the dialog. A denial tells the agent not to work around it. For most asks, the agent asks you with `ask_user_question` and retries once if you approve. A denied `path` or `external_directory` ask retries once and opens the dialog, and a subagent stops and says so in its answer.
 
 | Key                                     | Default                                                          | Meaning                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -76,9 +48,7 @@ A denial tells the agent not to work around it, and what to do if it still needs
 
 ### `compaction.ts`
 
-Writes every compaction and branch summary (`/tree`, `/end-review`) by forking the session, as Claude Code and Codex do. The fork resends the session's conversation with pi's summary prompt after it, so it sees full tool results and can write up to the model's output limit. On Anthropic models it reuses the session's last request (system prompt, tools, thinking, fast mode, and message prefix), so it reads the conversation from the prompt cache. Otherwise it skips the conversation cache write, since nothing would read it. A notification shows how much of each fork's input came from the cache.
-
-Pi's trigger is a fixed reserve per model, so this compacts at the end of a turn once context reaches `compactAt` of the model's window. It keeps recent messages per pi's `compaction.keepRecentTokens`. Pi's own compaction (overflow, `/compact`) forks too. A fork over `compactAt` drops its oldest turns. Pi's summarizer runs when a fork fails. Esc cancels. Pi uses the `compaction` key, so this one reads `summaryFork`.
+Writes compaction and branch summaries (`/tree`, `/end-review`) by forking the session, as Claude Code and Codex do, so the summary sees full tool results. On Anthropic models the fork reads the conversation from the prompt cache. It compacts at the end of a turn once context reaches `compactAt` of the model's window, and falls back to pi's summarizer when a fork fails. Pi uses the `compaction` key, so this one reads `summaryFork`.
 
 | Key                     | Default | Meaning                                                      |
 | ----------------------- | ------- | ------------------------------------------------------------ |
@@ -97,7 +67,7 @@ Pi's trigger is a fixed reserve per model, so this compacts at the end of a turn
 
 ### `mcp-ancestors.ts`
 
-Registers MCP servers from `.mcp.json` files in each folder from a root down to the session's folder. Nearer files override farther ones, and a server of the same name in `~/.pi/agent/mcp.json` wins. The root's own file always loads, and files below it load only in a trusted project. It expands `${VAR}` and `${VAR:-default}` as Claude Code does. A bad file or entry shows an error and is skipped.
+Registers MCP servers from `.mcp.json` files in each folder from a root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. Files below the root load only in a trusted project.
 
 | Key                  | Default | Meaning                                                       |
 | -------------------- | ------- | ------------------------------------------------------------- |
@@ -105,17 +75,11 @@ Registers MCP servers from `.mcp.json` files in each folder from a root down to 
 
 ### `mermaid.ts`
 
-Draws mermaid blocks in the TUI with [lovely-mermaid](https://github.com/xl0/lovely-mermaid), which reads more of mermaid than the version built into pi. It replaces pi's renderer, so `home/agents/default.nix` sets `markdown.mermaid` to `"off"`. When a flowchart doesn't draw, it puts labels that contain a semicolon in quotes, which also fixes HTML entities like `&#40;`. When a flowchart is wider than the pane, it redraws it top to bottom. A diagram that still can't be drawn shows its source, with a note on how many columns it needs or which line it couldn't read. Only the display changes, not the message. Its prompt rule lists the diagram types that draw. It asks for node labels under 30 characters, edge labels under 20, sequence messages under 30, and no `<br/>` in sequence diagrams. No settings.
-
-Nix installs lovely-mermaid next to the extension, at the version and hash in `bun.lock`.
+Draws mermaid blocks in the TUI with [lovely-mermaid](https://github.com/xl0/lovely-mermaid), which reads more of mermaid than pi's built-in renderer, so `home/agents/default.nix` turns pi's off. It quotes labels that break a flowchart and redraws flowcharts top to bottom when they're too wide. A diagram that still doesn't draw shows its source and the reason. Its prompt rule tells the model which diagrams draw and how long labels can be. Nix installs lovely-mermaid at the version in `bun.lock`. No settings.
 
 ### `prompt-sections.ts`
 
-Keeps extensions that append to the system prompt from breaking the prompt cache. An extension that returns `systemPrompt` from `before_agent_start` forces the prompt for that run. Pi then re-sends the whole system prompt and tool list whenever either changes. This extension moves the appended text into an `appended` prompt section, so pi sends only the change. A prompt replaced outright stays forced. No settings.
-
-Handlers run in load order, and files in `~/.pi/agent/extensions` load before packages. So `home/agents/default.nix` lists this file last in `packages`. Pi's built-in extensions still load after it.
-
-Turns that an extension message starts, such as a background task finishing, skip `before_agent_start`. Pi then sends a small update that removes the section, and another that adds it back at your next prompt. Both updates keep the cache.
+Keeps extensions that append to the system prompt from breaking the prompt cache. It moves their text into an `appended` prompt section, so pi sends only the change instead of the whole prompt. `home/agents/default.nix` lists it last in `packages`, so it runs after the extensions it fixes. No settings.
 
 ### `skill-mention.ts`
 
@@ -123,16 +87,7 @@ Turns that an extension message starts, such as a background task finishing, ski
 
 ### `stream-watchdog.ts`
 
-Fails an Anthropic request whose stream stalls, so pi retries it. Anthropic keeps stalled streams open with pings, so pi would otherwise wait forever.
-
-It fails a request that gets:
-
-- no response headers within `headersMs`
-- no first event within `firstEventMs`
-- no event for `eventIdleMs`, not counting pings
-- once events arrive, no bytes for `byteIdleMs`, counting pings
-
-Pi's `retry` settings control the retry, and Esc cancels it. The statusline's `stall` segment shows a countdown for the session's own replies. It logs failed requests with their `request-id` to `~/.pi/agent/stream-watchdog.jsonl`.
+Fails an Anthropic request whose stream stalls, so pi retries it. Anthropic keeps stalled streams open with pings, so pi would otherwise wait forever. The statusline's `stall` segment shows a countdown, and it logs failed requests with their `request-id` to `~/.pi/agent/stream-watchdog.jsonl`.
 
 | Key                              | Default    | Meaning                                                      |
 | -------------------------------- | ---------- | ------------------------------------------------------------ |
@@ -151,6 +106,16 @@ Replaces pi's footer with one line. Invalid settings keep pi's footer. `tokens` 
 | Key                   | Default                  | Meaning                                                                                                                                  |
 | --------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `statusline.segments` | all, in the order listed | Segments to show, in order. Any of `talk`, `autoMode`, `stall`, `model`, `thinking`, `fast`, `cwd`, `context`, `cost`, `tokens`, `speed` |
+
+### `super-review.ts`
+
+Adds an optional second reviewer to pi-review's `/review`. After pi-review's dialogs, you pick a model from a menu, by default `openai-codex/gpt-6.1-sol` for an Anthropic session and `anthropic/claude-opus-5-5` for an OpenAI one. That model reviews the same change as a pi-subagents subagent, with the session's system prompt and tools. In pi-review's "Current session" mode, it also sees the conversation. Then the two models settle every finding with each other before the session's model prints the review. Messages you send during the review steer the subagent while it's working, and the session's model passes on the ones the subagent missed.
+
+| Key                                           | Default                      | Meaning                                                                             |
+| --------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------- |
+| `superReview.adversaries.<provider>.model`    | none                         | Model for the "Adversary" option. ctrl+s in the custom picker saves it              |
+| `superReview.adversaries.<provider>.thinking` | the session's thinking level | The adversary's thinking level                                                      |
+| `superReview.rounds`                          | `3`                          | Rounds before a finding still disputed is dropped. The final sign-off isn't counted |
 
 ### `talk.ts`
 

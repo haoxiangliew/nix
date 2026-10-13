@@ -172,6 +172,8 @@ in
               bg_task_status = "allow";
               bg_task_log = "allow";
               get_subagent_result = "allow";
+              subagent = "allow";
+              steer_subagent = "allow";
               get_search_content = "allow";
               ask_user_question = "allow";
               web_enable = "allow";
@@ -420,6 +422,7 @@ in
           "stream-watchdog.ts" = ./pi/src/stream-watchdog.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
           "mermaid.ts" = ./pi/src/mermaid.ts;
+          "super-review.ts" = ./pi/src/super-review.ts;
           "node_modules/lovely-mermaid" = lovelyMermaid;
           "review.ts" = "${
             pkgs.applyPatches {

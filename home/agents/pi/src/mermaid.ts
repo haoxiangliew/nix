@@ -27,6 +27,7 @@ const parser = new Marked();
 
 // A semicolon ends a statement, so it cuts an unquoted label short. HTML entities end in one.
 const NODE_LABEL = /([[({])([^[\](){}|"\n]*;[^[\](){}|"\n]*)([\])}])/g;
+
 const EDGE_LABEL = /([-=.][->=ox]?\|)([^|"\n]*;[^|"\n]*)\|/g;
 
 const SIDEWAYS = /^(\s*(?:flowchart|graph|direction)\s+)(?:LR|RL)\b/gm;
@@ -102,6 +103,7 @@ function codeSpan(line: string): string {
 
 function themed(art: MermaidArt, theme: Theme): string[] {
   const color = (name: ThemeColor) => theme.getFgAnsi(name).slice(2, -1);
+
   const roles: AnsiTheme = {
     border: color("borderMuted"),
     text: color("text"),
@@ -109,6 +111,7 @@ function themed(art: MermaidArt, theme: Theme): string[] {
     edgeLabel: color("muted"),
     title: `1;${color("accent")}`,
   };
+
   // A `click` link would underline every cell of its node, borders included.
   const styled = art.styled.map((row) => row.map((span) => ({ ...span, href: undefined })));
 
