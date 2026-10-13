@@ -109,13 +109,12 @@ Replaces pi's footer with one line. Invalid settings keep pi's footer. `tokens` 
 
 ### `super-review.ts`
 
-Adds an optional second reviewer to pi-review's `/review`. After pi-review's dialogs, you pick a model from a menu, by default `openai-codex/gpt-6.1-sol` for an Anthropic session and `anthropic/claude-opus-5-5` for an OpenAI one. That model reviews the same change as a pi-subagents subagent, with the session's system prompt and tools. In pi-review's "Current session" mode, it also sees the conversation. Then the two models settle every finding with each other before the session's model prints the review. Messages you send during the review steer the subagent while it's working, and the session's model passes on the ones the subagent missed.
+Adds optional extra reviewers to pi-review's `/review`. After pi-review's dialogs, you pick one or more models, by default `openai-codex/gpt-6.1-sol` for an Anthropic session and `anthropic/claude-opus-5-5` for an OpenAI one. Each reviews the same change as a pi-subagents subagent. Then all the models settle the findings until they agree, and the session's model prints the agreed review.
 
-| Key                                           | Default                      | Meaning                                                                             |
-| --------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------- |
-| `superReview.adversaries.<provider>.model`    | none                         | Model for the "Adversary" option. ctrl+s in the custom picker saves it              |
-| `superReview.adversaries.<provider>.thinking` | the session's thinking level | The adversary's thinking level                                                      |
-| `superReview.rounds`                          | `3`                          | Rounds before a finding still disputed is dropped. The final sign-off isn't counted |
+| Key                                  | Default | Meaning                                                                                                   |
+| ------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------- |
+| `superReview.adversaries.<provider>` | none    | Models for the "Adversaries" option, as `{ "model", "thinking" }`. ctrl+s in the custom picker saves them |
+| `superReview.rounds`                 | `3`     | Rounds before the deadlock rule, multiplied by the number of adversaries                                  |
 
 ### `talk.ts`
 

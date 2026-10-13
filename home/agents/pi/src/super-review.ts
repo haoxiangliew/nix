@@ -1,8 +1,5 @@
 /**
- * Adds an opt-in adversarial pass to pi-review's /review. After pi-review's dialogs, a menu offers an
- * adversary model, which runs the same review prompt as a pi-subagents subagent. When the session's
- * model finishes its review, it settles every finding with the subagent and prints the final
- * review. Configured by `superReview` in settings.json.
+ * Adds extra reviewers to pi-review's /review, configured by `superReview` in settings.json.
  *
  * The session's model runs the rounds with subagent resumes and collects each result with
  * get_subagent_result, so pi-subagents doesn't also post it. The service has no way to collect a
@@ -14,15 +11,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { SubagentsService } from "@gotgenes/pi-subagents";
 
 import { DynamicBorder, getSelectListTheme, keyText } from "@earendil-works/pi-coding-agent";
-import {
-  Container,
-  fuzzyFilter,
-  Input,
-  type SelectItem,
-  SelectList,
-  Spacer,
-  Text,
-} from "@earendil-works/pi-tui";
+import { Container, fuzzyFilter, Input, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
@@ -30,19 +19,22 @@ import { loadOrReport, saveSetting } from "./lib/settings.ts";
 
 const Adversary = Type.Object(
   {
-    // The model "Adversary (...)" offers. ctrl+s in the custom picker sets it.
-    model: Type.Optional(Type.String({ pattern: "^[^/\\s]+/\\S+$" })),
+    model: Type.String({ pattern: "^[^/\\s]+/\\S+$" }),
     // Unset follows the session's thinking level.
     thinking: Type.Optional(Type.Enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"])),
   },
   { additionalProperties: false },
 );
 
+type Adversary = Static<typeof Adversary>;
+
 const Config = Type.Object(
   {
-    // Keyed by the session model's provider.
-    adversaries: Type.Record(Type.String(), Adversary, { default: {} }),
-    // Rounds before the deadlock rule settles what's left. The sign-off resume isn't counted.
+    // Keyed by the session model's provider. ctrl+s in the custom picker sets it.
+    adversaries: Type.Record(Type.String(), Type.Array(Adversary, { minItems: 1 }), {
+      default: {},
+    }),
+    // Round limit, multiplied by the number of adversaries. The sign-off isn't counted.
     rounds: Type.Integer({ minimum: 1, default: 3 }),
   },
   { additionalProperties: false, default: {} },
@@ -50,11 +42,11 @@ const Config = Type.Object(
 
 type Config = Static<typeof Config>;
 
-// Offered when no model is saved.
-const SUGGESTED_MODELS = new Map([
-  ["anthropic", "openai-codex/gpt-6.1-sol"],
-  ["openai", "anthropic/claude-opus-5-5"],
-  ["openai-codex", "anthropic/claude-opus-5-5"],
+// Offered when no adversaries are saved.
+const SUGGESTED_MODELS = new Map<string, Adversary[]>([
+  ["anthropic", [{ model: "openai-codex/gpt-6.1-sol" }]],
+  ["openai", [{ model: "anthropic/claude-opus-5-5" }]],
+  ["openai-codex", [{ model: "anthropic/claude-opus-5-5" }]],
 ]);
 
 // patches/pi-review.patch emits each review prompt on this channel before sending it.
@@ -67,79 +59,82 @@ const SERVICE = Symbol.for("@gotgenes/pi-subagents:service");
 
 const NO_ADVERSARY = "No adversary";
 
-const CUSTOM_ADVERSARY = "Custom adversary";
+const CUSTOM_ADVERSARIES = "Custom adversaries";
 
 const CONTEXT_TYPE = "super-review";
 
-function rules(rounds: number): string {
+function rules(limit: number): string {
   return `- Judge each finding by what the review instructions say to flag.
 - For each open finding, reply with exactly one of: accept, withdraw, or reject with a file:line and the concrete reason the instructions wouldn't flag it. Settle priorities the same way, using the instructions' priority levels.
 - A rejection without a file:line and a concrete reason counts as accept.
-- The deadlock rule ends what's left after ${rounds} rounds. A finding still rejected is dropped, and a priority still disputed becomes the less severe one, because neither was proven.`;
+- A finding is agreed once every reviewer accepts it.
+- The deadlock rule ends what's left after ${limit} rounds. A finding any reviewer still rejects is dropped, and a priority still disputed becomes the least severe one any reviewer holds, because none was proven.`;
 }
 
-function adversaryBriefing(rounds: number): string {
-  return `Another model ran the same review. Its findings follow. Settle every finding with it by these rules:
+function adversaryBriefing(others: number, limit: number): string {
+  return `${others === 1 ? "Another model" : `${others} other models`} ran the same review. The findings you didn't raise follow, with who raised each. Settle every finding with them by these rules:
 
-${rules(rounds)}
+${rules(limit)}
 
-Each round, reply by the rules to each open finding and priority it sends. It checks your findings at the same time and sends its replies in the next round. At the end it sends you the final list and verdict. Confirm them, or name each place they misstate what you agreed to.`;
+Each round, reply by the rules to each open finding and priority you're sent. The others check your findings at the same time, and you get their replies in the next round. At the end you get the final list and verdict. Confirm them, or name each place they misstate what you agreed to.`;
 }
 
 const ResumeCall = Type.Object({ resume: Type.String(), prompt: Type.String() });
-
-type Choice = { model: string; save: boolean };
 
 type Pending = {
   service: SubagentsService;
   prompt: string;
   inheritContext: boolean;
-  adversary: string;
+  adversaries: Adversary[];
   reviewer: string;
-  thinking: string | undefined;
-  rounds: number;
+  limit: number;
 };
+
+type Spawned = { id: string; model: string; rulesSent: boolean };
 
 type Review = {
   service: SubagentsService;
-  id: string;
-  adversary: string;
+  adversaries: Spawned[];
   reviewer: string;
-  rounds: number;
+  limit: number;
   consensusStarted: boolean;
-  rulesSent: boolean;
 };
 
-// Lists first at the top, then the other models by name.
-function adversaryItems(
-  ctx: ExtensionContext,
-  first: string | undefined,
-  saved: string | undefined,
-): SelectItem[] {
-  return ctx.modelRegistry
-    .getAvailable()
-    .map((model) => `${model.provider}/${model.id}`)
-    .toSorted((a, b) => Number(b === first) - Number(a === first) || a.localeCompare(b))
-    .map((model) => ({
-      value: model,
-      label: model,
-      description: model === saved ? "(default)" : "",
-    }));
+function presetLabel(preset: Adversary[]): string {
+  const names = preset.map(({ model }) => model).join(", ");
+
+  return `${preset.length === 1 ? "Adversary" : "Adversaries"} (${names})`;
 }
 
-function pickModel(
-  ctx: ExtensionContext,
-  first: string | undefined,
-  saved: string | undefined,
-): Promise<Choice | undefined> {
-  const items = adversaryItems(ctx, first, saved);
+// Keeps the thinking level of each model that already has one.
+function withThinking(models: string[], known: Adversary[]): Adversary[] {
+  return models.map((model) => known.find((adversary) => adversary.model === model) ?? { model });
+}
 
-  return ctx.ui.custom<Choice | undefined>((tui, theme, keybindings, done) => {
+function pickModels(
+  ctx: ExtensionContext,
+  initial: string[],
+  onSave: (models: string[]) => void,
+): Promise<string[]> {
+  const available = ctx.modelRegistry
+    .getAvailable()
+    .map((model) => `${model.provider}/${model.id}`);
+
+  // Saved models without credentials stay listed and checked, so only a toggle removes them.
+  const models = [...new Set([...initial, ...available])].toSorted(
+    (a, b) => Number(initial.includes(b)) - Number(initial.includes(a)) || a.localeCompare(b),
+  );
+
+  const checked = new Set(initial);
+  const selection = () => models.filter((model) => checked.has(model));
+
+  return ctx.ui.custom<string[]>((tui, theme, keybindings, done) => {
     const searchInput = new Input();
     const listContainer = new Container();
+    const footer = new Text("");
     const container = new Container();
-    const hints = `Type to filter • enter to select • ${keyText("app.models.save")} to set as default • esc to go back`;
     const accent = (text: string) => theme.fg("accent", text);
+    let unsaved = false;
 
     const listTheme = {
       ...getSelectListTheme(),
@@ -148,51 +143,75 @@ function pickModel(
       noMatch: () => theme.fg("warning", "  No matching models"),
     };
 
-    function showList(shown: SelectItem[]): SelectList {
+    function showList(current: string | undefined): SelectList {
+      const query = searchInput.getValue();
+
+      const rows = models.map((model) => ({
+        value: model,
+        label: `${checked.has(model) ? "[x]" : "[ ]"} ${model}${available.includes(model) ? "" : " (unavailable)"}`,
+      }));
+
+      const shown = query ? fuzzyFilter(rows, query, (row) => row.value) : rows;
       const list = new SelectList(shown, Math.min(shown.length, 10), listTheme);
 
-      list.onSelect = (item) => done({ model: item.value, save: false });
-      list.onCancel = () => done(undefined);
+      list.setSelectedIndex(shown.findIndex((row) => row.value === current));
       listContainer.clear();
       listContainer.addChild(list);
+
+      const hints = `Type to filter • ${keyText("tui.select.confirm")} toggle • ${keyText("app.models.save")} save • ${keyText("tui.select.cancel")} done • ${checked.size} selected`;
+
+      footer.setText(theme.fg("dim", hints) + (unsaved ? theme.fg("warning", " (unsaved)") : ""));
 
       return list;
     }
 
-    let selectList = showList(items);
+    let selectList = showList(undefined);
 
     for (const child of [
       new DynamicBorder(accent),
-      new Text(accent(theme.bold(CUSTOM_ADVERSARY))),
+      new Text(accent(theme.bold(CUSTOM_ADVERSARIES))),
       searchInput,
       new Spacer(1),
       listContainer,
-      new Text(theme.fg("dim", hints)),
+      footer,
       new DynamicBorder(accent),
     ]) {
       container.addChild(child);
     }
 
-    // Keys that don't change the search text, like arrows, enter, and esc, go to the list.
+    function toggle(model: string): void {
+      if (!checked.delete(model)) {
+        checked.add(model);
+      }
+
+      unsaved = true;
+    }
+
+    // Keys that don't change the search text, like the arrows, go to the list.
     function handleInput(data: string): void {
+      const current = selectList.getSelectedItem()?.value;
       const query = searchInput.getValue();
 
-      if (keybindings.matches(data, "app.models.save")) {
-        const item = selectList.getSelectedItem();
+      if (keybindings.matches(data, "tui.select.cancel")) {
+        done(selection());
 
-        if (item) {
-          done({ model: item.value, save: true });
-        }
+        return;
+      }
+
+      if (keybindings.matches(data, "app.models.save")) {
+        onSave(selection());
+        unsaved = false;
+      } else if (keybindings.matches(data, "tui.select.confirm") && current !== undefined) {
+        toggle(current);
       } else {
         searchInput.handleInput(data);
 
         if (searchInput.getValue() === query) {
           selectList.handleInput(data);
-        } else {
-          selectList = showList(fuzzyFilter(items, searchInput.getValue(), (item) => item.label));
         }
       }
 
+      selectList = showList(selectList.getSelectedItem()?.value ?? current);
       tui.requestRender();
     }
 
@@ -211,21 +230,56 @@ function pickModel(
   });
 }
 
-function reviewerInstructions({ id, adversary, reviewer, rounds }: Review): string {
-  return `${adversary} ran the same review as subagent "${id}". Settle every finding with it before you print the final review, by these rules. The rules are added to your first message to it, so don't repeat them yourself. The user's messages reach it only while it's working, so repeat any new ones in your next message to it.
+function reviewerInstructions({ adversaries, reviewer, limit }: Review): string {
+  const subagents = adversaries.map(({ id, model }) => `- ${model}, subagent "${id}"`).join("\n");
 
-${rules(rounds)}
+  return `These models ran the same review as subagents:
 
-Each round, you and it reply at the same time to what the other sent in the last round.
+${subagents}
 
-1. Call get_subagent_result with agent_id "${id}" and wait: true to collect its review. If it failed, say so and stop, so your review stands.
-2. Compare the reviews. Two findings match only if they name the same defect at overlapping lines. A match is agreed, and every other finding is open.
-3. Call subagent with resume: "${id}" and run_in_background: true. In the first round, send your findings it didn't raise. After that, send the replies you wrote in the last round.
-4. While it works, check the code and reply by the rules to what it sent: in the first round, its findings you didn't raise, and after that, its replies.
-5. Call get_subagent_result with agent_id "${id}" and wait: true to collect its replies. A finding is agreed once both of you accept it, and dropped once its author withdraws it.
-6. Repeat steps 3 to 5 with only what is still open. Stop after ${rounds} rounds and apply the deadlock rule.
-7. Call subagent with resume: "${id}" and no run_in_background, and send the final list and verdict. Fix each place it says they misstate what it agreed to.
-8. Print the final review in the format the review instructions ask for, with the human reviewer callouts from both reviews. Start it by saying it replaces your first review, and that findings missing from it were dropped. After each finding's title, say who raised it: both, ${reviewer}, or ${adversary}. For each finding or priority the deadlock rule settled, say so and give each side's position in one sentence.`;
+Settle every finding with all of them before you print the final review, by these rules. The rules are added to your first message to each one, so don't repeat them yourself. The user's messages reach a subagent only while it's working, so repeat any new ones in your next message to it.
+
+${rules(limit)}
+
+Each round, you and the subagents reply at the same time to what was sent in the last round.
+
+1. Call get_subagent_result with wait: true for each subagent to collect its review. Leave out any that failed and say so. If all failed, stop, so your review stands.
+2. Compare the reviews. Two findings match only if they name the same defect at overlapping lines. A finding every reviewer raised is agreed, and every other finding is open.
+3. For each subagent, call subagent with its id as resume and run_in_background: true. In the first round, send it every open finding it didn't raise, with who raised it. After that, send it your replies and the other subagents' replies from the last round.
+4. While they work, check the code and reply by the rules to every open finding you didn't raise.
+5. Call get_subagent_result with wait: true for each subagent to collect its replies. A finding is dropped once its author withdraws it.
+6. Repeat steps 3 to 5 with only what is still open. Stop after ${limit} rounds and apply the deadlock rule.
+7. Send each subagent the final list and verdict with a resume and run_in_background: true, then collect each with get_subagent_result. Fix each place that any of them says misstates what it agreed to.
+8. Print the final review in the format the review instructions ask for, with the human reviewer callouts from every review. Start it by saying it replaces your first review, and that findings missing from it were dropped. After each finding's title, say who raised it, naming ${reviewer} for yourself. For each finding or priority the deadlock rule settled, say so and give each side's position in one sentence.`;
+}
+
+// If a spawn throws, stops the adversaries already started, since no review will collect them.
+function spawnAll(spawn: Pending, sessionThinking: string): Spawned[] {
+  const spawned: Spawned[] = [];
+
+  try {
+    for (const { model, thinking } of spawn.adversaries) {
+      // general-purpose with no prompt of its own copies the session's system prompt and tools.
+      const id = spawn.service.spawn("general-purpose", spawn.prompt, {
+        description: "Super review adversary",
+        model,
+        thinkingLevel: thinking ?? sessionThinking,
+        foreground: false,
+        bypassQueue: true,
+        inheritContext: spawn.inheritContext,
+      });
+
+      spawned.push({ id, model, rulesSent: false });
+    }
+  } catch (error) {
+    for (const { id } of spawned) {
+      spawn.service.abort(id);
+    }
+
+    throw error;
+  }
+
+  return spawned;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -241,51 +295,49 @@ export default function (pi: ExtensionAPI) {
     config = loadOrReport(ctx, "Super review", "superReview", Config);
   }
 
-  // Returns undefined when the user goes back to the menu.
   async function pickCustom(
     ctx: ExtensionContext,
     provider: string,
-    preset: string | undefined,
-    saved: string | undefined,
-  ): Promise<string | undefined> {
-    const choice = await pickModel(ctx, preset, saved);
+    preset: Adversary[],
+  ): Promise<Adversary[]> {
+    const models = await pickModels(
+      ctx,
+      preset.map(({ model }) => model),
+      (selected) => {
+        // An empty selection removes the saved list, so the suggested model comes back.
+        saveSetting(
+          `superReview/adversaries/${provider}`,
+          selected.length > 0 ? withThinking(selected, preset) : undefined,
+        );
+        loadConfig(ctx);
+        ctx.ui.notify(`Default adversaries for ${provider}: ${selected.join(", ") || "none"}`);
+      },
+    );
 
-    if (choice?.save) {
-      saveSetting(`superReview/adversaries/${provider}/model`, choice.model);
-      loadConfig(ctx);
-      ctx.ui.notify(`Default adversary for ${provider}: ${choice.model}`);
-    }
-
-    return choice?.model;
+    return withThinking(models, preset);
   }
 
   async function ask(
     ctx: ExtensionContext,
     provider: string,
-    saved: string | undefined,
-  ): Promise<string | undefined> {
+    saved: Adversary[] | undefined,
+  ): Promise<Adversary[] | undefined> {
     const preset = saved ?? SUGGESTED_MODELS.get(provider);
 
     const option = await ctx.ui.select(
-      "Adversary:",
+      "Adversaries:",
       preset === undefined
-        ? [NO_ADVERSARY, CUSTOM_ADVERSARY]
-        : [NO_ADVERSARY, `Adversary (${preset})`, CUSTOM_ADVERSARY],
+        ? [NO_ADVERSARY, CUSTOM_ADVERSARIES]
+        : [NO_ADVERSARY, presetLabel(preset), CUSTOM_ADVERSARIES],
     );
 
-    if (option === CUSTOM_ADVERSARY) {
-      return (await pickCustom(ctx, provider, preset, saved)) ?? ask(ctx, provider, saved);
+    if (option === CUSTOM_ADVERSARIES) {
+      const custom = await pickCustom(ctx, provider, preset ?? []);
+
+      return custom.length > 0 ? custom : ask(ctx, provider, config?.adversaries[provider]);
     }
 
     return option === undefined || option === NO_ADVERSARY ? undefined : preset;
-  }
-
-  async function chooseModel(
-    ctx: ExtensionContext,
-    provider: string,
-    saved: string | undefined,
-  ): Promise<string | undefined> {
-    return ctx.mode === "tui" ? ask(ctx, provider, saved) : undefined;
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -321,25 +373,26 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const providerSettings = settings.adversaries[session.provider] ?? {};
-    const adversary = await chooseModel(ctx, session.provider, providerSettings.model);
+    const adversaries =
+      ctx.mode === "tui"
+        ? await ask(ctx, session.provider, settings.adversaries[session.provider])
+        : undefined;
 
-    if (adversary !== undefined) {
+    if (adversaries !== undefined) {
       pending = {
         service,
         prompt: event.text,
         inheritContext: !emitted.freshSession,
-        adversary,
+        adversaries,
         reviewer: `${session.provider}/${session.id}`,
-        thinking: providerSettings.thinking,
-        rounds: settings.rounds,
+        limit: settings.rounds * adversaries.length,
       };
     }
   });
 
   // Spawns after pi compacts before the prompt and right before agent_start, when pi-subagents
-  // starts holding back results until the run settles. If spawn throws, pi reports the error and
-  // the review runs without an adversary.
+  // starts holding back results until the run settles. If a spawn throws, pi reports the error and
+  // the review runs without adversaries.
   pi.on("before_agent_start", async (_event, ctx) => {
     const spawn = pending;
 
@@ -349,37 +402,31 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // general-purpose with no prompt of its own copies the session's system prompt and tools.
-    const id = spawn.service.spawn("general-purpose", spawn.prompt, {
-      description: "Super review adversary",
-      model: spawn.adversary,
-      thinkingLevel: spawn.thinking ?? pi.getThinkingLevel(),
-      foreground: false,
-      bypassQueue: true,
-      inheritContext: spawn.inheritContext,
-    });
+    const adversaries = spawnAll(spawn, pi.getThinkingLevel());
 
     review = {
       service: spawn.service,
-      id,
-      adversary: spawn.adversary,
+      adversaries,
       reviewer: spawn.reviewer,
-      rounds: spawn.rounds,
+      limit: spawn.limit,
       consensusStarted: false,
-      rulesSent: false,
     };
-    ctx.ui.notify(`${spawn.adversary} is reviewing as subagent ${id}.`, "info");
+
+    const names = adversaries.map(({ id, model }) => `${model} (${id})`).join(", ");
+
+    ctx.ui.notify(`Adversary review started: ${names}.`, "info");
   });
 
-  // The user's messages go to the adversary too.
   pi.on("input", async (event) => {
-    if (review !== undefined && event.source !== "extension") {
-      await review.service.steer(review.id, event.text);
+    const current = review;
+
+    if (current !== undefined && event.source !== "extension") {
+      await Promise.all(current.adversaries.map(({ id }) => current.service.steer(id, event.text)));
     }
   });
 
   // pi-subagents posts results after the run settles, so continuing this run lets the session's
-  // model collect the result first.
+  // model collect the results first.
   pi.on("agent_before_settle", async (event) => {
     if (review === undefined || review.consensusStarted || event.outcome !== "completed") {
       return;
@@ -395,28 +442,37 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  // Stops an adversary that is still working when the run ends early. After a finished consensus
-  // it's idle, and abort does nothing.
+  // Stops adversaries that are still working when the run ends early. After a finished consensus
+  // they're idle, and abort does nothing.
   pi.on("agent_settled", async () => {
-    if (review !== undefined) {
-      review.service.abort(review.id);
-    }
+    const current = review;
 
     review = undefined;
+
+    if (current === undefined) {
+      return;
+    }
+
+    for (const { id } of current.adversaries) {
+      current.service.abort(id);
+    }
   });
 
   pi.on("tool_call", async (event) => {
     if (
       review === undefined ||
-      review.rulesSent ||
       event.toolName !== "subagent" ||
-      !Value.Check(ResumeCall, event.input) ||
-      event.input.resume !== review.id
+      !Value.Check(ResumeCall, event.input)
     ) {
       return;
     }
 
-    review.rulesSent = true;
-    event.input.prompt = `${adversaryBriefing(review.rounds)}\n\n---\n\n${event.input.prompt}`;
+    const { resume, prompt } = event.input;
+    const target = review.adversaries.find(({ id, rulesSent }) => id === resume && !rulesSent);
+
+    if (target !== undefined) {
+      target.rulesSent = true;
+      event.input.prompt = `${adversaryBriefing(review.adversaries.length, review.limit)}\n\n---\n\n${prompt}`;
+    }
   });
 }

@@ -86,9 +86,16 @@ export function loadOrReport<S extends TSchema>(
   }
 }
 
+type Setting =
+  | boolean
+  | string
+  | readonly Setting[]
+  | { readonly [key: string]: Setting | undefined };
+
 // Keeps the other keys. pi rewrites only the settings it changed, so this one survives pi's saves.
 // key can be a nested path like "a/b/c", and saveSetting creates any missing objects on the way.
-export function saveSetting(key: string, value: boolean | string): void {
+// undefined removes the key, since JSON.stringify leaves it out.
+export function saveSetting(key: string, value: Setting | undefined): void {
   const path = settingsPath();
   const tmp = `${path}.${process.pid}.tmp`;
   const settings = readSettings();
