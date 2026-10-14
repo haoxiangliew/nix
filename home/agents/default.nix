@@ -387,6 +387,7 @@ in
             "npm:@juicesharp/rpiv-ask-user-question"
             "npm:@narumitw/pi-btw"
             "npm:pi-rewind-hook"
+            "npm:pi-context-view"
             "${./pi/src/prompt-sections.ts}"
           ];
         };
