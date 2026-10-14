@@ -1,7 +1,8 @@
 /**
- * One-line footer: talk, auto-mode review, stall warning, model, thinking, fast, folder, branch,
- * context, cost, tokens since the last user message, tok/s, and TTFT. Configured by `statusline`
- * in settings.json. Invalid settings keep pi's built-in footer.
+ * Replaces pi's footer with one line: talk, auto-mode review, stall warning, model, thinking, fast,
+ * folder, branch, context, cost, tokens since the last user message, tokens per second, and time
+ * to first token. With invalid settings, pi keeps its built-in footer. The `statusline` key in
+ * settings.json configures it.
  */
 
 import type { Usage } from "@earendil-works/pi-ai";
@@ -57,7 +58,7 @@ interface Speed {
 interface Totals {
   input: number;
   output: number;
-  // Anthropic reports output tokens only when a reply ends, so a streaming reply is estimated.
+  // Anthropic reports output tokens only when a reply ends, so this estimates a streaming reply.
   estimated: boolean;
 }
 
@@ -177,7 +178,7 @@ function trackSpeed(pi: ExtensionAPI, onChange: () => void): Speed {
   let requestStart: number | undefined;
   let firstToken: number | undefined;
 
-  // Fires after context transforms and auth refresh, right before the payload is sent.
+  // Fires after context transforms and auth refresh, right before pi sends the payload.
   pi.on("before_provider_request", async () => {
     requestStart = Date.now();
     firstToken = undefined;

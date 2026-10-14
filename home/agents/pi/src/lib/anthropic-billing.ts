@@ -52,7 +52,7 @@ export interface BillingSession {
   quotaError?: Error;
 }
 
-export type BillingIdentity =
+type BillingIdentity =
   | Error
   | ((model: string, signal: AbortSignal | undefined) => Promise<ClaudeIdentity>);
 
@@ -223,7 +223,7 @@ async function fetchAccount(
     }
   } catch (cause) {
     throw new Error(
-      "Pi's Anthropic OAuth account could not be matched to the Claude CLI. Request blocked.",
+      "Pi couldn't match its Anthropic OAuth account to the Claude CLI. Request blocked.",
       { cause },
     );
   }
@@ -336,7 +336,7 @@ function blockedResponse(cause: unknown): Response {
       ? cause.message
       : "Anthropic OAuth billing check failed. Request blocked.";
 
-  // The SDK retries thrown fetch errors but not a 400.
+  // Like the SDK, pi retries thrown fetch errors but not a 400.
   return Response.json(
     { type: "error", error: { type: "invalid_request_error", message } },
     { status: 400 },

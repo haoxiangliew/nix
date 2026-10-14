@@ -37,7 +37,7 @@ after that, `home-manager switch --flake .#$USER@$HOSTNAME` is enough
 
 #### captive portals
 
-the root of all evil. we run DNS-over-TLS through `systemd-resolved`, and a captive portal has to hijack DNS to send you to its sign-in page. it cannot hijack TLS, so nothing resolves and the sign-in page never appears.
+we run DNS-over-TLS through `systemd-resolved`, and a captive portal has to hijack DNS to send you to its sign-in page. it cannot hijack TLS, so nothing resolves and the sign-in page never appears.
 
 `captive-portal` steps through the fix with y/N prompts. it turns DNS-over-TLS off on the connected link, then re-runs NetworkManager's connectivity check so GNOME offers "Sign in to network". after you sign in, it reverts the link and flushes the caches. the revert runs on every exit path, so ctrl-c is safe.
 
@@ -51,7 +51,7 @@ or by hand:
 ```bash
 resolvectl dnsovertls wlp1s0 no
 nmcli networking connectivity check
-# portal
+# sign in to the portal
 ```
 
 GNOME should now offer "Sign in to network". then put the `systemd-resolved` settings back:

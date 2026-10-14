@@ -1,9 +1,9 @@
 /**
- * Draws mermaid blocks as Unicode diagrams with lovely-mermaid, which reads more of mermaid than the
- * renderer built into pi. Quotes labels that contain a semicolon and redraws wide flowcharts top to
- * bottom, so more diagrams fit the pane. A diagram that still can't be drawn shows its source and
- * why. Only the display changes, not the message. pi's own renderer runs first, so set
- * `markdown.mermaid` to "off" in settings.json.
+ * Draws mermaid blocks as Unicode diagrams with lovely-mermaid, which supports more mermaid syntax
+ * than pi's built-in renderer. Quotes labels that contain a semicolon and redraws wide flowcharts
+ * top to bottom, so more diagrams fit the pane. If a diagram still fails, this shows its source and
+ * the reason. Only the display changes, not the message. pi's own renderer runs first, so set
+ * `markdown.mermaid` to "off" in settings.json. No settings.
  */
 
 import type {
@@ -18,7 +18,7 @@ import { Marked, type Token } from "@earendil-works/pi-tui";
 import { type AnsiTheme, diagramKind, type MermaidArt, render, toAnsi } from "lovely-mermaid";
 
 // The limits come from real diagrams. 30-character sequence messages fit about 110 columns, and the
-// top to bottom redraw cuts edge labels from about 30 characters. lovely-mermaid prints <br/> in
+// top to bottom redraw truncates edge labels at about 30 characters. lovely-mermaid prints <br/> in
 // sequence diagrams as text.
 const RULE =
   "Mermaid blocks render as text diagrams in a terminal about 100 columns wide. Only flowchart, sequence, state, class, ER, pie, mindmap, timeline, and gitGraph diagrams draw. Keep node labels under 30 characters, edge labels under 20, and sequence messages under 30, with no <br/> in sequence diagrams.";
@@ -42,7 +42,7 @@ function topDown(src: string): string {
   return src.replaceAll(SIDEWAYS, "$1TB");
 }
 
-// The source as written comes first, so a diagram that already works is drawn unchanged.
+// The source as written comes first, so a diagram that already works draws unchanged.
 function drafts(src: string): string[] {
   if (diagramKind(src) !== "flowchart") {
     return [src];
@@ -79,7 +79,7 @@ function draw(src: string, width: number, streaming: boolean): Drawing {
 
 function failure(widths: number[], warnings: string[], width: number): string | undefined {
   if (widths.length > 0) {
-    return `Mermaid diagram needs ${Math.min(...widths)} columns, the pane has ${width}`;
+    return `Mermaid diagram needs ${Math.min(...widths)} columns, but the pane has ${width}`;
   }
 
   return warnings[0] && `Mermaid diagram not drawn: ${warnings[0]}`;
@@ -146,7 +146,7 @@ export default function (pi: ExtensionAPI) {
     ui = ctx.ui;
   });
 
-  // Diagrams are drawn only in the TUI. The rule never changes, so the prompt cache still hits.
+  // This draws diagrams only in the TUI. The rule never changes, so the prompt cache still hits.
   pi.on("before_agent_start", async (event, ctx) => {
     if (ctx.mode === "tui") {
       event.systemPromptOptions.promptGuidelines.push(RULE);

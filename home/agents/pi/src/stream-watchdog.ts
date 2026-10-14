@@ -1,10 +1,10 @@
 /**
- * Fails an Anthropic request whose stream goes quiet, so pi's auto-retry sends it again. Pi can't
- * see these stalls. Anthropic keeps a stalled stream open with SSE pings, pi drops pings before
- * extensions see them, and the Bun build ignores httpIdleTimeoutMs. So this wraps fetch and times
- * the response headers, the first event, the gap between events (not counting pings), and the gap
- * between bytes (counting pings). The error says "timed out", which pi's auto-retry matches.
- * Configured by `streamWatchdog` in settings.json.
+ * Fails an Anthropic request whose stream stalls, so pi's auto-retry sends it again. Pi can't see
+ * these stalls. Anthropic keeps a stalled stream open with SSE pings, and pi drops pings before
+ * extensions see them. The Bun build also ignores httpIdleTimeoutMs. So this extension wraps fetch
+ * and times the response headers, the first event, the gap between events (not counting pings),
+ * and the gap between bytes (counting pings). The error says "timed out", which pi's auto-retry
+ * matches. The `streamWatchdog` key in settings.json configures it.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -29,9 +29,9 @@ const Config = Type.Object(
     eventIdleMs: Type.Integer({ minimum: 1000, default: 90_000 }),
     // Applies once events flow. Pings count, so this catches a dead connection.
     byteIdleMs: Type.Integer({ minimum: 1000, default: 60_000 }),
-    // Silence before the status line shows the countdown.
+    // Silence before the statusline shows the countdown.
     warnMs: Type.Integer({ minimum: 1000, default: 30_000 }),
-    // "stalls" logs every request that didn't finish. "all" also logs finished ones, to tune limits.
+    // "stalls" logs every request that didn't finish. "all" also logs finished ones for tuning.
     log: Type.Enum(["off", "stalls", "all"], { default: "stalls" }),
   },
   { additionalProperties: false, default: {} },
@@ -46,7 +46,7 @@ type Ui = ExtensionContext["ui"];
 
 interface Session {
   config: Config;
-  // Cleared at shutdown, so a request still in flight stops writing to a stale UI.
+  // stop() clears this at shutdown, so a request still in flight stops writing to a stale UI.
   ui: Ui | undefined;
   awaitingReply: boolean;
 }
@@ -138,7 +138,7 @@ class Watch {
   events = 0;
   pings = 0;
   bytes = 0;
-  // Set once the body exists. Before that, aborting upstream rejects the fetch.
+  // watchBody sets this once the body exists. Before that, aborting upstream rejects the fetch.
   onStall: (error: StallError) => void = () => undefined;
   #ticker: ReturnType<typeof setInterval>;
   #ended = false;
@@ -232,7 +232,8 @@ class Watch {
     this.lastEvent = now;
     this.events += 1;
 
-    // pi-ai stops reading after either, so stop the clock even if the server holds the stream.
+    // The reply is complete at message_stop, and pi-ai stops reading at an error event, so stop the
+    // clock. The watchdog doesn't catch a server that holds the stream open after message_stop.
     if (name === "message_stop" || name === "error") {
       this.end(name === "error" ? "error event" : "done");
     }

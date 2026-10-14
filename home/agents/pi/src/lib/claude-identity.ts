@@ -225,7 +225,7 @@ function attribution(source: string, version: string) {
 
   attributionSuffixes(setup, field(builder, 8), field(bindings, 5));
 
-  return { builder: field(builder, 1), prefix, cch: field(bindings, 6) };
+  return { builder: field(builder, 1), prefix };
 }
 
 function assertFingerprintFlow(source: string, caller: string, builder: string): void {

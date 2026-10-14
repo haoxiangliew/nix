@@ -1,8 +1,8 @@
 /**
- * /talk or shift+tab blocks the write tools and adds the talk prompt to each turn. Bash stays for
- * research. It leaves the tool list and earlier messages alone, since changing either makes the
- * next request miss the prompt cache. --talk starts with it on. Configured by `talk` in
- * settings.json.
+ * /talk or shift+tab blocks the write tools and adds the talk prompt to each turn. Bash stays
+ * available for research. It leaves the tool list and earlier messages alone, since changing either
+ * makes the next request miss the prompt cache. --talk starts with it on. The `talk` key in
+ * settings.json configures it.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -13,9 +13,9 @@ import { loadOrReport } from "./lib/settings.ts";
 
 const Config = Type.Object(
   {
-    // Added to each turn while talk mode is on. Required, so talk mode stays off until it's set.
+    // Talk mode adds this to each turn. It's required, so talk mode stays off until you set it.
     prompt: Type.String({ minLength: 1 }),
-    // Blocked while talk mode is on.
+    // Talk mode blocks these tools.
     blockedTools: Type.Array(Type.String(), { default: ["edit", "write"] }),
   },
   { additionalProperties: false, default: {} },
@@ -32,7 +32,8 @@ function blockWrites(pi: ExtensionAPI, current: () => Config | undefined): void 
     if (current()?.blockedTools.includes(event.toolName)) {
       return {
         block: true,
-        reason: "Talk mode is read-only. Propose the change instead; /talk turns it off.",
+        reason:
+          "Talk mode is read-only. Propose the change instead. The user can turn it off with /talk.",
       };
     }
   });
@@ -61,7 +62,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerFlag("talk", {
-    description: "Start in talk mode (read-only)",
+    description: "Start in read-only talk mode",
     type: "boolean",
     default: false,
   });
@@ -82,18 +83,20 @@ export default function (pi: ExtensionAPI) {
     showStatus(ctx);
     pi.appendEntry("talk-mode", enabled);
     ctx.ui.notify(
-      enabled ? `Talk mode on. ${config.blockedTools.join(", ")} are blocked.` : "Talk mode off.",
+      enabled
+        ? `Talk mode is on. It blocks ${new Intl.ListFormat("en").format(config.blockedTools)}.`
+        : "Talk mode is off.",
     );
   }
 
   pi.registerCommand("talk", {
-    description: "Toggle talk mode (read-only)",
+    description: "Toggle read-only talk mode",
     handler: async (_args, ctx) => toggle(ctx),
   });
 
   // pi skips this shortcut unless keybindings.json moves app.thinking.cycle off shift+tab.
   pi.registerShortcut("shift+tab", {
-    description: "Toggle talk mode (read-only)",
+    description: "Toggle read-only talk mode",
     handler: async (ctx) => toggle(ctx),
   });
 

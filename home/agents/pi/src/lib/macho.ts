@@ -6,7 +6,7 @@ import {
   type Segment,
 } from "./binary.ts";
 
-export interface MachSection {
+interface MachSection {
   address: number;
   offset: number;
   size: number;

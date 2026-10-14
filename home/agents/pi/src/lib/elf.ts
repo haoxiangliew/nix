@@ -6,7 +6,7 @@ import {
   type Segment,
 } from "./binary.ts";
 
-export interface ElfSegment extends Segment {
+interface ElfSegment extends Segment {
   readonly flags: number;
 }
 

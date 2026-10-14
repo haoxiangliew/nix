@@ -1,10 +1,10 @@
 /**
  * Registers MCP servers from `.mcp.json` files in each folder from a configured root down to the
  * session's folder. Pi's own MCP support reads only `~/.pi/agent/mcp.json` and a trusted project's
- * `.pi/mcp.json`. Nearer files override farther ones. The root's own file always loads, and files
- * below it load only in a trusted project. Expands ${VAR} and ${VAR:-default} as Claude Code does,
- * since pi expands only ${VAR}, and only in env and headers. Configured by `mcpAncestors` in
- * settings.json.
+ * `.pi/mcp.json`. Nearer files override farther ones. In a trusted project, every file from the
+ * root down loads. In an untrusted one, none do. Expands ${VAR} and ${VAR:-default} as Claude Code
+ * does, since pi expands variables only in env and headers and has no defaults. The `mcpAncestors`
+ * key in settings.json configures it.
  */
 
 import type {
@@ -59,7 +59,7 @@ function contains(parent: string, child: string): boolean {
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-// The deepest root that contains cwd, then each folder below it down to cwd.
+// Returns the deepest root that contains cwd, then each folder below it down to cwd.
 function folders(roots: string[], cwd: string): string[] {
   let root: string | undefined;
 
@@ -122,7 +122,7 @@ function expandRecord(
   );
 }
 
-// Pi resolves a relative cwd against the session's folder, but the file means its own folder.
+// Pi resolves a relative cwd against the session's folder, but this resolves it against the file's.
 function resolveCwd(dir: string, cwd: string): string {
   return isAbsolute(cwd) || cwd.startsWith("~") ? cwd : resolve(dir, cwd);
 }
@@ -174,13 +174,10 @@ function addFile(servers: Servers, dir: string, report: Report): void {
 }
 
 function collect(ctx: ExtensionContext, cfg: Config): Servers {
-  const chain = folders(cfg.roots, resolve(ctx.cwd));
-  // The root is the user's own folder. Folders below it may be cloned repositories.
-  const allowed = ctx.isProjectTrusted() ? chain : chain.slice(0, 1);
   const servers: Servers = new Map();
   const report: Report = (message) => ctx.ui.notify(message, "error");
 
-  for (const dir of allowed) {
+  for (const dir of folders(cfg.roots, resolve(ctx.cwd))) {
     try {
       addFile(servers, dir, report);
     } catch (cause) {
@@ -203,7 +200,7 @@ export default function (pi: ExtensionAPI) {
 
     registered = [];
 
-    if (cfg === undefined) {
+    if (cfg === undefined || !ctx.isProjectTrusted()) {
       return;
     }
 

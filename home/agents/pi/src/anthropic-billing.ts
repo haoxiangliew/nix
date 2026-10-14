@@ -36,9 +36,7 @@ async function locateCli(pi: ExtensionAPI): Promise<{ path: string; version: str
   const path = pathResult.stdout.trim();
 
   if (versionResult.code !== 0 || pathResult.code !== 0 || version === undefined || path === "") {
-    throw new Error(
-      "Could not locate the installed Claude CLI. Anthropic OAuth requests are blocked.",
-    );
+    throw new Error("Pi can't find the installed Claude CLI. Request blocked.");
   }
 
   return { path, version };

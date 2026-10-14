@@ -18,7 +18,8 @@ export function billingQuotaError(headers: Headers, subscriptionType: string): E
   return Object.assign(
     new Error(
       "Anthropic reported usage credits or an unknown billing route for this subscription. " +
-        "Further requests in this session are blocked. The triggering request may already be charged.",
+        "Pi now blocks further requests in this session. " +
+        "Anthropic may already have charged for the triggering request.",
     ),
     { code: "ANTHROPIC_BILLING_QUOTA" },
   );

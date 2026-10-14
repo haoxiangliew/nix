@@ -2,7 +2,7 @@
 
 {
   home = {
-    # ostree bind-mounts /home -> /var/home, and Home Manager compares this
+    # ostree bind-mounts /home to /var/home, and Home Manager compares this
     # against $HOME at activation time.
     homeDirectory = "/var/home/${config.home.username}";
 

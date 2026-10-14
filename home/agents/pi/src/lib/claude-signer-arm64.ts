@@ -23,7 +23,7 @@ const anchor: Pattern = [
   [0x94000000, 0xfc000000],
 ];
 
-// SHA-256 of each block's instructions with addresses and constants masked out.
+// Each digest is SHA-256 of a block's instructions with addresses and constants masked out.
 const schemas = {
   signer: {
     words: 191,

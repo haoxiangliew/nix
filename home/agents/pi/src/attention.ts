@@ -1,9 +1,9 @@
 /**
- * Notifies when pi waits on a prompt or finishes, and reports prompts to herdr as blocked. Tells the
- * agent to ask with ask_user_question, since herdr shows a turn that ends on a question as done.
- * herdr notifies only for panes outside the active tab, so inside herdr this notifies only for the
- * active tab. Outside herdr it notifies through the terminal. Configured by `attention` in
- * settings.json.
+ * Notifies when pi waits on a prompt or finishes, and reports prompts to herdr as blocked. It tells
+ * the agent to ask with ask_user_question, since herdr shows a turn that ends on a question as
+ * done. herdr notifies only for panes outside the active tab, so inside herdr this notifies only
+ * for the active tab. Outside herdr it notifies through the terminal. The `attention` key in
+ * settings.json configures it.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -63,8 +63,8 @@ async function herdrJson<T>(pi: ExtensionAPI, args: string[]): Promise<T | undef
   }
 }
 
-// herdr skips its own notification for the active tab of the focused workspace. Checked on every
-// call because panes move between tabs. An unknown answer counts as skipped, so pi notifies.
+// herdr skips its own notification for the active tab of the focused workspace. This checks on
+// every call because panes move between tabs. An unknown answer counts as skipped, so pi notifies.
 async function herdrSkips(pi: ExtensionAPI, pane: string): Promise<boolean> {
   const info = await herdrJson<PaneInfo>(pi, ["pane", "get", pane]);
   const { tab_id: tab, workspace_id: workspaceId } = info?.result?.pane ?? {};
@@ -117,9 +117,9 @@ function watched(ctx: ExtensionContext): boolean {
 
 export default function (pi: ExtensionAPI) {
   let config: Config | undefined;
-  // Label of the prompt reported to herdr, so each start gets exactly one end.
+  // Tracks the prompt label sent to herdr, so each start gets exactly one end.
   let prompt: string | undefined;
-  // Tracked from events because a timer can outlive its ctx, which throws once the session ends.
+  // Events set these because a timer can outlive its ctx, and ctx throws once the session ends.
   let busy = false;
   let live = true;
 
@@ -166,11 +166,8 @@ export default function (pi: ExtensionAPI) {
     pi.events.emit("herdr:blocked", { active: false });
   });
 
+  // Pi is idle by the time agent_settled fires.
   pi.on("agent_settled", async (event, ctx) => {
-    if (!ctx.isIdle()) {
-      return;
-    }
-
     busy = false;
 
     // Esc means the user is already at the terminal.

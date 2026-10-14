@@ -3,16 +3,17 @@
  * fork resends the session's conversation with a summary request after it, so it sees full tool
  * results and can write up to the model's output limit.
  *
- * Each session request records the messages pi sends, the final payload, and the session leaf. A
- * fork sends those messages plus the entries added since. When its payload starts with the
+ * On each session request, this records the messages pi sends, the final payload, and the session
+ * leaf. A fork sends those messages plus the entries added since. When its payload starts with the
  * recorded messages, it reuses the recorded payload's system prompt, tools, thinking, and fast
- * mode, so it reads the conversation from the prompt cache. Without a recording, such as after a
- * restart, the fork rebuilds the context from the session and writes no conversation cache.
+ * mode, so the provider reads the conversation from the prompt cache. Without a recording, such as
+ * after a restart, the fork rebuilds the context from the session and writes no conversation cache.
  *
  * Pi's trigger is a fixed reserve per model, so this compacts at the end of a turn once context
- * reaches `compactAt` of the window. Pi's own compaction (overflow, /compact) forks too. A fork over
- * `compactAt` drops its oldest turns. Pi's summarizer runs when a fork fails. Configured by
- * `summaryFork` in settings.json.
+ * reaches `compactAt` of the window. Pi's own compaction on overflow or /compact forks too. A fork
+ * over `compactAt` drops its oldest turns. If a fork for pi's compaction or a branch summary
+ * fails, pi's summarizer runs instead. If an end-of-turn fork fails, compaction waits for pi's
+ * threshold. The `summaryFork` key in settings.json configures it.
  */
 
 import type { Api, AssistantMessage, Model, Usage, UserMessage } from "@earendil-works/pi-ai";
@@ -51,7 +52,7 @@ const NAME = "compaction";
 // Pi uses the `compaction` key.
 const KEY = "summaryFork";
 
-// Cap on pi's branch summarizer after a failed fork, OpenCode's default. Pi's own is 4,096.
+// Caps pi's branch summarizer after a failed fork. OpenCode uses this default. Pi's own is 4,096.
 const FALLBACK_BRANCH_TOKENS = 32_000;
 
 // Trimming keeps these at the start of the context.
@@ -102,7 +103,7 @@ interface ForkInput {
 
 type Forked = { text: string; usage: Usage } | { failure: string };
 
-// Pi's prompts, copied verbatim since pi doesn't export them.
+// This file copies pi's prompts verbatim, since pi doesn't export them.
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -209,9 +210,9 @@ function conversationLength(messages: PayloadMessage[]): number {
   return length;
 }
 
-// When the built conversation starts with the recorded one, sends that part as recorded, cache
-// breakpoint included, under the recorded settings. Keeps the built max_tokens, which pi-ai has
-// fit to the room left in the window.
+// When the built conversation starts with the recorded one, this sends that part as recorded,
+// with its cache breakpoint and settings. It keeps the built max_tokens, which pi-ai fit to the
+// room left in the window.
 function replayPayload(recorded: Payload, built: Payload): Payload | undefined {
   const length = conversationLength(recorded.messages);
   const prefix = recorded.messages.slice(0, length);
@@ -233,8 +234,8 @@ function forkPayload(recorded: Payload | undefined, built: Payload): Payload {
   return replayed ?? { ...built, messages: built.messages.map(stripCacheControl) };
 }
 
-// Undefined when the branch no longer contains the recorded leaf, or a summary since then changes
-// how pi builds the context.
+// Returns undefined when the branch no longer contains the recorded leaf, or when a later summary
+// changes how pi builds the context.
 function messagesSince(entries: SessionEntry[], leafId: string | null): AgentMessage[] | undefined {
   const start = leafId === null ? 0 : entries.findIndex((entry) => entry.id === leafId) + 1;
 
@@ -282,8 +283,8 @@ function nextTurn(messages: AgentMessage[], from: number, end: number): number |
 }
 
 // Drops whole turns from the front, after the system message and earlier summaries, until the
-// messages fit under limit. The last turn and the summary request stay. Undefined when they alone
-// are over the limit.
+// messages fit under the limit. The last turn and the summary request stay. Returns undefined when
+// they alone are over the limit.
 function fitWindow(
   messages: AgentMessage[],
   limit: number,
@@ -308,7 +309,7 @@ function fitWindow(
     start = next;
   }
 
-  // System messages carry tool changes, so dropped turns keep theirs.
+  // System messages contain tool changes, so this keeps the ones in dropped turns.
   const dropped = messages.slice(head, start);
   const toolChanges = dropped.filter((message) => message.role === "system");
 
@@ -318,8 +319,10 @@ function fitWindow(
   };
 }
 
-// The span a compaction summarizes, picked as pi picks it: from the previous compaction's kept
-// entry up to a cut that keeps keepRecentTokens. Undefined when there's nothing to summarize.
+// Finds the span a compaction summarizes. It runs from the previous compaction's kept entry to a
+// cut that keeps keepRecentTokens. Pi picks its cut from the session projection, which skips
+// context edits. The two cuts can differ when the span has edits. Returns undefined when there's
+// nothing to summarize.
 function compactionSpan(ctx: ExtensionContext, entries: SessionEntry[], model: Model<Api>) {
   const keptId = getLatestCompactionEntry(entries)?.firstKeptEntryId;
   const keptIndex = entries.findIndex((entry) => entry.id === keptId);
@@ -359,7 +362,7 @@ function branchStart(entries: SessionEntry[]): string {
   const start = first ? textOf(first.content).trim().slice(0, 200) : "";
 
   return start
-    ? `The branch starts at the user message that begins "${start}". Summarize that message and what follows. Earlier messages are shared context.`
+    ? `The branch starts at the user message that begins "${start}". Summarize that message and what follows. The other branch shares the messages before it.`
     : "";
 }
 
@@ -389,8 +392,8 @@ function formatFileLists({ readFiles, modifiedFiles }: FileLists): string {
   return sections.length > 0 ? `\n\n${sections.join("\n\n")}` : "";
 }
 
-// Pi skips file lists in summaries from extensions. This extension's have pi's format, so marking
-// them as pi's carries the lists into the next branch summary.
+// Pi skips file lists in summaries from extensions. This extension writes them in pi's format, so
+// marking its summaries as pi's makes pi include the lists in the next branch summary.
 function asPiSummaries(entries: SessionEntry[]): SessionEntry[] {
   return entries.map((entry) =>
     entry.type === "branch_summary" && entry.fromHook && Value.Check(FileLists, entry.details)
@@ -472,7 +475,7 @@ async function piBranchSummary(
 export default function compaction(pi: ExtensionAPI) {
   let request: Request | undefined;
 
-  // Set after a failed compaction fork, so it waits for the next run instead of every turn.
+  // A failed compaction fork sets this, so the retry waits for the next run, not the next turn.
   let failedThisRun = false;
 
   pi.on("context_with_system", (event, ctx) => {
@@ -722,7 +725,7 @@ export default function compaction(pi: ExtensionAPI) {
         return;
       }
 
-      // Each handler's entries replace the ones before, so this keeps other extensions'.
+      // Each handler's entries replace the earlier ones, so this keeps other extensions' entries.
       return {
         entries: [
           ...event.entries,

@@ -94,19 +94,19 @@ state=$(nmcli networking connectivity check || echo unknown)
 echo "     connectivity: $state"
 case "$state" in
 portal) echo '     look for the GNOME "Sign in to network" prompt.' ;;
-full) echo "     already online, nothing in the way." ;;
+full) echo "     already online, no portal found." ;;
 *) echo "     no portal reported, try the sign-in page anyway." ;;
 esac
 
 echo
 echo "${bold}3/4${reset} sign in to the portal"
 if confirm "     no sign-in window? open a plain HTTP page"; then
-  # Plain HTTP and no HSTS, so the portal can redirect it. An HTTPS URL would
+  # neverssl.com uses plain HTTP and no HSTS, so the portal can redirect it. An HTTPS URL would
   # fail certificate validation instead of showing the sign-in page.
   xdg-open http://neverssl.com >/dev/null 2>&1 ||
     echo "     open http://neverssl.com by hand" >&2
 fi
-read -r -p "     press enter once you are through the portal " || true
+read -r -p "     press enter once you have signed in " || true
 
 restore
 

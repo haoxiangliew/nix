@@ -1,6 +1,6 @@
 /**
- * $name anywhere in a prompt loads that skill. pi's /skill:name works only at the start of a prompt.
- * Only adds an autocomplete provider, so it never wraps the editor.
+ * $name anywhere in a prompt loads that skill. pi's /skill:name works only at the start of a
+ * prompt. It adds only an autocomplete provider, so it never wraps the editor. No settings.
  */
 
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
@@ -32,7 +32,7 @@ function loadedSkills(pi: ExtensionAPI): Map<string, Skill> {
   return found;
 }
 
-// Prefix matches first, then alphabetical.
+// Prefix matches sort first, then names sort alphabetically.
 function suggestions(skills: Map<string, Skill>, partial: string): AutocompleteItem[] {
   return [...skills]
     .filter(([name]) => name.includes(partial))

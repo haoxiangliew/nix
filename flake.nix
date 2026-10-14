@@ -10,7 +10,7 @@
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # TODO: drop once programs.pi-coding-agent lands in the home-manager release branch
+    # TODO: remove once the home-manager release branch includes programs.pi-coding-agent
     home-manager-master = {
       url = "github:nix-community/home-manager";
       flake = false;
@@ -197,7 +197,7 @@
             '';
           };
 
-          # One shell for every fluidstack repo. Projects opt in with
+          # Every fluidstack repo shares this shell. Projects opt in with
           #   use flake "$HOME/Developer/nix#fluidstack"
           # in their .envrc.
           fluidstack = pkgs.unstable.mkShell {
@@ -233,7 +233,7 @@
 
             shellHook = ''
               if [ -f .prototools ]; then
-                # install first: activate only exports dirs for installed tools
+                # Install first, because proto activate only exports directories for installed tools.
                 proto use
                 eval "$(proto activate bash --export)"
               fi

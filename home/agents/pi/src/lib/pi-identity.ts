@@ -25,7 +25,7 @@ const ProbeBody = Type.Object({
   ),
 });
 
-export interface PiIdentity {
+interface PiIdentity {
   prompt: string;
   userAgent: string;
   app: string;
@@ -94,7 +94,7 @@ export async function readPiIdentity(apiKey: string, signal?: AbortSignal): Prom
       failure = cause;
     }
 
-    // The SDK doesn't retry a 400.
+    // The probe sets no maxRetries, so pi-ai doesn't retry and this response ends it.
     return Response.json(
       {
         type: "error",

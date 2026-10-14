@@ -1,7 +1,7 @@
 /**
- * Extension settings, stored under top-level keys of pi's settings.json and validated against a
- * TypeBox schema. Unknown keys and invalid values are errors, so a typo turns the extension off.
- * pi skips this directory because it has no index.ts.
+ * Extensions store settings under top-level keys of pi's settings.json. This module checks each
+ * setting against a TypeBox schema. Unknown keys and invalid values are errors, so a typo turns
+ * the extension off. pi skips this directory because it has no index.ts.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -92,8 +92,8 @@ type Setting =
   | readonly Setting[]
   | { readonly [key: string]: Setting | undefined };
 
-// Keeps the other keys. pi rewrites only the settings it changed, so this one survives pi's saves.
-// key can be a nested path like "a/b/c", and saveSetting creates any missing objects on the way.
+// Keeps the other keys. pi rewrites only the settings it changed, so pi's saves keep this one.
+// key can be a nested path like "a/b/c", and saveSetting creates any missing parent objects.
 // undefined removes the key, since JSON.stringify leaves it out.
 export function saveSetting(key: string, value: Setting | undefined): void {
   const path = settingsPath();

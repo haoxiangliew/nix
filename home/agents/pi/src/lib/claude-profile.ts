@@ -25,9 +25,9 @@ export interface CliProfile {
   readonly probePrompt: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly identityPrompt: string;
-  /** From the probe request. Replace its per-request fields before sending. */
+  /** Comes from the probe request. Replace its per-request fields before sending. */
   readonly attributionText: string;
-  /** Account, device, and session IDs. Don't log or save them. */
+  /** Contains account, device, and session IDs. Don't log or save them. */
   readonly metadataUserId: Readonly<Record<string, string>>;
   readonly model: string;
   readonly rawBody: string;

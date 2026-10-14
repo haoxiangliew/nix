@@ -1,8 +1,9 @@
 /**
- * Turns a system prompt that an extension forced by returning `systemPrompt` from
- * `before_agent_start` back into pi's own prompt, and moves any text it appended into a prompt
- * section. While a prompt is forced, pi re-sends the whole system prompt and tool list on every
- * change, which misses the prompt cache. A prompt replaced outright stays forced. No settings.
+ * Restores pi's own system prompt when an extension forces one by returning `systemPrompt` from
+ * `before_agent_start`. It moves any text the extension appended into a prompt section. While an
+ * extension forces the prompt, pi re-sends the whole system prompt and tool list on every change,
+ * which misses the prompt cache. If an extension replaces the prompt outright, it stays forced.
+ * No settings.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,7 +21,7 @@ export default function (pi: ExtensionAPI) {
 
     delete options.forceSystemPrompt;
 
-    // Without the force, this renders pi's own prompt.
+    // Without forceSystemPrompt, this renders pi's own prompt.
     const prompt = event.systemPrompt;
 
     if (forced === prompt) {

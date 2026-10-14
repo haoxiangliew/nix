@@ -1,8 +1,8 @@
 /**
- * /fast sends `speed: "fast"` to supported Anthropic models and the priority service tier to OpenAI.
- * In the /fast picker, enter applies the choice to this session and ctrl+s also saves it as the
- * default in settings.json.
- * --fast starts with it on. Configured by `fast` in settings.json.
+ * /fast sends `speed: "fast"` to supported Anthropic models and the priority service tier to
+ * OpenAI. In the /fast picker, enter applies the choice to this session and ctrl+s also saves it as
+ * the default in settings.json. --fast starts with it on. The `fast` key in settings.json
+ * configures it.
  */
 
 import {
@@ -38,7 +38,7 @@ type Config = Static<typeof Config>;
 // The default /fast saves with ctrl+s.
 const FastMode = Type.Boolean({ default: false });
 
-// Extra fields pass through; Anthropic requests may already carry betas.
+// The schema allows extra fields. Anthropic requests may already have betas.
 const Payload = Type.Object({ betas: Type.Optional(Type.Array(Type.String())) });
 
 const OPENAI_PROVIDERS = new Set(["openai", "openai-codex"]);
@@ -77,7 +77,7 @@ function backend(model: ExtensionContext["model"], config: Config): Backend | un
 }
 
 // pi prices Anthropic replies at standard rates because it ignores `usage.speed`. A fast request
-// either runs fast or fails, so a completed reply to one was billed at the fast rate.
+// either runs fast or fails, so Anthropic billed a completed reply to one at the fast rate.
 function billedFast(message: AssistantMessage, config: Config): boolean {
   return (
     message.provider === "anthropic" &&
@@ -219,7 +219,7 @@ function choose(
   return pick(ctx, config, enabled);
 }
 
-// Rewrites outgoing payloads while fast mode is on and bills the replies at the fast rate.
+// Rewrites outgoing payloads while fast mode is on and prices the replies at the fast rate.
 function handleRequests(pi: ExtensionAPI, current: () => Config | undefined): void {
   // Whether the request in flight asked Anthropic for fast mode.
   let fastRequest = false;

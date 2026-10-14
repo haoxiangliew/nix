@@ -69,7 +69,7 @@ let
 in
 
 {
-  # TODO: drop once programs.pi-coding-agent lands in the home-manager release branch
+  # TODO: remove once the home-manager release branch includes programs.pi-coding-agent
   imports = [ "${inputs.home-manager-master}/modules/programs/pi-coding-agent.nix" ];
 
   options.programs =
@@ -79,7 +79,7 @@ in
           integrations.herdr = lib.mkOption {
             type = lib.types.nullOr lib.types.package;
             default = null;
-            description = "Herdr package whose agent integration is installed during activation.";
+            description = "Herdr package whose agent integration home-manager installs during activation.";
           };
         }
       ))
@@ -161,7 +161,7 @@ in
                   }
                 );
             authorizerChain = [ "auto-mode" ];
-            # tier 3: everything else asks, and the reviewer decides
+            # tier 3: everything else is an ask, and the reviewer decides
             permission = {
               # tier 1: read-only tools
               read = "allow";
@@ -210,7 +210,7 @@ in
               };
               external_directory_read."*" = "allow";
 
-              # credential files go to the reviewer, even from read-only tools
+              # the reviewer checks credential file access, even from read-only tools
               path = {
                 "*" = "allow";
                 "*.env" = "ask";

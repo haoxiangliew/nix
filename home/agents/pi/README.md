@@ -1,6 +1,6 @@
 # pi extensions
 
-Extensions and a theme for [pi](https://pi.dev), linked into `~/.pi/agent` by `home/agents/default.nix`. `src/lib/` has code the extensions share.
+This folder has extensions and a theme for [pi](https://pi.dev). `home/agents/default.nix` links them into `~/.pi/agent`. `src/lib/` has code the extensions share.
 
 ## Patches
 
@@ -8,11 +8,11 @@ Extensions and a theme for [pi](https://pi.dev), linked into `~/.pi/agent` by `h
 
 ## Configure
 
-Each extension reads a top-level key in `~/.pi/agent/settings.json`, set from `programs.pi-coding-agent.settings` in `home/agents/default.nix`. Missing fields use the defaults below, and `/reload` picks up changes. An unknown key or invalid value turns the extension off with an error. Activation never deletes keys, so remove renamed ones by hand.
+Each extension reads a top-level key in `~/.pi/agent/settings.json`. `home/agents/default.nix` sets these keys from `programs.pi-coding-agent.settings`. Missing fields use the defaults below, and `/reload` picks up changes. An unknown key or invalid value turns the extension off with an error. Activation never deletes keys, so remove renamed ones by hand.
 
 ### `anthropic-billing.ts`
 
-Sends pi's Anthropic OAuth requests, including compaction forks and cache warming, with the headers, system prompt, and body signature of the installed `claude --print`. It learns them by running `claude` against a local mock API and reading its binary, which works only on macOS ARM64 and Linux x86-64. It blocks any request it can't match. On plans other than Enterprise, it also blocks the session once a response is billed to usage credits. Run `/reload` after updating `claude` or pi, or after switching accounts. No settings.
+Sends pi's Anthropic OAuth requests with the headers, system prompt, and body signature of the installed `claude --print`. This includes compaction forks and cache warming. It learns them by running `claude` against a local mock API and reading its binary. This works only on macOS ARM64 and Linux x86-64. It blocks any request it can't match. On plans other than Enterprise, it also blocks the session once Anthropic bills a response to usage credits. Run `/reload` after updating `claude` or pi, or after switching accounts. No settings.
 
 ### `attention.ts`
 
@@ -25,7 +25,7 @@ Notifies when pi waits on a prompt or finishes, but not when you cancel with Esc
 
 ### `auto-mode.ts`
 
-Reviews pi-permission-system asks with a model instead of asking you. The static rules in `home/agents/default.nix` allow only what's safe without review, and every other ask comes here. The reviewer trusts your messages and your answers to `ask_user_question`, never the agent's tool calls or output. Before it allows or denies an ask, it can run checks limited to what the agent may run without asking. It can deny `path` and `external_directory` asks, such as writes outside the project, but when it would allow one, the dialog opens instead. Errors and repeated denials also open the dialog. A denial tells the agent not to work around it. For most asks, the agent asks you with `ask_user_question` and retries once if you approve. A denied `path` or `external_directory` ask retries once and opens the dialog, and a subagent stops and says so in its answer.
+Reviews pi-permission-system asks with a model instead of asking you. The static rules in `home/agents/default.nix` allow only what's safe without review, and every other ask comes here. The reviewer trusts your messages and your answers to `ask_user_question`, never the agent's tool calls or output. Before it allows or denies an ask, it can run checks limited to what the agent may run without asking. It can deny `path` and `external_directory` asks, such as writes outside the project. When it would allow one, it opens the dialog instead. Errors and repeated denials also open the dialog. A denial tells the agent not to work around it. For most asks, the agent asks you with `ask_user_question` and retries once if you approve. A subagent stops instead and says so in its answer. After a denied `path` or `external_directory` ask, the agent retries once and the dialog opens.
 
 | Key                                     | Default                                                          | Meaning                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -37,7 +37,7 @@ Reviews pi-permission-system asks with a model instead of asking you. The static
 | `autoMode.retryDelayMs`                 | `250`                                                            | Wait before the first retry                                              |
 | `autoMode.maxRetryDelayMs`              | `2000`                                                           | Longest wait between retries                                             |
 | `autoMode.maxDenials`                   | `3`                                                              | Denials in a row before asks go to the dialog until your next message    |
-| `autoMode.environment`                  | `[]`                                                             | Orgs, domains, and services the reviewer trusts                          |
+| `autoMode.environment`                  | `[]`                                                             | Organizations, domains, and services the reviewer trusts                 |
 | `autoMode.context.messageTokens`        | `5000`                                                           | Limit per user message                                                   |
 | `autoMode.context.toolCallTokens`       | `1000`                                                           | Limit per tool call                                                      |
 | `autoMode.context.threadTokens`         | `30000`                                                          | Review thread size before it starts over                                 |
@@ -48,7 +48,7 @@ Reviews pi-permission-system asks with a model instead of asking you. The static
 
 ### `compaction.ts`
 
-Writes compaction and branch summaries (`/tree`, `/end-review`) by forking the session, as Claude Code and Codex do, so the summary sees full tool results. On Anthropic models the fork reads the conversation from the prompt cache. It compacts at the end of a turn once context reaches `compactAt` of the model's window, and falls back to pi's summarizer when a fork fails. Pi uses the `compaction` key, so this one reads `summaryFork`.
+Writes compaction summaries and the branch summaries for `/tree` and `/end-review` by forking the session, as Claude Code and Codex do. The fork lets the summary see full tool results. On Anthropic models the fork reads the conversation from the prompt cache. It compacts at the end of a turn once context reaches `compactAt` of the model's window. It falls back to pi's summarizer when a fork fails. Pi uses the `compaction` key, so this one reads `summaryFork`.
 
 | Key                     | Default | Meaning                                                      |
 | ----------------------- | ------- | ------------------------------------------------------------ |
@@ -67,7 +67,7 @@ Writes compaction and branch summaries (`/tree`, `/end-review`) by forking the s
 
 ### `mcp-ancestors.ts`
 
-Registers MCP servers from `.mcp.json` files in each folder from a root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. Files below the root load only in a trusted project.
+Registers MCP servers from `.mcp.json` files in each folder from a root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. In a trusted project, every file from the root down loads. In an untrusted project, none do, not even the root's.
 
 | Key                  | Default | Meaning                                                       |
 | -------------------- | ------- | ------------------------------------------------------------- |
@@ -75,7 +75,7 @@ Registers MCP servers from `.mcp.json` files in each folder from a root down to 
 
 ### `mermaid.ts`
 
-Draws mermaid blocks in the TUI with [lovely-mermaid](https://github.com/xl0/lovely-mermaid), which reads more of mermaid than pi's built-in renderer, so `home/agents/default.nix` turns pi's off. It quotes labels that break a flowchart and redraws flowcharts top to bottom when they're too wide. A diagram that still doesn't draw shows its source and the reason. Its prompt rule tells the model which diagrams draw and how long labels can be. Nix installs lovely-mermaid at the version in `bun.lock`. No settings.
+Draws mermaid blocks in the TUI with [lovely-mermaid](https://github.com/xl0/lovely-mermaid). It supports more mermaid syntax than pi's built-in renderer, so `home/agents/default.nix` turns pi's renderer off. It quotes labels that break a flowchart and redraws flowcharts top to bottom when they're too wide. A diagram that still doesn't draw shows its source and the reason. Its prompt rule tells the model which diagrams it can draw and how long labels can be. Nix installs lovely-mermaid at the version in `bun.lock`. No settings.
 
 ### `prompt-sections.ts`
 
@@ -87,7 +87,7 @@ Keeps extensions that append to the system prompt from breaking the prompt cache
 
 ### `stream-watchdog.ts`
 
-Fails an Anthropic request whose stream stalls, so pi retries it. Anthropic keeps stalled streams open with pings, so pi would otherwise wait forever. The statusline's `stall` segment shows a countdown, and it logs failed requests with their `request-id` to `~/.pi/agent/stream-watchdog.jsonl`.
+Fails an Anthropic request whose stream stalls, so pi retries it. Anthropic keeps stalled streams open with pings, so pi would otherwise wait forever. The statusline's `stall` segment shows a countdown. The extension logs failed requests with their `request-id` to `~/.pi/agent/stream-watchdog.jsonl`.
 
 | Key                              | Default    | Meaning                                                      |
 | -------------------------------- | ---------- | ------------------------------------------------------------ |
@@ -96,12 +96,12 @@ Fails an Anthropic request whose stream stalls, so pi retries it. Anthropic keep
 | `streamWatchdog.firstEventMs`    | `60000`    | Wait from the headers to the first event                     |
 | `streamWatchdog.eventIdleMs`     | `90000`    | Longest gap between events, not counting pings               |
 | `streamWatchdog.byteIdleMs`      | `60000`    | Longest gap between bytes, counting pings                    |
-| `streamWatchdog.warnMs`          | `30000`    | Silence before the status line shows the countdown           |
+| `streamWatchdog.warnMs`          | `30000`    | Silence before the statusline shows the countdown            |
 | `streamWatchdog.log`             | `"stalls"` | `off`, `stalls`, or `all`, which also logs finished requests |
 
 ### `statusline.ts`
 
-Replaces pi's footer with one line. Invalid settings keep pi's footer. `tokens` shows input (`↑`) and output (`↓`) tokens across all requests since your last message, including cached input. Output shows `~` while it's an estimate.
+Replaces pi's footer with one line. If the settings are invalid, pi keeps its footer. `tokens` shows input (`↑`) and output (`↓`) tokens across all requests since your last message, including cached input. Output shows `~` while it's an estimate.
 
 | Key                   | Default                  | Meaning                                                                                                                                  |
 | --------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
@@ -109,7 +109,7 @@ Replaces pi's footer with one line. Invalid settings keep pi's footer. `tokens` 
 
 ### `super-review.ts`
 
-Adds optional extra reviewers to pi-review's `/review`. After pi-review's dialogs, you pick one or more models, by default `openai-codex/gpt-6.1-sol` for an Anthropic session and `anthropic/claude-opus-5-5` for an OpenAI one. Each reviews the same change as a pi-subagents subagent. Then all the models settle the findings until they agree, and the session's model prints the agreed review.
+Adds optional extra reviewers to pi-review's `/review`. After pi-review's dialogs, you pick one or more models, by default `openai-codex/gpt-6.1-sol` for an Anthropic session and `anthropic/claude-opus-5-5` for an OpenAI one. Each reviews the same change as a pi-subagents subagent. Then all the models discuss the findings until they agree, and the session's model prints the agreed review.
 
 | Key                                  | Default | Meaning                                                                                                   |
 | ------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------- |
