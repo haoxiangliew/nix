@@ -46,7 +46,11 @@ export default function (pi: ExtensionAPI) {
   blockWrites(pi, () => (enabled ? config : undefined));
 
   // Earlier talk prompts stay in history, so the first turn after talk mode turns off says so.
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (event) => {
+    if (event.messageType !== "user") {
+      return;
+    }
+
     const content = enabled ? config?.prompt : turnedOff ? OFF_PROMPT : undefined;
 
     turnedOff = false;

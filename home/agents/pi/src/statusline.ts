@@ -223,7 +223,11 @@ function trackTotals(pi: ExtensionAPI, onChange: () => void): () => Totals | und
   let done: Totals | undefined;
   let current: Totals | undefined;
 
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (event) => {
+    if (event.messageType !== "user") {
+      return;
+    }
+
     done = { input: 0, output: 0, estimated: false };
     current = done;
     onChange();

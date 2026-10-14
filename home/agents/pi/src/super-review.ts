@@ -393,7 +393,11 @@ export default function (pi: ExtensionAPI) {
   // Spawns after pi compacts before the prompt and right before agent_start, when pi-subagents
   // starts holding back results until the run settles. If a spawn throws, pi reports the error and
   // the review runs without adversaries.
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (event.messageType !== "user") {
+      return;
+    }
+
     const spawn = pending;
 
     pending = undefined;

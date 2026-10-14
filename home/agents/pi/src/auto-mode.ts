@@ -999,7 +999,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   // A new user message can authorize what was denied, so the reviewer gets another try.
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (event) => {
+    if (event.messageType !== "user") {
+      return;
+    }
+
     denials = 0;
   });
 

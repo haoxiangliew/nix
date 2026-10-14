@@ -179,7 +179,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("model_select", async (_event, ctx) => prefetch(ctx));
 
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (event.messageType !== "user") {
+      return;
+    }
+
     setSession(ctx);
     session.promptId = crypto.randomUUID();
     session.promptIndex++;
