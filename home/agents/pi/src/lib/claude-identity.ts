@@ -201,7 +201,7 @@ function attribution(source: string, version: string) {
 
   const builder = matched(
     source,
-    /function ([$\w]+)\(([$\w,]+)\)\{(.{0,3000}?),([$\w]+)=`([^`]+) cc_version=\$\{([$\w]+)\}; cc_entrypoint=\$\{([$\w]+)\};((?:\$\{[$\w]+\})+)`;return [$\w]+\(`attribution header \$\{\4\}`\),\4\}/,
+    /function ([$\w]+)\(([$\w,]+)\)\{((?:(?!\}function ).){0,3000}?),([$\w]+)=`([^`]+) cc_version=\$\{([$\w]+)\}; cc_entrypoint=\$\{([$\w]+)\};((?:\$\{[$\w]+\})+(?:\$\{\([$\w]+==="gateway"\|\|([$\w]+)\)&&![$\w]+\?` cc_gateway=\$\{\9\?"1":"env"\};`:""\})?)`;return [$\w]+\(`attribution header \$\{\4\}`\),\4\}/,
     "complete attribution builder",
   );
 
