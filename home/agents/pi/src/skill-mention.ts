@@ -1,6 +1,6 @@
 /**
  * $name anywhere in a prompt loads that skill. pi's /skill:name works only at the start of a
- * prompt. It adds only an autocomplete provider, so it never wraps the editor. No settings.
+ * prompt. No settings.
  */
 
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
@@ -8,6 +8,8 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { stripFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
+
+import { errorMessage } from "./lib/settings.ts";
 
 interface Skill {
   description: string;
@@ -32,7 +34,6 @@ function loadedSkills(pi: ExtensionAPI): Map<string, Skill> {
   return found;
 }
 
-// Prefix matches sort first, then names sort alphabetically.
 function suggestions(skills: Map<string, Skill>, partial: string): AutocompleteItem[] {
   return [...skills]
     .filter(([name]) => name.includes(partial))
@@ -72,7 +73,7 @@ export default function (pi: ExtensionAPI) {
     }));
   });
 
-  // pi expands /skill: and templates after this hook, so slash commands pass through.
+  // Pi expands /skill: and templates after this hook, so slash commands pass through.
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension" || event.text.startsWith("/") || !event.text.includes("$")) {
       return { action: "continue" };
@@ -93,23 +94,28 @@ export default function (pi: ExtensionAPI) {
       return `${space}${name}`;
     });
 
-    const blocks = [...used].flatMap(([name, path]) => {
-      try {
-        return [skillBlock(name, path)];
-      } catch (err) {
-        ctx.ui.notify(
-          `Could not read $${name}: ${err instanceof Error ? err.message : String(err)}`,
-          "error",
-        );
-
-        return [];
-      }
-    });
-
-    if (blocks.length === 0) {
+    if (used.size === 0) {
       return { action: "continue" };
     }
 
-    return { action: "transform", text: `${blocks.join("\n\n")}\n\n${text}`, images: event.images };
+    // Pi sends the original prompt when an input handler throws, so this blocks it instead. The
+    // agent would otherwise run without a skill the prompt names.
+    try {
+      const blocks = [...used].map(([name, path]) => skillBlock(name, path));
+
+      return {
+        action: "transform",
+        text: `${blocks.join("\n\n")}\n\n${text}`,
+        images: event.images,
+      };
+    } catch (error) {
+      ctx.ui.notify(
+        `A skill failed to load, so pi didn't send the prompt. ${errorMessage(error)}`,
+        "error",
+      );
+      ctx.ui.setEditorText(event.text);
+
+      return { action: "handled" };
+    }
   });
 }

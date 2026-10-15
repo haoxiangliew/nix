@@ -5,12 +5,15 @@ import { billingFetch, type BillingSession } from "./lib/anthropic-billing.ts";
 import { assertBillingReady } from "./lib/billing-quota.ts";
 import { BILLING_SESSION_HEADER } from "./lib/billing-session.ts";
 import { readClaudeIdentity, type ClaudeIdentity } from "./lib/claude-identity.ts";
-import { registerFetchWrapper, type FetchWrapper } from "./lib/fetch.ts";
+import {
+  registerFetchWrapper,
+  requestHeaders,
+  type FetchInput,
+  type FetchWrapper,
+} from "./lib/fetch.ts";
 import { awaitAbort } from "./lib/promise.ts";
 
 const TAG = "x-pi-anthropic-billing";
-
-type FetchInput = Parameters<FetchFunction>[0];
 
 interface Handler {
   sessionId: () => string;
@@ -43,9 +46,7 @@ async function locateCli(pi: ExtensionAPI): Promise<{ path: string; version: str
 }
 
 function untag(input: FetchInput, init: RequestInit | undefined) {
-  const headers = new Headers(
-    init?.headers ?? (input instanceof Request ? input.headers : undefined),
-  );
+  const headers = requestHeaders(input, init);
 
   const token = headers.get(TAG);
   const sessionId = headers.get(BILLING_SESSION_HEADER);

@@ -1,10 +1,8 @@
 /**
  * Registers MCP servers from `.mcp.json` files in each folder from a configured root down to the
- * session's folder. Pi's own MCP support reads only `~/.pi/agent/mcp.json` and a trusted project's
- * `.pi/mcp.json`. Nearer files override farther ones. In a trusted project, every file from the
- * root down loads. In an untrusted one, none do. Expands ${VAR} and ${VAR:-default} as Claude Code
- * does, since pi expands variables only in env and headers and has no defaults. The `mcpAncestors`
- * key in settings.json configures it.
+ * session's folder, as Claude Code does. Nearer files win. Untrusted projects load none. Expands
+ * ${VAR} and ${VAR:-default}, since pi expands variables only in env and headers and has no
+ * defaults. The `mcpAncestors` key in settings.json configures it.
  */
 
 import type {
@@ -50,7 +48,7 @@ type Servers = Map<string, McpServerConfig>;
 const FILE = ".mcp.json";
 
 function expandHome(path: string): string {
-  return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : resolve(path);
+  return resolve(path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path);
 }
 
 function contains(parent: string, child: string): boolean {
@@ -59,7 +57,6 @@ function contains(parent: string, child: string): boolean {
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-// Returns the deepest root that contains cwd, then each folder below it down to cwd.
 function folders(roots: string[], cwd: string): string[] {
   let root: string | undefined;
 
@@ -80,6 +77,10 @@ function folders(roots: string[], cwd: string): string[] {
 
     if (dir === root) {
       return chain;
+    }
+
+    if (dirname(dir) === dir) {
+      throw new Error(`${root} doesn't contain ${cwd}`);
     }
   }
 }
@@ -122,7 +123,7 @@ function expandRecord(
   );
 }
 
-// Pi resolves a relative cwd against the session's folder, but this resolves it against the file's.
+// Resolve relative cwd against the config file's directory, not the session's.
 function resolveCwd(dir: string, cwd: string): string {
   return isAbsolute(cwd) || cwd.startsWith("~") ? cwd : resolve(dir, cwd);
 }
@@ -148,7 +149,6 @@ function expandEntry(dir: string, entry: Entry): Entry {
   return Object.fromEntries(Object.entries(expanded).filter(([, value]) => value !== undefined));
 }
 
-// Later calls override earlier ones, so a nearer folder wins.
 function addFile(servers: Servers, dir: string, report: Report): void {
   const path = join(dir, FILE);
 

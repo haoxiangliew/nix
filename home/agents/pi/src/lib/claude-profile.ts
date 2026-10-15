@@ -25,9 +25,9 @@ export interface CliProfile {
   readonly probePrompt: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly identityPrompt: string;
-  /** Comes from the probe request. Replace its per-request fields before sending. */
+  /** Replace the probe's per-request fields before sending. */
   readonly attributionText: string;
-  /** Contains account, device, and session IDs. Don't log or save them. */
+  /** Do not log or save these account, device, and session IDs. */
   readonly metadataUserId: Readonly<Record<string, string>>;
   readonly model: string;
   readonly rawBody: string;
@@ -216,7 +216,7 @@ async function runProbe(executable: string, model: string, cwd: string): Promise
 
         return mockMessage(captured.model);
       } catch {
-        // Drop the error, since it may contain headers, credentials, or the request.
+        // Do not expose errors that may contain credentials or request data.
         captureFailed = true;
 
         return new Response("Invalid local CLI profile request.", { status: 400 });
@@ -264,10 +264,8 @@ async function runProbe(executable: string, model: string, cwd: string): Promise
   }
 }
 
-/**
- * Runs the CLI against a local mock API, so model requests never leave the machine. The CLI may
- * still refresh its OAuth token.
- */
+// Runs the CLI against a local mock API, so model requests stay local. The CLI may still refresh
+// its OAuth token.
 export async function discoverCliProfile(executable: string, model: string): Promise<CliProfile> {
   const cwd = await mkdtemp(join(tmpdir(), "claude-profile-"));
 

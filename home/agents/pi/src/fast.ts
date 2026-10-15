@@ -1,8 +1,7 @@
 /**
  * /fast sends `speed: "fast"` to supported Anthropic models and the priority service tier to
- * OpenAI. In the /fast picker, enter applies the choice to this session and ctrl+s also saves it as
- * the default in settings.json. --fast starts with it on. The `fast` key in settings.json
- * configures it.
+ * OpenAI. In the picker, enter applies the choice to this session and ctrl+s also saves it as the
+ * default. --fast starts with it on. The `fast` key in settings.json configures it.
  */
 
 import {
@@ -21,13 +20,10 @@ import { loadOrReport, loadSettings, saveSetting } from "./lib/settings.ts";
 
 const Config = Type.Object(
   {
-    // Anthropic models that support fast mode.
     models: Type.Array(Type.String(), {
       default: ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"],
     }),
-    // The anthropic-beta header that enables it.
     beta: Type.String({ minLength: 1, default: "fast-mode-2026-02-01" }),
-    // Fast mode bills every token category at this multiple of the standard rate.
     costMultiplier: Type.Number({ minimum: 1, default: 2 }),
   },
   { additionalProperties: false, default: {} },
@@ -35,10 +31,8 @@ const Config = Type.Object(
 
 type Config = Static<typeof Config>;
 
-// The default /fast saves with ctrl+s.
 const FastMode = Type.Boolean({ default: false });
 
-// The schema allows extra fields. Anthropic requests may already have betas.
 const Payload = Type.Object({ betas: Type.Optional(Type.Array(Type.String())) });
 
 const OPENAI_PROVIDERS = new Set(["openai", "openai-codex"]);
@@ -76,8 +70,8 @@ function backend(model: ExtensionContext["model"], config: Config): Backend | un
   return undefined;
 }
 
-// pi prices Anthropic replies at standard rates because it ignores `usage.speed`. A fast request
-// either runs fast or fails, so Anthropic billed a completed reply to one at the fast rate.
+// Pi ignores usage.speed when pricing replies. A fast request either runs fast or fails, so
+// Anthropic bills a completed reply at the fast rate.
 function billedFast(message: AssistantMessage, config: Config): boolean {
   return (
     message.provider === "anthropic" &&
@@ -212,6 +206,12 @@ function choose(
     return Promise.resolve({ enabled: arg === "on", persist: false });
   }
 
+  if (arg !== "") {
+    ctx.ui.notify(`Unknown /fast argument "${arg}". Use on or off.`, "error");
+
+    return Promise.resolve(undefined);
+  }
+
   if (ctx.mode !== "tui") {
     return Promise.resolve({ enabled: !enabled, persist: false });
   }
@@ -219,16 +219,15 @@ function choose(
   return pick(ctx, config, enabled);
 }
 
-// Rewrites outgoing payloads while fast mode is on and prices the replies at the fast rate.
 function handleRequests(pi: ExtensionAPI, current: () => Config | undefined): void {
-  // Whether the request in flight asked Anthropic for fast mode.
-  let fastRequest = false;
+  // The config of the request in flight. /fast can change current() before the reply ends.
+  let fastConfig: Config | undefined;
 
   pi.on("before_provider_request", async (event, ctx) => {
     const config = current();
     const { payload } = event;
 
-    fastRequest = false;
+    fastConfig = undefined;
 
     if (config === undefined || !Value.Check(Payload, payload)) {
       return;
@@ -240,27 +239,27 @@ function handleRequests(pi: ExtensionAPI, current: () => Config | undefined): vo
       return;
     }
 
-    // Edits in place, so compaction.ts records the final payload whichever extension runs first.
+    // Mutate in place so compaction.ts records these changes regardless of handler order.
     if (target === "openai") {
       return Object.assign(payload, { service_tier: "priority" });
     }
 
     const betas = payload.betas ?? [];
 
-    fastRequest = true;
+    fastConfig = config;
 
     return Object.assign(payload, { speed: "fast", betas: [...new Set([...betas, config.beta])] });
   });
 
   pi.on("message_end", async (event) => {
     const { message } = event;
-    const config = current();
+    const config = fastConfig;
 
-    if (message.role !== "assistant" || !fastRequest || config === undefined) {
+    if (message.role !== "assistant" || config === undefined) {
       return;
     }
 
-    fastRequest = false;
+    fastConfig = undefined;
 
     if (!billedFast(message, config)) {
       return;

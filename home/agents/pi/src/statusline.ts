@@ -1,8 +1,6 @@
 /**
- * Replaces pi's footer with one line: talk, auto-mode review, stall warning, model, thinking, fast,
- * folder, branch, context, cost, tokens since the last user message, tokens per second, and time
- * to first token. With invalid settings, pi keeps its built-in footer. The `statusline` key in
- * settings.json configures it.
+ * Replaces pi's footer with one line of segments. With invalid settings, pi keeps its own footer.
+ * The `statusline` key in settings.json configures it.
  */
 
 import type { Usage } from "@earendil-works/pi-ai";
@@ -38,7 +36,6 @@ const SEGMENTS = [
 
 const Config = Type.Object(
   {
-    // Which segments to show, in order.
     segments: Type.Array(Type.Enum(SEGMENTS), { uniqueItems: true, default: [...SEGMENTS] }),
   },
   { additionalProperties: false, default: {} },
@@ -53,18 +50,16 @@ interface Speed {
   tokensPerSecond?: number;
 }
 
-// Tokens since the last user message, summed over its model requests. Input includes cached
-// tokens, so it grows with each request.
+// Tokens since the last user message. Input includes cached tokens, so it grows with each request.
 interface Totals {
   input: number;
   output: number;
-  // Anthropic reports output tokens only when a reply ends, so this estimates a streaming reply.
+  // Anthropic reports output tokens only when the reply ends.
   estimated: boolean;
 }
 
 const OUTPUT = new Set(["text_delta", "thinking_delta", "toolcall_delta"]);
 
-// Start events carry no content.
 function isModelOutput(event: MessageUpdateEvent): boolean {
   const update = event.assistantMessageEvent;
 
@@ -178,7 +173,6 @@ function trackSpeed(pi: ExtensionAPI, onChange: () => void): Speed {
   let requestStart: number | undefined;
   let firstToken: number | undefined;
 
-  // Fires after context transforms and auth refresh, right before pi sends the payload.
   pi.on("before_provider_request", async () => {
     requestStart = Date.now();
     firstToken = undefined;

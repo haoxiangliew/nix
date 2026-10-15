@@ -1,9 +1,7 @@
 /**
- * Notifies when pi waits on a prompt or finishes, and reports prompts to herdr as blocked. It tells
- * the agent to ask with ask_user_question, since herdr shows a turn that ends on a question as
- * done. herdr notifies only for panes outside the active tab, so inside herdr this notifies only
- * for the active tab. Outside herdr it notifies through the terminal. The `attention` key in
- * settings.json configures it.
+ * Notifies when pi waits on a prompt or finishes a run, and reports prompts to herdr as blocked.
+ * herdr shows a turn that ends on a question as done, so this tells the agent to ask with
+ * ask_user_question. The `attention` key in settings.json configures it.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -15,7 +13,7 @@ import { loadOrReport } from "./lib/settings.ts";
 const Config = Type.Object(
   {
     title: Type.String({ minLength: 1, default: "pi" }),
-    // How long pi waits before notifying. Matches herdr's ui.toast.delay_seconds.
+    // Matches herdr's ui.toast.delay_seconds.
     delayMs: Type.Integer({ minimum: 0, default: 1000 }),
   },
   { additionalProperties: false, default: {} },
@@ -63,8 +61,8 @@ async function herdrJson<T>(pi: ExtensionAPI, args: string[]): Promise<T | undef
   }
 }
 
-// herdr skips its own notification for the active tab of the focused workspace. This checks on
-// every call because panes move between tabs. An unknown answer counts as skipped, so pi notifies.
+// herdr doesn't notify for the active tab of the focused workspace. Check on every call because
+// panes move. An unknown answer counts as skipped, so pi notifies.
 async function herdrSkips(pi: ExtensionAPI, pane: string): Promise<boolean> {
   const info = await herdrJson<PaneInfo>(pi, ["pane", "get", pane]);
   const { tab_id: tab, workspace_id: workspaceId } = info?.result?.pane ?? {};
@@ -110,16 +108,15 @@ function notifyLater(
   }, config.delayMs).unref();
 }
 
-// Subagent children and print or RPC runs have no one watching.
+// Subagents and print or RPC runs have no one watching.
 function watched(ctx: ExtensionContext): boolean {
   return ctx.mode === "tui";
 }
 
 export default function (pi: ExtensionAPI) {
   let config: Config | undefined;
-  // Tracks the prompt label sent to herdr, so each start gets exactly one end.
   let prompt: string | undefined;
-  // Events set these because a timer can outlive its ctx, and ctx throws once the session ends.
+  // Events set these because a timer can outlive ctx, which throws after the session ends.
   let busy = false;
   let live = true;
 
@@ -135,7 +132,6 @@ export default function (pi: ExtensionAPI) {
     busy = true;
   });
 
-  // The rule never changes, so the prompt cache still hits.
   pi.on("before_agent_start", async (event, ctx) => {
     const options = event.systemPromptOptions;
 
@@ -166,7 +162,6 @@ export default function (pi: ExtensionAPI) {
     pi.events.emit("herdr:blocked", { active: false });
   });
 
-  // Pi is idle by the time agent_settled fires.
   pi.on("agent_settled", async (event, ctx) => {
     busy = false;
 

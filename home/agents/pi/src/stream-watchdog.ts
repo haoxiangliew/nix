@@ -1,9 +1,8 @@
 /**
- * Fails an Anthropic request whose stream stalls, so pi's auto-retry sends it again. Pi can't see
- * these stalls. Anthropic keeps a stalled stream open with SSE pings, and pi drops pings before
- * extensions see them. The Bun build also ignores httpIdleTimeoutMs. So this extension wraps fetch
- * and times the response headers, the first event, the gap between events (not counting pings),
- * and the gap between bytes (counting pings). The error says "timed out", which pi's auto-retry
+ * Fails an Anthropic request whose stream stalls, so pi's auto-retry sends it again. Anthropic
+ * keeps a stalled stream open with SSE pings, pi drops pings before extensions see them, and Bun
+ * ignores httpIdleTimeoutMs. So this wraps fetch and times the headers, the first event, and the
+ * gaps between events and between bytes. The error says "timed out", which pi's auto-retry
  * matches. The `streamWatchdog` key in settings.json configures it.
  */
 
@@ -15,7 +14,7 @@ import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
-import { registerFetchWrapper } from "./lib/fetch.ts";
+import { registerFetchWrapper, type FetchInput } from "./lib/fetch.ts";
 import { errorMessage, loadOrReport } from "./lib/settings.ts";
 
 const Config = Type.Object(
@@ -23,15 +22,13 @@ const Config = Type.Object(
     // Wait for response headers, plus uploadMsPer32KB for each 32 KB of request body.
     headersMs: Type.Integer({ minimum: 1000, default: 60_000 }),
     uploadMsPer32KB: Type.Integer({ minimum: 0, default: 1000 }),
-    // Wait from the headers to the first event, which covers queueing and prefill.
     firstEventMs: Type.Integer({ minimum: 1000, default: 60_000 }),
-    // Pings don't count, so this catches a server that holds the stream open without generating.
+    // Pings don't count, so this catches a stream that pings but never generates.
     eventIdleMs: Type.Integer({ minimum: 1000, default: 90_000 }),
-    // Applies once events flow. Pings count, so this catches a dead connection.
+    // Applies once events start. Pings count, so this catches a dead connection.
     byteIdleMs: Type.Integer({ minimum: 1000, default: 60_000 }),
-    // Silence before the statusline shows the countdown.
     warnMs: Type.Integer({ minimum: 1000, default: 30_000 }),
-    // "stalls" logs every request that didn't finish. "all" also logs finished ones for tuning.
+    // "stalls" logs every request that didn't finish. "all" also logs finished ones.
     log: Type.Enum(["off", "stalls", "all"], { default: "stalls" }),
   },
   { additionalProperties: false, default: {} },
@@ -39,14 +36,11 @@ const Config = Type.Object(
 
 type Config = Static<typeof Config>;
 
-// The tsconfig has no DOM lib, so RequestInfo isn't available.
-type FetchInput = Parameters<typeof fetch>[0];
-
 type Ui = ExtensionContext["ui"];
 
 interface Session {
   config: Config;
-  // stop() clears this at shutdown, so a request still in flight stops writing to a stale UI.
+  // Clear at shutdown so in-flight requests stop using this UI.
   ui: Ui | undefined;
   awaitingReply: boolean;
 }
@@ -87,19 +81,17 @@ function clock(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-/** Formats a duration as m:ss, rounding down. */
 function elapsed(ms: number): string {
   return clock(Math.floor(ms / 1000));
 }
 
-/** Formats time left as m:ss, rounding up so a countdown reaches 0:00 only when the time is up. */
+// Round up so the countdown shows 0:00 only after the deadline.
 function remaining(ms: number): string {
   return clock(Math.max(0, Math.ceil(ms / 1000)));
 }
 
 const JsonBody = Type.String();
 
-// Returns the body of a streamed Messages API call, which the SDK sends as a JSON string.
 function streamBody(input: FetchInput, init: RequestInit | undefined): string | undefined {
   const url = URL.parse(input instanceof Request ? input.url : String(input));
   const body = init?.body;
@@ -111,7 +103,6 @@ function streamBody(input: FetchInput, init: RequestInit | undefined): string | 
   return Value.Check(JsonBody, body) && body.includes('"stream":true') ? body : undefined;
 }
 
-// Holds a line split across chunks until the rest arrives.
 class EventNames {
   #decoder = new TextDecoder();
   #partial = "";
@@ -143,7 +134,6 @@ class Watch {
   #ticker: ReturnType<typeof setInterval>;
   #ended = false;
 
-  // display is the session whose UI shows the countdown, if any.
   constructor(
     readonly bodyBytes: number,
     readonly cfg: Config,
@@ -232,8 +222,8 @@ class Watch {
     this.lastEvent = now;
     this.events += 1;
 
-    // The reply is complete at message_stop, and pi-ai stops reading at an error event, so stop the
-    // clock. The watchdog doesn't catch a server that holds the stream open after message_stop.
+    // The reply is complete at message_stop, and pi-ai stops reading at an error event, so the
+    // clock stops at either. The watchdog doesn't catch a connection held open after message_stop.
     if (name === "message_stop" || name === "error") {
       this.end(name === "error" ? "error event" : "done");
     }
@@ -396,8 +386,7 @@ function record(watch: Watch, outcome: string, error?: Error): void {
   }
 }
 
-// record() runs inside setInterval, where a throw would crash pi, so it reports the first failure
-// to a session instead.
+// record() can run inside setInterval. Report log failures instead of crashing from the timer.
 let logFailureReported = false;
 
 function reportLogFailure(cause: unknown): void {
@@ -414,7 +403,6 @@ function reportLogFailure(cause: unknown): void {
   }
 }
 
-// Removes the session tag, so it never reaches the network.
 function untag(init: RequestInit | undefined): Untagged {
   if (init?.headers === undefined) {
     return { init, tag: null };
@@ -432,8 +420,7 @@ function untag(init: RequestInit | undefined): Untagged {
   return { init: { ...init, headers }, tag };
 }
 
-// An untagged request, such as a branch summary, uses any session's config. They all read the same
-// settings.json.
+// Untagged requests use any session's config because all sessions read the same settings file.
 function configFor(shared: Shared, session: Session | undefined): Config | undefined {
   return session?.config ?? shared.sessions.values().next().value?.config;
 }
@@ -449,8 +436,7 @@ function createWrapper(shared: Shared, upstream: typeof fetch): typeof fetch {
       return upstream(input, untagged.init);
     }
 
-    // Only a request made while a turn waits for its reply shows a countdown, since pi's cache
-    // warmer also sends requests while tools run.
+    // Cache warming also sends requests during tool execution. Do not show a countdown for it.
     const display = session?.awaitingReply === true ? session : undefined;
     const watch = new Watch(Buffer.byteLength(body), config, display);
 
@@ -498,8 +484,8 @@ export default function (pi: ExtensionAPI) {
     shared.sessions.set(token, session);
   });
 
-  // The wrapper only watches api.anthropic.com, and a tag on another provider's websocket request
-  // would reach that provider.
+  // The wrapper watches only api.anthropic.com. Another provider's websocket request skips fetch,
+  // so a tag on it would reach that provider.
   pi.on("before_provider_headers", async (event, ctx) => {
     if (session !== undefined && ctx.model?.provider === "anthropic") {
       event.headers[TAG] = token;

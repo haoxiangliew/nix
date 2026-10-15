@@ -28,7 +28,7 @@ let
   # version and hash come from bun.lock, so `bun update lovely-mermaid` bumps it
   lovelyMermaid =
     let
-      # bun.lock is JSON with trailing commas, which builtins.fromJSON rejects
+      # bun.lock has trailing commas, which builtins.fromJSON rejects
       lock = builtins.fromJSON (
         lib.concatMapStrings (part: if builtins.isList part then builtins.head part else part) (
           builtins.split ",([[:space:]]*[]}])" (builtins.readFile ./pi/bun.lock)
@@ -161,7 +161,7 @@ in
                   }
                 );
             authorizerChain = [ "auto-mode" ];
-            # tier 3: everything else is an ask, and the reviewer decides
+            # tier 3: anything not listed here goes to the reviewer
             permission = {
               # tier 1: read-only tools
               read = "allow";
@@ -178,11 +178,11 @@ in
               ask_user_question = "allow";
               web_enable = "allow";
 
-              # tier 2: in-project writes. external_directory sends writes outside the project to review
+              # tier 2: writes inside the project. external_directory sends writes outside it to the reviewer
               edit = "allow";
               write = "allow";
 
-              # tier 1: read-only commands. Never add interpreters or package-manager scripts, which run arbitrary code
+              # tier 1: read-only commands. don't add interpreters or package scripts, which can run any code
               bash = {
                 "git status*" = "allow";
                 "git diff*" = "allow";
@@ -210,7 +210,7 @@ in
               };
               external_directory_read."*" = "allow";
 
-              # the reviewer checks credential file access, even from read-only tools
+              # the reviewer checks credential files, even for read-only tools
               path = {
                 "*" = "allow";
                 "*.env" = "ask";
@@ -356,7 +356,7 @@ in
           terminal.showTerminalProgress = true;
           markdown.mermaid = "off";
           enableInstallTelemetry = false;
-          # use bun as npm. pi's update check calls `npm view`, so run that as `bun info`
+          # use bun as npm. pi's update check runs `npm view`, so this runs `bun info` instead
           npmCommand = [
             (lib.getExe (
               pkgs.writeShellScriptBin "bun" ''

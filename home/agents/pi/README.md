@@ -1,18 +1,26 @@
 # pi extensions
 
-This folder has extensions and a theme for [pi](https://pi.dev). `home/agents/default.nix` links them into `~/.pi/agent`. `src/lib/` has code the extensions share.
+`home/agents/default.nix` links these [pi](https://pi.dev) extensions and the theme into `~/.pi/agent`. `src/lib/` contains shared code.
 
 ## Patches
 
-`patches/pi-review.patch` makes [pi-review](https://github.com/earendil-works/pi-review)'s `/end-review` keep the editor open while it summarizes, so dialogs from other extensions stay visible. It also shows progress in a widget and lets Esc cancel. It adds a "Review with a custom prompt" option and `/review custom <prompt>`, where you describe what to review. And it emits each `/review` prompt on `pi.events` as `review:prompt` for `super-review.ts`. The build fails if the patch stops applying after `nix flake update pi-review`.
+`patches/pi-review.patch` changes [pi-review](https://github.com/earendil-works/pi-review):
+
+- `/end-review` keeps the editor open so other extensions' dialogs remain visible. A widget shows progress. Esc cancels.
+- "Review with a custom prompt" and `/review custom <prompt>` let you describe what to review.
+- Each `/review` prompt emits `review:prompt` on `pi.events` for `super-review.ts`.
+
+The build fails if the patch stops applying after `nix flake update pi-review`.
 
 ## Configure
 
-Each extension reads a top-level key in `~/.pi/agent/settings.json`. `home/agents/default.nix` sets these keys from `programs.pi-coding-agent.settings`. Missing fields use the defaults below, and `/reload` picks up changes. An unknown key or invalid value turns the extension off with an error. Activation never deletes keys, so remove renamed ones by hand.
+Extensions read the settings below from `~/.pi/agent/settings.json`. Set them through `programs.pi-coding-agent.settings` in `home/agents/default.nix`. Missing fields use the listed defaults. Run `/reload` after changes. Unknown keys or invalid values disable the extension and show an error. Activation does not delete old keys. Remove renamed keys by hand.
 
 ### `anthropic-billing.ts`
 
-Sends pi's Anthropic OAuth requests with the headers, system prompt, and body signature of the installed `claude --print`. This includes compaction forks and cache warming. It learns them by running `claude` against a local mock API and reading its binary. This works only on macOS ARM64 and Linux x86-64. It blocks any request it can't match. On plans other than Enterprise, it also blocks the session once Anthropic bills a response to usage credits. Run `/reload` after updating `claude` or pi, or after switching accounts. No settings.
+Sends pi's Anthropic OAuth requests, including compaction forks and cache warming, with the headers, system prompt, and body signature of the installed `claude --print`. It captures the headers and system prompt by running `claude` against a local mock API, and reads the body signer from its binary. It works only on macOS ARM64 and Linux x86-64.
+
+It blocks requests it cannot match. On non-Enterprise plans, it blocks further requests after a response uses usage credits. Run `/reload` after updating `claude` or pi, or switching accounts. No settings.
 
 ### `attention.ts`
 
@@ -25,7 +33,11 @@ Notifies when pi waits on a prompt or finishes, but not when you cancel with Esc
 
 ### `auto-mode.ts`
 
-Reviews pi-permission-system asks with a model instead of asking you. The static rules in `home/agents/default.nix` allow only what's safe without review, and every other ask comes here. The reviewer trusts your messages and your answers to `ask_user_question`, never the agent's tool calls or output. Before it allows or denies an ask, it can run checks limited to what the agent may run without asking. It can deny `path` and `external_directory` asks, such as writes outside the project. When it would allow one, it opens the dialog instead. Errors and repeated denials also open the dialog. A denial tells the agent not to work around it. For most asks, the agent asks you with `ask_user_question` and retries once if you approve. A subagent stops instead and says so in its answer. After a denied `path` or `external_directory` ask, the agent retries once and the dialog opens.
+Reviews pi-permission-system requests with a model instead of asking you. Static rules in `home/agents/default.nix` allow read-only tools, read-only commands, and writes inside the project. Every other request goes to the reviewer. The reviewer trusts your messages and your answers to `ask_user_question`, not the agent's calls or output. Its checks run only programs and paths the agent may use without asking.
+
+The reviewer can deny `path` and `external_directory` requests, but allowing one opens the dialog. Errors and repeated denials also open the dialog.
+
+After a denial, the agent must not work around it. For most requests, it asks you with `ask_user_question` and retries once if you approve. A subagent stops and reports the denial instead. A denied `path` or `external_directory` request gets one unchanged retry, which opens the dialog.
 
 | Key                                     | Default                                                          | Meaning                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -48,7 +60,9 @@ Reviews pi-permission-system asks with a model instead of asking you. The static
 
 ### `compaction.ts`
 
-Writes compaction summaries and the branch summaries for `/tree` and `/end-review` by forking the session, as Claude Code and Codex do. The fork lets the summary see full tool results. On Anthropic models the fork reads the conversation from the prompt cache. It compacts at the end of a turn once context reaches `compactAt` of the model's window. It falls back to pi's summarizer when a fork fails. Pi uses the `compaction` key, so this one reads `summaryFork`.
+Writes the summaries for compaction, `/tree`, and `/end-review` by forking the session, so the summary sees full tool results. Anthropic forks reuse the conversation's prompt cache when the request prefix matches. End-of-turn compaction starts when context reaches `compactAt` of the model's window.
+
+If a fork for pi's own compaction or a branch summary fails, pi's summarizer runs instead. If an end-of-turn fork fails, compaction waits for pi's threshold. These settings use `summaryFork` because pi owns the `compaction` key.
 
 | Key                     | Default | Meaning                                                      |
 | ----------------------- | ------- | ------------------------------------------------------------ |
@@ -67,7 +81,7 @@ Writes compaction summaries and the branch summaries for `/tree` and `/end-revie
 
 ### `mcp-ancestors.ts`
 
-Registers MCP servers from `.mcp.json` files in each folder from a root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. In a trusted project, every file from the root down loads. In an untrusted project, none do, not even the root's.
+Registers MCP servers from the `.mcp.json` in each folder from a configured root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. Untrusted projects load none.
 
 | Key                  | Default | Meaning                                                       |
 | -------------------- | ------- | ------------------------------------------------------------- |
@@ -75,7 +89,7 @@ Registers MCP servers from `.mcp.json` files in each folder from a root down to 
 
 ### `mermaid.ts`
 
-Draws mermaid blocks in the TUI with [lovely-mermaid](https://github.com/xl0/lovely-mermaid). It supports more mermaid syntax than pi's built-in renderer, so `home/agents/default.nix` turns pi's renderer off. It quotes labels that break a flowchart and redraws flowcharts top to bottom when they're too wide. A diagram that still doesn't draw shows its source and the reason. Its prompt rule tells the model which diagrams it can draw and how long labels can be. Nix installs lovely-mermaid at the version in `bun.lock`. No settings.
+Draws mermaid blocks with [lovely-mermaid](https://github.com/xl0/lovely-mermaid). It supports more mermaid syntax than pi's built-in renderer, so `home/agents/default.nix` turns pi's renderer off. It quotes labels containing semicolons and redraws wide flowcharts top to bottom. Failed diagrams show their source and an error. A prompt rule lists supported diagrams and label limits. Nix installs the version in `bun.lock`. No settings.
 
 ### `prompt-sections.ts`
 
@@ -109,7 +123,9 @@ Replaces pi's footer with one line. If the settings are invalid, pi keeps its fo
 
 ### `super-review.ts`
 
-Adds optional extra reviewers to pi-review's `/review`. After pi-review's dialogs, you pick one or more models, by default `openai-codex/gpt-6.1-sol` for an Anthropic session and `anthropic/claude-opus-5-5` for an OpenAI one. Each reviews the same change as a pi-subagents subagent. Then all the models discuss the findings until they agree, and the session's model prints the agreed review.
+Adds reviewers to pi-review's `/review`. Pick models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6.1-sol`, or `openai-codex/gpt-6.1-sol` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-opus-5-5`.
+
+Each model reviews the same change as a subagent. The parent model collects their reviews, compares findings, and runs discussion rounds. After the round limit, it drops findings that remain disputed and uses the lowest disputed priority. It prints the final review after the reviewers confirm the result.
 
 | Key                                  | Default | Meaning                                                                                                   |
 | ------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------- |
@@ -118,7 +134,7 @@ Adds optional extra reviewers to pi-review's `/review`. After pi-review's dialog
 
 ### `talk.ts`
 
-`/talk` or shift+tab turns on read-only talk mode. It blocks `talk.blockedTools` and adds the prompt to each turn. It keeps the tool list and earlier messages unchanged, so toggling doesn't cost a prompt cache miss. `--talk` starts with it on.
+`/talk` or shift+tab toggles read-only talk mode. It blocks `talk.blockedTools` and adds the prompt to each user-started run. The tool list and history stay unchanged to preserve the prompt cache. `--talk` starts with it on.
 
 | Key                 | Default             | Meaning                                                  |
 | ------------------- | ------------------- | -------------------------------------------------------- |

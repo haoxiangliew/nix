@@ -1,9 +1,9 @@
-import type { FetchFunction } from "@earendil-works/pi-ai";
-
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+
+import { requestHeaders, type FetchInput } from "./fetch.ts";
 
 function anthropicProvider() {
   const provider = builtinProviders().find((candidate) => candidate.id === "anthropic");
@@ -43,7 +43,7 @@ function probePrompt(serialized: string): string {
 }
 
 function capturedIdentity(
-  input: Parameters<FetchFunction>[0],
+  input: FetchInput,
   init: RequestInit | undefined,
   apiKey: string,
 ): PiIdentity {
@@ -53,9 +53,7 @@ function capturedIdentity(
 
   const prompt = probePrompt(init.body);
 
-  const headers = new Headers(
-    init.headers ?? (input instanceof Request ? input.headers : undefined),
-  );
+  const headers = requestHeaders(input, init);
 
   const userAgent = headers.get("user-agent");
   const app = headers.get("x-app");
@@ -87,7 +85,7 @@ export async function readPiIdentity(apiKey: string, signal?: AbortSignal): Prom
   let failure: unknown;
 
   // A local fetch keeps the probe off the network and out of the billing wrapper.
-  const capture = async (input: Parameters<FetchFunction>[0], init?: RequestInit) => {
+  const capture = async (input: FetchInput, init?: RequestInit) => {
     try {
       captured = capturedIdentity(input, init, apiKey);
     } catch (cause) {

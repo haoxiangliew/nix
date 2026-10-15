@@ -14,7 +14,7 @@ interface Schema {
   readonly values: readonly Span[];
 }
 
-// The digest is SHA-256 of the signer code with the `relocations` and `values` byte ranges zeroed.
+// Each digest is SHA-256 of the code with the `relocations` and `values` byte ranges zeroed.
 const signerSchema: Schema = {
   size: 1189,
   digest: "876ff3b7ea1d72f0b9ea5594aea4bf2c797599c7683d91d44e8cab885376f8f1",

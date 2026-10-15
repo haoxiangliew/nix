@@ -1,7 +1,7 @@
 /**
- * Extensions store settings under top-level keys of pi's settings.json. This module checks each
- * setting against a TypeBox schema. Unknown keys and invalid values are errors, so a typo turns
- * the extension off. pi skips this directory because it has no index.ts.
+ * Loads and saves extension settings under top-level keys of pi's settings.json. Unknown keys and
+ * invalid values are errors, so a typo turns the extension off. pi skips this directory because it
+ * has no index.ts.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -36,7 +36,6 @@ function readSettings(): Static<typeof SettingsFile> {
   return settings;
 }
 
-// "/context/threadTokens" becomes "context.threadTokens".
 function describe(error: SettingsError): string[] {
   const at = error.instancePath.slice(1).replaceAll("/", ".");
 
@@ -53,7 +52,7 @@ function describe(error: SettingsError): string[] {
   return [at ? `${at} ${error.message}` : error.message];
 }
 
-// The schema's defaults fill whatever settings.json leaves out, so every schema needs a `default`.
+// The schema's defaults fill whatever settings.json leaves out, so every schema needs a default.
 export function loadSettings<S extends TSchema>(key: string, schema: S): Static<S> {
   const stored = Value.Pointer.Get(readSettings(), `/${key}`);
   const value: unknown = Value.Default(schema, structuredClone(stored));
@@ -70,7 +69,6 @@ export function loadSettings<S extends TSchema>(key: string, schema: S): Static<
   throw new Error(`${key} in settings.json: ${problems.join("; ")}`);
 }
 
-// Returns undefined after showing the error, so the caller stays off.
 export function loadOrReport<S extends TSchema>(
   ctx: ExtensionContext,
   name: string,
@@ -92,9 +90,8 @@ type Setting =
   | readonly Setting[]
   | { readonly [key: string]: Setting | undefined };
 
-// Keeps the other keys. pi rewrites only the settings it changed, so pi's saves keep this one.
-// key can be a nested path like "a/b/c", and saveSetting creates any missing parent objects.
-// undefined removes the key, since JSON.stringify leaves it out.
+// Pi saves only the keys it changed, so it keeps these settings. key can be a nested path like
+// "a/b/c". An undefined value removes the key, because JSON.stringify drops it.
 export function saveSetting(key: string, value: Setting | undefined): void {
   const path = settingsPath();
   const tmp = `${path}.${process.pid}.tmp`;

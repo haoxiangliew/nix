@@ -19,6 +19,7 @@ import { Value } from "typebox/value";
 import { discoverCliProfile, type CliProfile } from "./claude-profile.ts";
 import { extractCliSigner, validateCliChecksum } from "./claude-signer.ts";
 import { awaitAbort, cached } from "./promise.ts";
+import { errorMessage } from "./settings.ts";
 
 const Text = Type.String();
 
@@ -30,8 +31,7 @@ const Bytes = Type.Codec(Type.String())
 
 const LauncherStamp = Type.Object({ path: Text, target: Text, stamp: Text });
 
-// Every field comes from the CLI binary, so it's safe to save. Don't add account, device, or
-// session IDs.
+// Save only binary-derived fields. Never add account, device, or session IDs.
 const Source = Type.Object({
   launchers: Type.Array(LauncherStamp),
   executable: Text,
@@ -349,6 +349,9 @@ export function isUuid(value: string): boolean {
 
 const sources = new Map<string, Promise<SourceIdentity>>();
 
+// Sources read from source-identity.json rather than scanned in this process.
+const savedSources = new WeakSet<SourceIdentity>();
+
 const SavedSource = Type.Object({ code: Text, source: Source });
 
 const savedPath = () =>
@@ -382,11 +385,17 @@ function readSavedSource(launcher: string, version: string): SourceIdentity | un
 
     assertCliUnchanged(source);
 
-    return code === scanHash() &&
-      source.version === version &&
-      source.launchers[0]?.path === resolve(launcher)
-      ? source
-      : undefined;
+    if (
+      code !== scanHash() ||
+      source.version !== version ||
+      source.launchers[0]?.path !== resolve(launcher)
+    ) {
+      return undefined;
+    }
+
+    savedSources.add(source);
+
+    return source;
   } catch {
     return undefined;
   }
@@ -402,8 +411,12 @@ function saveSource(source: SourceIdentity): void {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     writeFileSync(tmp, JSON.stringify(saved), { mode: 0o600 });
     renameSync(tmp, path);
-  } catch {
+  } catch (cause) {
     rmSync(tmp, { force: true });
+    throw new Error(
+      `Couldn't save the Claude CLI identity to ${path}. ${errorMessage(cause)}. Request blocked.`,
+      { cause },
+    );
   }
 }
 
@@ -537,8 +550,34 @@ function verifyTraceFields(profile: CliProfile): void {
   }
 }
 
-// Rescans once when the CLI rejects the source, because a saved source can be stale. Saves only a
-// verified source.
+// A saved source can be from an older scan, so a mismatch rescans once. A mismatch with a source
+// scanned in this process fails right away.
+async function verifiedSource(
+  launcher: string,
+  version: string,
+  sourceKey: string,
+  source: SourceIdentity,
+  captured: CliProfile,
+): Promise<SourceIdentity> {
+  try {
+    verifyProfile(source, captured);
+
+    return source;
+  } catch (cause) {
+    if (!savedSources.has(source)) {
+      throw cause;
+    }
+
+    sources.delete(sourceKey);
+
+    const scanned = await cached(sources, sourceKey, () => sourceIdentity(launcher, version));
+
+    verifyProfile(scanned, captured);
+
+    return scanned;
+  }
+}
+
 async function captureProfile(
   launcher: string,
   version: string,
@@ -547,15 +586,7 @@ async function captureProfile(
   source: SourceIdentity,
 ): Promise<CliProfile> {
   const captured = await discoverCliProfile(launcher, model);
-  let verified = source;
-
-  try {
-    verifyProfile(verified, captured);
-  } catch {
-    sources.delete(sourceKey);
-    verified = await cached(sources, sourceKey, () => sourceIdentity(launcher, version));
-    verifyProfile(verified, captured);
-  }
+  const verified = await verifiedSource(launcher, version, sourceKey, source, captured);
 
   saveSource(verified);
 
@@ -593,7 +624,7 @@ export async function readClaudeIdentity(
     signal,
   );
 
-  // captureProfile replaces a source that the CLI rejects.
+  // Reload because captureProfile may have replaced the source.
   const source = await awaitAbort(loadSource(), signal);
   assertCliUnchanged(source);
 

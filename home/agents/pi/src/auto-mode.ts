@@ -1,10 +1,8 @@
 /**
  * Reviews pi-permission-system asks with a model. The reviewer trusts the user's messages and
- * ask_user_question answers, and treats the agent's tool calls as untrusted. It never sees other
- * tool results or the agent's own text. A one-word classifier decides most asks. For the rest, the
- * reviewer assesses risk and authorization, and may first run programs the agent could run without
- * asking. Errors, repeated denials, and retried asks it can't allow fall back to the permission
- * dialog. The `autoMode` key in settings.json configures it.
+ * ask_user_question answers, never the agent's tool calls or output. A one-word classifier decides
+ * most asks, and a second stage assesses the rest. Errors and repeated denials fall back to the
+ * permission dialog. The `autoMode` key in settings.json configures it.
  */
 
 import type {
@@ -29,7 +27,7 @@ import type {
   PromptRequestFacts,
 } from "@gotgenes/pi-permission-system";
 
-import { retryAssistantCall } from "@earendil-works/pi-ai";
+import { contentText, retryAssistantCall } from "@earendil-works/pi-ai";
 import { resolve } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
@@ -44,12 +42,12 @@ const SERVICES = Symbol.for("@gotgenes/pi-permission-system:session-services");
 
 const Config = Type.Object(
   {
-    // Auto mode uses the first model in the list that has credentials.
+    // The first model with credentials reviews.
     models: Type.Array(Type.String({ pattern: "^[^/\\s]+/\\S+$" }), {
       minItems: 1,
       default: ["openai/codex-auto-review", "openai-codex/codex-auto-review"],
     }),
-    // Only the second stage uses it. The first stage runs without reasoning.
+    // The first stage runs without reasoning.
     reasoning: Type.Enum(["minimal", "low", "medium", "high", "xhigh", "max"], { default: "low" }),
     firstStage: Type.Boolean({ default: true }),
     // Per model call, including its retries.
@@ -59,7 +57,6 @@ const Config = Type.Object(
     retryDelayMs: Type.Integer({ minimum: 0, default: 250 }),
     maxRetryDelayMs: Type.Integer({ minimum: 0, default: 2000 }),
     maxDenials: Type.Integer({ minimum: 1, default: 3 }),
-    // Organizations, domains, and services the reviewer trusts besides the user's machine.
     environment: Type.Array(Type.String(), { default: [] }),
     context: Type.Object(
       {
@@ -69,14 +66,13 @@ const Config = Type.Object(
       },
       { additionalProperties: false, default: {} },
     ),
-    // Programs the second stage may run to inspect local state.
     investigation: Type.Object(
       {
         // Per review. 0 turns it off.
         maxCommands: Type.Integer({ minimum: 0, default: 5 }),
         // Per command.
         timeoutMs: Type.Integer({ minimum: 1, default: 10_000 }),
-        // For the whole second stage. Auto mode checks it before each model call.
+        // Covers the whole second stage. Auto mode checks it before each model call.
         totalTimeoutMs: Type.Integer({ minimum: 1, default: 60_000 }),
         outputTokens: Type.Integer({ minimum: 1, default: 2_000 }),
       },
@@ -97,7 +93,6 @@ const Assessment = Type.Object({
 
 type Assessment = Static<typeof Assessment>;
 
-// The details of an ask_user_question result.
 const Answers = Type.Object({
   cancelled: Type.Boolean(),
   answers: Type.Array(
@@ -117,7 +112,6 @@ const DecisionEvent = Type.Object({ requestId: Type.String(), resolution: Type.S
 
 const USER_APPROVALS = new Set(["user_approved", "user_approved_for_session"]);
 
-// Its results are the user's answers, so the reviewer sees them.
 const ASK_TOOL = "ask_user_question";
 
 const RUN = "run";
@@ -179,7 +173,6 @@ const RUN_TOOL: Tool = {
   parameters: Run,
 };
 
-// Where the provider supports it, strict mode makes the model's arguments match the schema.
 const DECIDE_TOOL: Tool = {
   name: DECIDE,
   description: "Give your verdict. Call it last.",
@@ -187,7 +180,7 @@ const DECIDE_TOOL: Tool = {
   constrainedSampling: { type: "json_schema", strict: "prefer" },
 };
 
-// pi-permission-system turns a reviewer's allow on these surface families into a dialog.
+// pi-permission-system asks the user for these permissions even if the reviewer allows them.
 const CAPPED_FAMILIES = new Set(["path", "external_directory"]);
 
 // pi-permission-system ends the reason with a period.
@@ -200,7 +193,6 @@ const ASK_NOTE = denyNote(
   `call ${ASK_TOOL} now, saying what it does and why, and retry it once if the user approves.`,
 );
 
-// A subagent has no UI.
 const SUBAGENT_NOTE = denyNote(
   `stop and say so in your final answer, so the agent that started you can ask the user with ${ASK_TOOL}.`,
 );
@@ -217,7 +209,6 @@ interface Item {
 
 interface Thread {
   messages: Message[];
-  // Ids of every evidence item the thread has covered, to find what's new.
   sent: string[];
   chars: number;
 }
@@ -254,8 +245,8 @@ function systemPrompt(config: Config, task: string): string {
   return `${POLICY}\n\n${trusted}\n\n${task}`;
 }
 
-// Devices can stream forever. checkPermission matches external_directory rules without checking
-// that the path is outside the project. So this checks those rules only for outside paths.
+// Device reads can run forever. checkPermission applies external_directory rules to any path,
+// so call it only for paths outside the project.
 function offLimits(path: string, query: PermissionQuery, cwd: string): boolean {
   const absolute = resolve(cwd, path);
   const outside = absolute !== cwd && !absolute.startsWith(`${cwd}/`);
@@ -267,9 +258,9 @@ function offLimits(path: string, query: PermissionQuery, cwd: string): boolean {
   return outside && query.checkPermission("external_directory", absolute).state !== "allow";
 }
 
-// The reviewer may run what the agent may run without asking. Without a shell, the program gets
-// each argument as written. Every argument, and the value in --option=value, must pass the path
-// rules.
+// The reviewer may run only what the agent may run without asking. There's no shell, so the
+// program gets each argument as written. Every argument, and the value in --option=value, must pass
+// the path rules.
 function refusal(
   command: string,
   argv: string[],
@@ -332,7 +323,7 @@ async function run(
     return result(`Not run: ${refused}.`, true);
   }
 
-  // exec resolves with code 1 even when the program can't start.
+  // exec resolves with code 1 when the program can't start.
   const { stdout, stderr, code, killed } = await exec(program, args, {
     cwd: ctx.cwd,
     timeout: timeoutMs,
@@ -353,14 +344,6 @@ function newThread(): Thread {
 
 function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)} [truncated]`;
-}
-
-function contentText(content: UserMessage["content"]): string {
-  if (!Array.isArray(content)) {
-    return content;
-  }
-
-  return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
 // This reads the structured answers, so text the agent wrote can't pose as the user's answer.
@@ -446,7 +429,6 @@ function recent(items: Item[], budget: number): Item[] {
   return kept.toReversed();
 }
 
-// Starts a new thread when the branch no longer extends the old one or the old one is over budget.
 function advance(thread: Thread, items: Item[], budget: number): Step {
   const prefixMatches = thread.sent.every((id, index) => items[index]?.id === id);
   const delta = items.slice(thread.sent.length);
@@ -458,7 +440,7 @@ function advance(thread: Thread, items: Item[], budget: number): Step {
   return { thread: newThread(), items: recent(items, budget / 2) };
 }
 
-// Formats the ask as JSON, with the full tool call. A subagent's call isn't in this session.
+// A subagent's tool call is absent from the parent's branch.
 function plannedAction(
   { payload, toolCallId }: PromptPermissionDetails,
   branch: SessionEntry[],
@@ -494,7 +476,6 @@ function plannedAction(
   return JSON.stringify(action, null, 2);
 }
 
-// In a thread, later reviews send only the transcript added since the last one.
 function reviewMessage(items: Item[], action: string, delta: boolean): UserMessage {
   const transcript = items.length > 0 ? items.map((item) => item.text).join("\n") : "(none)";
   const heading = delta ? "TRANSCRIPT SINCE YOUR LAST REVIEW" : "TRANSCRIPT";
@@ -507,10 +488,7 @@ function reviewMessage(items: Item[], action: string, delta: boolean): UserMessa
 }
 
 function replyText(reply: AssistantMessage): string {
-  return reply.content
-    .flatMap((part) => (part.type === "text" ? [part.text] : []))
-    .join("")
-    .trim();
+  return contentText(reply.content, "").trim();
 }
 
 // A model that answers in text instead of calling decide may still give the JSON object.
@@ -547,13 +525,11 @@ function parseAssessment(decide: ToolCall | undefined, text: string): Review {
   };
 }
 
-// Returns the surface whose rule raised the ask.
 function gateOf(details: PromptPermissionDetails): string | undefined {
   return details.accessIntent?.surface ?? details.surface ?? undefined;
 }
 
-// Matches the check in pi-permission-system's delegation envelope, which counts a missing surface
-// as capped.
+// Matches pi-permission-system's delegation envelope, which also caps an ask with no surface.
 function isCapped(gate: string | undefined): boolean {
   return gate === undefined || CAPPED_FAMILIES.has(gate.replace(/_(read|write)$/, ""));
 }
@@ -564,8 +540,7 @@ function askKey(details: PromptPermissionDetails): string {
   return JSON.stringify([gateOf(details), toolName, value]);
 }
 
-// When a subagent asks its parent to ask the user, the parent tends to relay the request instead of
-// asking. So auto mode tells the parent itself.
+// Tell the parent directly because it may relay the subagent's request without asking the user.
 function subagentDenialMessage({ requester, toolName, value }: PromptRequestFacts): string {
   const call = `${toolName ?? "tool"} call ${clip(value, 300)}`;
 
@@ -596,8 +571,7 @@ function verdictNotice(
     : undefined;
 }
 
-// Returns undefined when the provider has no credentials. For an id the registry doesn't know, this
-// copies the settings of another model from the same provider.
+// Unknown model ids use the settings of an available model from the same provider.
 function usableModel(ctx: ExtensionContext, ref: string): Model<Api> | undefined {
   const [provider = "", ...rest] = ref.split("/");
   const id = rest.join("/");
@@ -676,7 +650,7 @@ async function complete(
 
 function services(): Map<string, PermissionsService> | undefined {
   // SAFETY: pi-permission-system's documented Symbol.for() registry maps session ids to services.
-  // pi installs the package outside this file's module path, so this file can't import it.
+  // Pi installs the package outside this file's module path, so this file can't import it.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   return Object.getOwnPropertyDescriptor(globalThis, SERVICES)?.value as
     | Map<string, PermissionsService>
@@ -695,9 +669,8 @@ export default function (pi: ExtensionAPI) {
   const userApprovedCalls = new Set<string>();
   let queue: Promise<unknown> = Promise.resolve();
 
-  // Over the openai-codex websocket, pi-ai sends only the new messages when the rest of the
-  // request matches the thread's last one. Other providers resend the thread, which the prompt
-  // cache covers.
+  // Over the openai-codex websocket, pi-ai sends only new messages when the rest of the request
+  // matches the thread's last one. Other providers resend the thread and hit the prompt cache.
   async function firstStage(
     ctx: ExtensionContext,
     cfg: Config,
@@ -796,7 +769,7 @@ export default function (pi: ExtensionAPI) {
   ): Promise<Decision> {
     const branch = ctx.sessionManager.getBranch();
 
-    // Numbering spans the whole branch, so a delta continues the thread's numbering.
+    // Keep numbering stable across incremental reviews.
     const items = branch
       .flatMap((entry) => entryItems(entry, cfg))
       .map((item, index) => ({ ...item, text: `[${index + 1}] ${item.text}` }));
@@ -1031,8 +1004,8 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // pi-permission-system emits this at least once per session. Reviews run one at a time so the
-  // thread stays in order.
+  // pi-permission-system can emit this more than once per session. Reviews run one at a time
+  // because they share a thread.
   pi.events.on("permissions:ready", (data) => {
     if (dispose !== undefined || !Value.Check(ReadyEvent, data)) {
       return;

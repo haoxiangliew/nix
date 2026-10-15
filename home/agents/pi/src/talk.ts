@@ -1,8 +1,7 @@
 /**
  * /talk or shift+tab blocks the write tools and adds the talk prompt to each turn. Bash stays
- * available for research. It leaves the tool list and earlier messages alone, since changing either
- * makes the next request miss the prompt cache. --talk starts with it on. The `talk` key in
- * settings.json configures it.
+ * available for research. It leaves the tool list and history alone so the prompt cache still
+ * hits. --talk starts with it on. The `talk` key in settings.json configures it.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -13,9 +12,8 @@ import { loadOrReport } from "./lib/settings.ts";
 
 const Config = Type.Object(
   {
-    // Talk mode adds this to each turn. It's required, so talk mode stays off until you set it.
+    // Required, so talk mode stays off until it's set.
     prompt: Type.String({ minLength: 1 }),
-    // Talk mode blocks these tools.
     blockedTools: Type.Array(Type.String(), { default: ["edit", "write"] }),
   },
   { additionalProperties: false, default: {} },
@@ -46,7 +44,7 @@ export default function (pi: ExtensionAPI) {
 
   blockWrites(pi, () => (enabled ? config : undefined));
 
-  // Earlier talk prompts stay in history, so the first turn after talk mode turns off says so.
+  // Earlier talk prompts stay in history. Tell the model when talk mode turns off.
   pi.on("before_agent_start", async (event) => {
     if (event.messageType !== "user") {
       return;
@@ -94,7 +92,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => toggle(ctx),
   });
 
-  // pi skips this shortcut unless keybindings.json moves app.thinking.cycle off shift+tab.
+  // Pi skips this shortcut unless keybindings.json moves app.thinking.cycle off shift+tab.
   pi.registerShortcut("shift+tab", {
     description: "Toggle read-only talk mode",
     handler: async (ctx) => toggle(ctx),

@@ -1,19 +1,12 @@
 /**
- * Writes compaction and branch summaries by forking the session, as Claude Code and Codex do. The
- * fork resends the session's conversation with a summary request after it, so it sees full tool
- * results and can write up to the model's output limit.
- *
- * On each session request, this records the messages pi sends, the final payload, and the session
- * leaf. A fork sends those messages plus the entries added since. When its payload starts with the
- * recorded messages, it reuses the recorded payload's system prompt, tools, thinking, and fast
- * mode, so the provider reads the conversation from the prompt cache. Without a recording, such as
- * after a restart, the fork rebuilds the context from the session and writes no conversation cache.
- *
- * Pi's trigger is a fixed reserve per model, so this compacts at the end of a turn once context
- * reaches `compactAt` of the window. Pi's own compaction on overflow or /compact forks too. A fork
- * over `compactAt` drops its oldest turns. If a fork for pi's compaction or a branch summary
- * fails, pi's summarizer runs instead. If an end-of-turn fork fails, compaction waits for pi's
- * threshold. The `summaryFork` key in settings.json configures it.
+ * Writes compaction and branch summaries by forking the session, so the summary sees full tool
+ * results. A fork reuses the last recorded request's prefix and settings, so it reads the prompt
+ * cache. After a restart there's no recording, so the fork rebuilds the context and writes no
+ * cache. Pi's trigger is a fixed reserve per model, so this also compacts at the end of a turn once
+ * context reaches `compactAt` of the window. A fork over `compactAt` drops its oldest turns. If a
+ * fork for pi's own compaction or a branch summary fails, pi's summarizer runs. If an end-of-turn
+ * fork fails, compaction waits for pi's threshold. The `summaryFork` key in settings.json
+ * configures it.
  */
 
 import type { Api, AssistantMessage, Model, Usage, UserMessage } from "@earendil-works/pi-ai";
@@ -28,7 +21,7 @@ import type {
   TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 
-import { retryAssistantCall } from "@earendil-works/pi-ai";
+import { contentText, retryAssistantCall } from "@earendil-works/pi-ai";
 import {
   convertToLlm,
   estimateTokens,
@@ -52,10 +45,9 @@ const NAME = "compaction";
 // Pi uses the `compaction` key.
 const KEY = "summaryFork";
 
-// Caps pi's branch summarizer after a failed fork. OpenCode uses this default. Pi's own is 4,096.
+// Caps pi's branch summarizer after a failed fork, at OpenCode's default. Pi's own cap is 4,096.
 const FALLBACK_BRANCH_TOKENS = 32_000;
 
-// Trimming keeps these at the start of the context.
 const HEAD_ROLES = new Set<string>(["system", "compactionSummary", "branchSummary"]);
 
 const Config = Type.Object(
@@ -103,7 +95,7 @@ interface ForkInput {
 
 type Forked = { text: string; usage: Usage } | { failure: string };
 
-// This file copies pi's prompts verbatim, since pi doesn't export them.
+// Pi does not export these prompts. Keep the copies unchanged.
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -210,9 +202,8 @@ function conversationLength(messages: PayloadMessage[]): number {
   return length;
 }
 
-// When the built conversation starts with the recorded one, this sends that part as recorded,
-// with its cache breakpoint and settings. It keeps the built max_tokens, which pi-ai fit to the
-// room left in the window.
+// If the built conversation starts with the recorded one, reuses the recorded prefix and request
+// settings. Keeps built.max_tokens, which pi-ai fits to the room left in the window.
 function replayPayload(recorded: Payload, built: Payload): Payload | undefined {
   const length = conversationLength(recorded.messages);
   const prefix = recorded.messages.slice(0, length);
@@ -226,16 +217,15 @@ function replayPayload(recorded: Payload, built: Payload): Payload | undefined {
   return { ...recorded, messages: [...prefix, ...rest], max_tokens: built.max_tokens };
 }
 
-// Without the recorded prefix, a message breakpoint would write a cache that nothing reads. The
-// system prompt and tool breakpoints stay, since the session shares them.
+// Without the recorded prefix, nothing reads this conversation's cache, so this drops the message
+// breakpoints. It keeps the system and tool breakpoints because the session shares them.
 function forkPayload(recorded: Payload | undefined, built: Payload): Payload {
   const replayed = recorded && replayPayload(recorded, built);
 
   return replayed ?? { ...built, messages: built.messages.map(stripCacheControl) };
 }
 
-// Returns undefined when the branch no longer contains the recorded leaf, or when a later summary
-// changes how pi builds the context.
+// A missing leaf or a later summary invalidates the recorded context.
 function messagesSince(entries: SessionEntry[], leafId: string | null): AgentMessage[] | undefined {
   const start = leafId === null ? 0 : entries.findIndex((entry) => entry.id === leafId) + 1;
 
@@ -282,9 +272,8 @@ function nextTurn(messages: AgentMessage[], from: number, end: number): number |
   return undefined;
 }
 
-// Drops whole turns from the front, after the system message and earlier summaries, until the
-// messages fit under the limit. The last turn and the summary request stay. Returns undefined when
-// they alone are over the limit.
+// Keeps the leading system messages and summaries, the last turn, and the summary request, and
+// drops whole turns between them until the context fits. Returns undefined if it can't fit.
 function fitWindow(
   messages: AgentMessage[],
   limit: number,
@@ -319,10 +308,8 @@ function fitWindow(
   };
 }
 
-// Finds the span a compaction summarizes. It runs from the previous compaction's kept entry to a
-// cut that keeps keepRecentTokens. Pi picks its cut from the session projection, which skips
-// context edits. The two cuts can differ when the span has edits. Returns undefined when there's
-// nothing to summarize.
+// Runs from the previous compaction's kept entry to a cut that keeps keepRecentTokens. Pi cuts the
+// session projection, which skips context edits, so the cuts can differ when the span has edits.
 function compactionSpan(ctx: ExtensionContext, entries: SessionEntry[], model: Model<Api>) {
   const keptId = getLatestCompactionEntry(entries)?.firstKeptEntryId;
   const keptIndex = entries.findIndex((entry) => entry.id === keptId);
@@ -345,21 +332,13 @@ function rebuiltContext(ctx: ExtensionContext): AgentMessage[] {
     );
 }
 
-function textOf(content: UserMessage["content"] | AssistantMessage["content"]): string {
-  if (!Array.isArray(content)) {
-    return content;
-  }
-
-  return [...content].flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
-}
-
 // The fork sees the whole context, so this names the message the branch starts at.
 function branchStart(entries: SessionEntry[]): string {
   const first = entries
     .flatMap((entry) => sessionEntryToContextMessages(entry))
     .find((message): message is UserMessage => message.role === "user");
 
-  const start = first ? textOf(first.content).trim().slice(0, 200) : "";
+  const start = first ? contentText(first.content, "").trim().slice(0, 200) : "";
 
   return start
     ? `The branch starts at the user message that begins "${start}". Summarize that message and what follows. The other branch shares the messages before it.`
@@ -392,8 +371,8 @@ function formatFileLists({ readFiles, modifiedFiles }: FileLists): string {
   return sections.length > 0 ? `\n\n${sections.join("\n\n")}` : "";
 }
 
-// Pi skips file lists in summaries from extensions. This extension writes them in pi's format, so
-// marking its summaries as pi's makes pi include the lists in the next branch summary.
+// Pi skips file lists in extension summaries. These lists use pi's format, so clear fromHook
+// to include them in the next branch summary.
 function asPiSummaries(entries: SessionEntry[]): SessionEntry[] {
   return entries.map((entry) =>
     entry.type === "branch_summary" && entry.fromHook && Value.Check(FileLists, entry.details)
@@ -475,7 +454,7 @@ async function piBranchSummary(
 export default function compaction(pi: ExtensionAPI) {
   let request: Request | undefined;
 
-  // A failed compaction fork sets this, so the retry waits for the next run, not the next turn.
+  // Retry a failed fork on the next run, not on every turn.
   let failedThisRun = false;
 
   pi.on("context_with_system", (event, ctx) => {
@@ -554,7 +533,7 @@ export default function compaction(pi: ExtensionAPI) {
     }
 
     const reply = await send(ctx, model, { ...input, messages: fitted.messages }, signal);
-    const summary = textOf(reply.content).trim();
+    const summary = contentText(reply.content, "").trim();
     const failure = forkFailure(reply) ?? (summary ? undefined : "the fork returned no summary");
 
     if (failure !== undefined) {

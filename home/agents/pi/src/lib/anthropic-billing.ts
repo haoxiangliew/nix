@@ -13,6 +13,7 @@ import {
   type ClaudeIdentity,
 } from "./claude-identity.ts";
 import { signCliBody } from "./claude-signer.ts";
+import { requestHeaders, type FetchInput } from "./fetch.ts";
 import { piAnthropicProvider, readPiIdentity } from "./pi-identity.ts";
 import { awaitAbort, cached } from "./promise.ts";
 
@@ -35,8 +36,6 @@ const AccountProfile = Type.Object({
 });
 
 type Payload = Static<typeof Payload>;
-
-type FetchInput = Parameters<FetchFunction>[0];
 
 interface PreparedRequest {
   init: RequestInit;
@@ -256,10 +255,6 @@ function isPost(input: FetchInput, init: RequestInit | undefined): boolean {
   const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 
   return method.toUpperCase() === "POST";
-}
-
-function requestHeaders(input: FetchInput, init: RequestInit | undefined): Headers {
-  return new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
 }
 
 function isOAuth(headers: Headers): boolean {

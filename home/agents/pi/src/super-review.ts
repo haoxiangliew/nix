@@ -1,10 +1,8 @@
 /**
- * Adds extra reviewers to pi-review's /review.
- *
- * The session's model runs the rounds with subagent resumes and collects each result with
- * get_subagent_result, so pi-subagents doesn't also post it. The service has no way to collect a
- * result, so if this extension ran the rounds, pi-subagents would post each one and start an extra
- * turn. The `superReview` key in settings.json configures it.
+ * Adds adversary reviewers to pi-review's /review. The session's model runs the rounds and
+ * collects each result with get_subagent_result. The pi-subagents service can't collect a result,
+ * so if this extension ran the rounds, pi-subagents would post each one and start an extra turn.
+ * The `superReview` key in settings.json configures it.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -30,11 +28,11 @@ type Adversary = Static<typeof Adversary>;
 
 const Config = Type.Object(
   {
-    // The key is the session model's provider. ctrl+s in the custom picker sets it.
+    // Keyed by the session model's provider. ctrl+s in the custom picker sets it.
     adversaries: Type.Record(Type.String(), Type.Array(Adversary, { minItems: 1 }), {
       default: {},
     }),
-    // The round limit is this times the number of adversaries. It doesn't count the sign-off.
+    // The round limit is this times the number of adversaries, not counting the sign-off.
     rounds: Type.Integer({ minimum: 1, default: 3 }),
   },
   { additionalProperties: false, default: {} },
@@ -42,11 +40,11 @@ const Config = Type.Object(
 
 type Config = Static<typeof Config>;
 
-// The menu offers these when the user hasn't saved any adversaries.
-const SUGGESTED_MODELS = new Map<string, Adversary[]>([
-  ["anthropic", [{ model: "openai-codex/gpt-6.1-sol" }]],
-  ["openai", [{ model: "anthropic/claude-opus-5-5" }]],
-  ["openai-codex", [{ model: "anthropic/claude-opus-5-5" }]],
+// For each session provider, the menu suggests the first of these models that has credentials.
+const SUGGESTED_MODELS = new Map<string, string[]>([
+  ["anthropic", ["openai/gpt-6.1-sol", "openai-codex/gpt-6.1-sol"]],
+  ["openai", ["anthropic/claude-opus-5-5"]],
+  ["openai-codex", ["anthropic/claude-opus-5-5"]],
 ]);
 
 // patches/pi-review.patch emits each review prompt on this channel before sending it.
@@ -100,13 +98,22 @@ type Review = {
   consensusStarted: boolean;
 };
 
+function suggested(ctx: ExtensionContext, provider: string): Adversary[] | undefined {
+  const available = new Set(
+    ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`),
+  );
+
+  const model = SUGGESTED_MODELS.get(provider)?.find((ref) => available.has(ref));
+
+  return model === undefined ? undefined : [{ model }];
+}
+
 function presetLabel(preset: Adversary[]): string {
   const names = preset.map(({ model }) => model).join(", ");
 
   return `${preset.length === 1 ? "Adversary" : "Adversaries"} (${names})`;
 }
 
-// Keeps the thinking level of each model that already has one.
 function withThinking(models: string[], known: Adversary[]): Adversary[] {
   return models.map((model) => known.find((adversary) => adversary.model === model) ?? { model });
 }
@@ -139,7 +146,6 @@ function pickModels(
     const listTheme = {
       ...getSelectListTheme(),
       scrollInfo: (text: string) => theme.fg("dim", text),
-      // SelectList's own message says "commands".
       noMatch: () => theme.fg("warning", "  No matching models"),
     };
 
@@ -187,7 +193,6 @@ function pickModels(
       unsaved = true;
     }
 
-    // Keys that don't change the search text, like the arrows, go to the list.
     function handleInput(data: string): void {
       const current = selectList.getSelectedItem()?.value;
       const query = searchInput.getValue();
@@ -286,9 +291,7 @@ export default function (pi: ExtensionAPI) {
   let config: Config | undefined;
   let service: SubagentsService | undefined;
   let reviewPrompt: Static<typeof ReviewPrompt> | undefined;
-  // The input handler sets this from the menu choice, and before_agent_start clears it.
   let pending: Pending | undefined;
-  // This lasts from the spawn until the review run settles, which covers both stages.
   let review: Review | undefined;
 
   function loadConfig(ctx: ExtensionContext): void {
@@ -322,7 +325,7 @@ export default function (pi: ExtensionAPI) {
     provider: string,
     saved: Adversary[] | undefined,
   ): Promise<Adversary[] | undefined> {
-    const preset = saved ?? SUGGESTED_MODELS.get(provider);
+    const preset = saved ?? suggested(ctx, provider);
 
     const option = await ctx.ui.select(
       "Adversaries:",
@@ -342,10 +345,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     loadConfig(ctx);
-    // Each subagent loads its own pi-subagents, which replaces the shared service with one that
-    // doesn't know this session's subagents. Keep the session's own.
+    // Child sessions replace the shared service. Keep this session's service before they start.
     // SAFETY: pi-subagents publishes its service under this Symbol.for() key.
-    // pi installs the package outside this file's module path, so this file can't import it.
+    // Pi installs the package outside this file's module path, so this file can't import it.
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     service = Object.getOwnPropertyDescriptor(globalThis, SERVICE)?.value as
       | SubagentsService
@@ -391,9 +393,8 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // Spawns after any compaction pi runs before the prompt, and right before agent_start. From
-  // agent_start on, pi-subagents holds back results until the run settles. If a spawn throws, pi
-  // reports the error and the review runs without adversaries.
+  // Spawns after pi's pre-prompt compaction and right before agent_start. From agent_start on,
+  // pi-subagents holds back results until the run settles.
   pi.on("before_agent_start", async (event, ctx) => {
     if (event.messageType !== "user") {
       return;
@@ -403,8 +404,8 @@ export default function (pi: ExtensionAPI) {
 
     pending = undefined;
 
-    // Adversaries picked for a /review prompt that never started don't join a later run.
-    // No input handler rewrites extension prompts, so the prompt arrives as sent.
+    // A rejected review prompt must not start adversaries for a later prompt. No input handler
+    // rewrites extension prompts, so the prompt arrives as sent.
     if (spawn === undefined || event.prompt !== spawn.prompt) {
       return;
     }
@@ -432,8 +433,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // pi-subagents posts results after the run settles, so continuing this run lets the session's
-  // model collect the results first.
+  // Continue this run so the parent collects results before pi-subagents posts them.
   pi.on("agent_before_settle", async (event) => {
     if (review === undefined || review.consensusStarted || event.outcome !== "completed") {
       return;
@@ -449,8 +449,7 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  // Stops adversaries that are still working when the run ends early. After a finished consensus
-  // they're idle, and abort does nothing.
+  // Abort unfinished adversaries. Completed adversaries are idle, so abort does nothing.
   pi.on("agent_settled", async () => {
     const current = review;
 
