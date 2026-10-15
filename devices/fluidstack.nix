@@ -24,5 +24,6 @@
       [
         "granola"
         "slack"
+        "tailscale"
       ];
 }
