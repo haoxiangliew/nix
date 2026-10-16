@@ -54,6 +54,15 @@ let
       tar -xzf ${tarball} -C $out --strip-components=1
     '';
 
+  # Keep real paths together so imports still find node_modules after following HM symlinks.
+  piExtensions = pkgs.runCommand "pi-extensions" { } ''
+    mkdir -p "$out"
+    ${lib.concatMapAttrsStringSep "\n" (name: source: ''
+      mkdir -p "$out"/${lib.escapeShellArg (dirOf name)}
+      cp -rL ${lib.escapeShellArg "${source}"} "$out"/${lib.escapeShellArg name}
+    '') config.programs.pi-coding-agent.extensions}
+  '';
+
   talkPrompt = "You are a read-only agent that works through code changes with the user. Inspect and reason about the codebase, but never modify, create, or delete files, whether with edit tools or with shell commands that write to disk. When you propose a change, write the complete updated code in your response so the user can review it, give feedback, and apply it. Refine your proposal from their replies instead of finalizing edits yourself. Never claim to have edited a file, and never try to.";
 
   herdrAgents = {
@@ -143,9 +152,14 @@ in
           pkgs.linkFarm "pi-skills" config.programs.pi-coding-agent.skills;
       }
       {
-        file = lib.concatMapAttrs (name: source: {
-          "${config.programs.pi-coding-agent.configDir}/extensions/${name}".source = source;
-        }) config.programs.pi-coding-agent.extensions;
+        file = lib.listToAttrs (
+          map (
+            name:
+            lib.nameValuePair "${config.programs.pi-coding-agent.configDir}/extensions/${name}" {
+              source = "${piExtensions}/${name}";
+            }
+          ) (lib.attrNames config.programs.pi-coding-agent.extensions)
+        );
       }
       {
         file = lib.concatMapAttrs (name: source: {
