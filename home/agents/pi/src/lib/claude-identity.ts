@@ -16,8 +16,12 @@ import { promisify } from "node:util";
 import { Type, type StaticDecode } from "typebox";
 import { Value } from "typebox/value";
 
+import { readAttribution, readFingerprintFlow } from "./claude-attribution.ts";
+import { readFingerprint } from "./claude-fingerprint.ts";
 import { discoverCliProfile, type CliProfile } from "./claude-profile.ts";
+import { readRequestIdentity } from "./claude-request-identity.ts";
 import { extractCliSigner, validateCliChecksum } from "./claude-signer.ts";
+import { JavaScript } from "./javascript.ts";
 import { awaitAbort, cached } from "./promise.ts";
 import { errorMessage } from "./settings.ts";
 
@@ -79,15 +83,15 @@ export interface ClaudeIdentity extends SourceIdentity {
   organizationId: string;
 }
 
-function matched(source: string, pattern: RegExp, name: string): RegExpExecArray {
-  const matches = source.matchAll(new RegExp(pattern.source, `${pattern.flags}g`));
+function launcherTarget(source: string): string {
+  const matches = source.matchAll(/^[ \t]*exec(?: -a "[^"]+")? "([^"]+)"(?:[ \t]|$)/gm);
   const first = matches.next();
 
   if (first.done || !matches.next().done) {
-    throw new Error(`Claude CLI ${name} format changed or is ambiguous. Request blocked.`);
+    throw new Error("Claude CLI launcher format changed or is ambiguous. Request blocked.");
   }
 
-  return first.value;
+  return field(first.value, 1);
 }
 
 function field(match: RegExpExecArray, index: number): string {
@@ -98,183 +102,6 @@ function field(match: RegExpExecArray, index: number): string {
   }
 
   return value;
-}
-
-function escapedIdentifier(name: string): string {
-  return name.replaceAll("$", "\\$");
-}
-
-function fingerprint(source: string, version: string) {
-  const match = matched(
-    source,
-    /import\{createHash as ([$\w]+)\}from"(?:node:)?crypto";var ([$\w]+)="([^"]+)";.{0,800}?function [$\w]+\(([$\w]+),([$\w]+)\)\{let ([$\w]+)=\[([\d,]+)\]\.map\(\(([$\w]+)\)=>\4\[\8\]\|\|"([^"]+)"\)\.join\(""\),([$\w]+)=`\$\{\2\}\$\{\6\}\$\{\5\}`;return \1\("([^"]+)"\)\.update\(\10\)\.digest\("hex"\)\.slice\(0,(\d+)\)\}/,
-    "fingerprint",
-  );
-
-  const reader = matched(
-    match[0],
-    /function ([$\w]+)\(([$\w]+)\)\{let ([$\w]+)=\2\.find\(\(([$\w]+)\)=>\4\.type==="user"&&!\4\.isMeta\);if\(!\3\)return"";let ([$\w]+)=\3\.message\.content;if\(typeof \5==="string"\)return \5;if\(Array\.isArray\(\5\)\)\{let ([$\w]+)=\5\.find\(\(([$\w]+)\)=>\7\.type==="text"\);if\(\6&&\6\.type==="text"\)return \6\.text\}return""\}/,
-    "first-user text reader",
-  );
-
-  const hash = matched(
-    match[0],
-    /function ([$\w]+)\([^)]*,[^)]*\)\{let [$\w]+=\[/,
-    "fingerprint function name",
-  );
-
-  const after = source.slice(match.index + match[0].length, match.index + match[0].length + 2000);
-
-  const caller = matched(
-    after,
-    /^function ([$\w]+)\(([$\w]+)\)\{let ([$\w]+)=([$\w]+)\(\2\);return ([$\w]+)\(\3,\{[^}]+VERSION:"([^"]+)"[^}]+\}\.VERSION\)\}/,
-    "request fingerprint caller",
-  );
-
-  if (
-    field(caller, 4) !== field(reader, 1) ||
-    field(caller, 5) !== field(hash, 1) ||
-    field(caller, 6) !== version
-  ) {
-    throw new Error("Claude CLI fingerprint call changed. Request blocked.");
-  }
-
-  return {
-    caller: field(caller, 1),
-    salt: field(match, 3),
-    indices: field(match, 7).split(",").map(Number),
-    padding: field(match, 9),
-    algorithm: field(match, 11),
-    digestLength: Number(field(match, 12)),
-  };
-}
-
-function attributionSuffixes(setup: string, interpolations: string, cch: string): void {
-  const variables = Array.from(interpolations.matchAll(/\$\{([$\w]+)\}/g), (match) =>
-    field(match, 1),
-  );
-
-  const labels = [
-    "cc_workload",
-    "cc_is_subagent",
-    "cc_prev_req",
-    "cc_prompt_id",
-    "cc_turn_origin",
-    "cc_prompt_index",
-  ];
-
-  if (variables.shift() !== cch || variables.length !== labels.length) {
-    throw new Error("Claude CLI attribution fields changed. Request blocked.");
-  }
-
-  for (const [index, variable] of variables.entries()) {
-    const label = labels[index];
-    const symbol = escapedIdentifier(variable);
-
-    const literal = field(
-      matched(
-        setup,
-        new RegExp(`[,;]${symbol}=[^;]{0,400}?[\x60"] ((${label})=[^\x60"]+)[\x60"]:""`),
-        "optional attribution field",
-      ),
-      1,
-    );
-
-    const fields = Array.from(literal.matchAll(/\b(cc_\w+)=/g), (match) => field(match, 1));
-    const expected = index === labels.length - 1 ? `${label},cc_turn_index` : label;
-
-    if (fields.join(",") !== expected) {
-      throw new Error("Claude CLI optional attribution fields changed. Request blocked.");
-    }
-  }
-}
-
-function attribution(source: string, version: string) {
-  const prefix = field(
-    matched(
-      source,
-      /var ([$\w]+)="([^"]+billing[^"]+:)";function [$\w]+\([^)]*\)\{let ([$\w]+)=[$\w]+\.text;return typeof \3==="string"&&\3\.startsWith\(\1\)/,
-      "attribution prefix",
-    ),
-    2,
-  );
-
-  const builder = matched(
-    source,
-    /function ([$\w]+)\(([$\w,]+)\)\{((?:(?!\}function ).){0,3000}?),([$\w]+)=`([^`]+) cc_version=\$\{([$\w]+)\}; cc_entrypoint=\$\{([$\w]+)\};((?:\$\{[$\w]+\})+(?:\$\{\([$\w]+==="gateway"\|\|([$\w]+)\)&&![$\w]+\?` cc_gateway=\$\{\9\?"1":"env"\};`:""\})?)`;return [$\w]+\(`attribution header \$\{\4\}`\),\4\}/,
-    "complete attribution builder",
-  );
-
-  const setup = field(builder, 3);
-
-  const bindings = matched(
-    setup,
-    /let ([$\w]+)=`\$\{\{[^}]+VERSION:"([^"]+)"[^}]+\}\.VERSION\}\.\$\{([$\w]+)\}`,([$\w]+)=(?:[$\w]+\(\)\?\?)?process\.env\.CLAUDE_CODE_ENTRYPOINT\?\?"[^"]+",([$\w]+)=[^;]{0,200}\?"( cch=[^"]+;)":""/,
-    "attribution bindings",
-  );
-
-  if (
-    field(builder, 5) !== prefix ||
-    field(builder, 6) !== field(bindings, 1) ||
-    field(builder, 7) !== field(bindings, 4) ||
-    field(bindings, 2) !== version ||
-    field(bindings, 3) !== field(builder, 2).split(",")[0]
-  ) {
-    throw new Error("Claude CLI attribution bindings changed. Request blocked.");
-  }
-
-  attributionSuffixes(setup, field(builder, 8), field(bindings, 5));
-
-  return { builder: field(builder, 1), prefix };
-}
-
-function assertFingerprintFlow(source: string, caller: string, builder: string): void {
-  const bridge = matched(
-    source,
-    new RegExp(
-      `function ([$\\w]+)\\(([$\\w]+),([$\\w]+),([$\\w]+)\\)\\{let ([$\\w]+)=${escapedIdentifier(builder)}\\(\\4\\.fingerprint,\\4\\.agentContext,\\4\\.previousRequestId,\\4\\.promptId,\\4\\.turnOrigin,\\4\\.turnPosition\\),([$\\w]+)=[$\\w]+\\(\\[\\5,\\3,\\.\\.\\.\\2\\]\\.filter\\(Boolean\\)\\);return [$\\w]+\\(\\6\\),\\6\\}`,
-    ),
-    "fingerprint attribution bridge",
-  );
-
-  matched(
-    source,
-    new RegExp(
-      `let ([$\\w]+)=${escapedIdentifier(caller)}\\(([$\\w]+)\\),.{0,1000}?[$\\w]+=${escapedIdentifier(field(bridge, 1))}\\([^,]+,[^,]+,\\{fingerprint:\\1,agentContext:[^}]+\\}\\)`,
-    ),
-    "request fingerprint flow",
-  );
-}
-
-function requestIdentity(source: string) {
-  const prompt = field(
-    matched(
-      source,
-      /var ([$\w]+)="([^"]+)",([$\w]+)="([^"]+)",([$\w]+)="([^"]+)",[$\w]+=\[\1,\3,\5\],[$\w]+=new Set\([$\w]+\);function [^{]+\{[^}]+\}function [^{]+\{[^}]+isNonInteractive[^}]+\}return \1\}/,
-      "identity prompt selector",
-    ),
-    2,
-  );
-
-  const host = field(
-    matched(
-      source,
-      /function [$\w]+\(e\)\{try\{let t=new URL\(e\)\.host;return\["([^"]+)"\]\.includes\(t\)\}catch\{return!1\}\}/,
-      "first-party host",
-    ),
-    1,
-  );
-
-  const profilePath = field(
-    matched(
-      source,
-      /function [$\w]+\(e\)\{let n=`\$\{[$\w]+\(\)\.BASE_API_URL\}([^`]+)`;try\{let r=await [$\w]+\.get\(n,\{headers:\{"User-Agent":[$\w]+\(\),Authorization:`Bearer \$\{e\}`/,
-      "OAuth profile endpoint",
-    ),
-    1,
-  );
-
-  return { prompt, profilePath, origin: `https://${host}` };
 }
 
 function fileStamp(path: string): string {
@@ -363,6 +190,12 @@ function scanHash(): string {
 
   for (const file of [
     "claude-identity",
+    "javascript",
+    "acorn-parser",
+    "bun-modules",
+    "claude-fingerprint",
+    "claude-attribution",
+    "claude-request-identity",
     "claude-signer",
     "claude-signer-arm64",
     "claude-signer-x64",
@@ -372,6 +205,8 @@ function scanHash(): string {
   ]) {
     hash.update(readFileSync(new URL(`./${file}.ts`, import.meta.url)));
   }
+
+  hash.update(readFileSync(new URL(import.meta.resolve("acorn"))));
 
   return hash.digest("hex");
 }
@@ -448,10 +283,7 @@ async function readExecutable(launcher: string) {
       return { launchers, executable: target, executableStamp: stamp, bytes };
     }
 
-    const next = field(
-      matched(bytes.toString(), /^[ \t]*exec(?: -a "[^"]+")? "([^"]+)"(?:[ \t]|$)/m, "launcher"),
-      1,
-    );
+    const next = launcherTarget(bytes.toString());
 
     if (!isAbsolute(next) || next.includes("$") || next.includes("\x60")) {
       throw new Error("Claude CLI launcher uses an unsupported shell target. Request blocked.");
@@ -467,12 +299,11 @@ async function sourceIdentity(launcher: string, version: string): Promise<Source
   const runtimePath = process.execPath;
   const runtimeStamp = fileStamp(runtimePath);
 
-  const source = bytes.toString("latin1");
-  const { caller, ...fingerprintValues } = fingerprint(source, version);
-  const { builder, prefix } = attribution(source, version);
-  const { prompt, ...requestValues } = requestIdentity(source);
-
-  assertFingerprintFlow(source, caller, builder);
+  const source = new JavaScript(bytes);
+  const { builder, prefix } = readAttribution(source, version);
+  const flow = readFingerprintFlow(source, builder);
+  const fingerprintValues = readFingerprint(version, flow.caller);
+  const { prompt, ...requestValues } = readRequestIdentity(source, flow.selector);
 
   return {
     launchers,

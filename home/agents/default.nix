@@ -20,13 +20,21 @@ let
     {
       unslop = "${inputs.pstack}/pstack/skills/unslop";
       technical-writing = "${inputs.pstack}/pstack/skills/technical-writing";
+      review-check = ./skills/review-check;
+      ts-antislop = ./skills/ts-antislop;
+      draft-pr-review = ./skills/draft-pr-review;
+      prose-unslop = pkgs.linkFarm "prose-unslop" {
+        "SKILL.md" = ./skills/prose-unslop/SKILL.md;
+        "references/unslop.md" = "${inputs.pstack}/pstack/skills/unslop/SKILL.md";
+      };
     }
   ];
 
   integrations = pkgsOf config.home.packages "herdr" lib.id;
 
-  # version and hash come from bun.lock, so `bun update lovely-mermaid` bumps it
-  lovelyMermaid =
+  # Versions and hashes come from bun.lock, so `bun update` bumps runtime packages too.
+  npmPackage =
+    name:
     let
       # bun.lock has trailing commas, which builtins.fromJSON rejects
       lock = builtins.fromJSON (
@@ -34,14 +42,14 @@ let
           builtins.split ",([[:space:]]*[]}])" (builtins.readFile ./pi/bun.lock)
         )
       );
-      entry = lock.packages."lovely-mermaid";
-      version = lib.removePrefix "lovely-mermaid@" (builtins.elemAt entry 0);
+      entry = lock.packages.${name};
+      version = lib.removePrefix "${name}@" (builtins.elemAt entry 0);
       tarball = pkgs.fetchurl {
-        url = "https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-${version}.tgz";
+        url = "https://registry.npmjs.org/${name}/-/${name}-${version}.tgz";
         hash = builtins.elemAt entry 3;
       };
     in
-    pkgs.runCommand "lovely-mermaid-${version}" { } ''
+    pkgs.runCommand "${name}-${version}" { } ''
       mkdir $out
       tar -xzf ${tarball} -C $out --strip-components=1
     '';
@@ -423,7 +431,8 @@ in
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
           "mermaid.ts" = ./pi/src/mermaid.ts;
           "super-review.ts" = ./pi/src/super-review.ts;
-          "node_modules/lovely-mermaid" = lovelyMermaid;
+          "node_modules/acorn" = npmPackage "acorn";
+          "node_modules/lovely-mermaid" = npmPackage "lovely-mermaid";
           "review.ts" = "${
             pkgs.applyPatches {
               name = "pi-review";

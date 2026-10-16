@@ -41,6 +41,12 @@ function requireDisjoint(segments: readonly ElfSegment[]): void {
   }
 }
 
+interface SectionTable {
+  offset: number;
+  count: number;
+  names: Buffer;
+}
+
 export class X64Elf {
   readonly text: ElfSegment;
   private readonly segments: ElfSegment[] = [];
@@ -69,6 +75,48 @@ export class X64Elf {
     const executable = this.segments.filter((segment) => (segment.flags & 1) !== 0);
     requireSupported(executable.length === 1 && executable[0]!.fileSize > 0);
     this.text = executable[0]!;
+  }
+
+  private sectionTable(): SectionTable {
+    const bytes = this.bytes;
+    const offset = readAddress(bytes, 40);
+    const count = bytes.readUInt16LE(60);
+    const strings = bytes.readUInt16LE(62);
+    requireSupported(bytes.readUInt16LE(58) === 64 && count > 0 && strings < count);
+    requireRange(bytes, offset, count * 64);
+    const header = offset + strings * 64;
+    requireSupported(bytes.readUInt32LE(header + 4) === 3);
+    const start = readAddress(bytes, header + 24);
+    const length = readAddress(bytes, header + 32);
+    requireRange(bytes, start, length);
+
+    return { offset, count, names: bytes.subarray(start, start + length) };
+  }
+
+  section(sectionName: string): Buffer {
+    const { offset, count, names } = this.sectionTable();
+    const matches: number[] = [];
+
+    for (let index = 0; index < count; index += 1) {
+      const header = offset + index * 64;
+      const start = this.bytes.readUInt32LE(header);
+      const end = names.indexOf(0, start);
+      requireSupported(start < names.length && end !== -1);
+
+      if (names.subarray(start, end).toString("latin1") === sectionName) {
+        matches.push(header);
+      }
+    }
+
+    requireSupported(matches.length === 1);
+    const selected = matches[0]!;
+    requireSupported(this.bytes.readUInt32LE(selected + 4) === 1);
+    const start = readAddress(this.bytes, selected + 24);
+    const size = readAddress(this.bytes, selected + 32);
+    const contents = this.slice(readAddress(this.bytes, selected + 16), size);
+    requireSupported(contents.byteOffset - this.bytes.byteOffset === start);
+
+    return contents;
   }
 
   slice(address: number, size: number): Buffer {

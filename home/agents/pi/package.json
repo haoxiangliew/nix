@@ -16,6 +16,7 @@
     "@gotgenes/pi-permission-system": "40.2.1",
     "@gotgenes/pi-subagents": "23.4.0",
     "@types/bun": "1.4.3",
+    "acorn": "8.19.0",
     "lovely-mermaid": "0.3.3",
     "oxfmt": "0.73.0",
     "oxlint": "1.88.0",

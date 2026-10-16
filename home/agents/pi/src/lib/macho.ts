@@ -28,14 +28,21 @@ function name(bytes: Buffer, offset: number): string {
   return (
     bytes
       .subarray(offset, offset + 16)
-      .toString("ascii")
+      .toString("latin1")
       .split("\0", 1)[0] ?? ""
   );
+}
+
+interface NamedSection extends MachSection {
+  segment: Segment;
+  segmentName: string;
+  name: string;
 }
 
 export class Arm64MachO {
   readonly text: MachSection;
   private readonly segments: Segment[] = [];
+  private readonly sections: NamedSection[] = [];
 
   constructor(readonly bytes: Buffer) {
     requireRange(bytes, 0, 32);
@@ -43,7 +50,6 @@ export class Arm64MachO {
     const count = bytes.readUInt32LE(16);
     const end = 32 + bytes.readUInt32LE(20);
     requireRange(bytes, 32, end - 32);
-    const sections: MachSection[] = [];
     let cursor = 32;
 
     for (let i = 0; i < count; i += 1) {
@@ -52,20 +58,21 @@ export class Arm64MachO {
       requireSupported(size >= 8 && cursor + size <= end);
 
       if (bytes.readUInt32LE(cursor) === 0x19) {
-        this.readSegment(cursor, size, sections);
+        this.readSegment(cursor, size);
       }
 
       cursor += size;
     }
 
-    requireSupported(cursor === end && sections.length === 1);
-    this.text = sections[0]!;
+    requireSupported(cursor === end);
+    this.text = this.find("__TEXT", "__text");
     requireSupported(this.text.address % 4 === 0 && this.text.size % 4 === 0);
   }
 
-  private readSegment(cursor: number, size: number, sections: MachSection[]): void {
+  private readSegment(cursor: number, size: number): void {
     requireSupported(size >= 72);
     const bytes = this.bytes;
+    const segmentName = name(bytes, cursor + 8);
 
     const segment = {
       address: readAddress(bytes, cursor + 24),
@@ -84,18 +91,37 @@ export class Arm64MachO {
     for (let i = 0; i < count; i += 1) {
       const section = cursor + 72 + i * 80;
 
-      if (name(bytes, section) === "__text" && name(bytes, section + 16) === "__TEXT") {
-        const text = {
+      if (name(bytes, section + 16) === segmentName) {
+        this.sections.push({
+          segment,
+          segmentName,
+          name: name(bytes, section),
           address: readAddress(bytes, section + 32),
           size: readAddress(bytes, section + 40),
           offset: bytes.readUInt32LE(section + 48),
-        };
-
-        requireRange(bytes, text.offset, text.size);
-        requireSection(segment, text);
-        sections.push(text);
+        });
       }
     }
+  }
+
+  // Zero-fill sections have no file data, so check only the selected section.
+  private find(segmentName: string, sectionName: string): MachSection {
+    const matches = this.sections.filter(
+      (section) => section.segmentName === segmentName && section.name === sectionName,
+    );
+
+    requireSupported(matches.length === 1);
+    const selected = matches[0]!;
+    requireRange(this.bytes, selected.offset, selected.size);
+    requireSection(selected.segment, selected);
+
+    return { address: selected.address, size: selected.size, offset: selected.offset };
+  }
+
+  section(segmentName: string, sectionName: string): Buffer {
+    const selected = this.find(segmentName, sectionName);
+
+    return this.bytes.subarray(selected.offset, selected.offset + selected.size);
   }
 
   slice(address: number, size: number): Buffer {
