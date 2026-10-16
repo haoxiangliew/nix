@@ -209,7 +209,7 @@ function attribution(source: string, version: string) {
 
   const bindings = matched(
     setup,
-    /let ([$\w]+)=`\$\{\{[^}]+VERSION:"([^"]+)"[^}]+\}\.VERSION\}\.\$\{([$\w]+)\}`,([$\w]+)=process\.env\.CLAUDE_CODE_ENTRYPOINT\?\?"[^"]+",([$\w]+)=[^;]{0,200}\?"( cch=[^"]+;)":""/,
+    /let ([$\w]+)=`\$\{\{[^}]+VERSION:"([^"]+)"[^}]+\}\.VERSION\}\.\$\{([$\w]+)\}`,([$\w]+)=(?:[$\w]+\(\)\?\?)?process\.env\.CLAUDE_CODE_ENTRYPOINT\?\?"[^"]+",([$\w]+)=[^;]{0,200}\?"( cch=[^"]+;)":""/,
     "attribution bindings",
   );
 

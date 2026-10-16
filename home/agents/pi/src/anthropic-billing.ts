@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { billingFetch, type BillingSession } from "./lib/anthropic-billing.ts";
 import { assertBillingReady } from "./lib/billing-quota.ts";
-import { BILLING_SESSION_HEADER } from "./lib/billing-session.ts";
+import { BILLING_TOKEN_HEADER, routeBillingRegistry } from "./lib/billing-registry.ts";
 import { readClaudeIdentity, type ClaudeIdentity } from "./lib/claude-identity.ts";
 import {
   registerFetchWrapper,
@@ -13,15 +13,8 @@ import {
 } from "./lib/fetch.ts";
 import { awaitAbort } from "./lib/promise.ts";
 
-const TAG = "x-pi-anthropic-billing";
-
-interface Handler {
-  sessionId: () => string;
-  wrap: FetchWrapper;
-}
-
 interface Shared {
-  handlers: Map<string, Handler>;
+  handlers: Map<string, FetchWrapper>;
   sessions: Map<string, BillingSession>;
 }
 
@@ -48,46 +41,28 @@ async function locateCli(pi: ExtensionAPI): Promise<{ path: string; version: str
 function untag(input: FetchInput, init: RequestInit | undefined) {
   const headers = requestHeaders(input, init);
 
-  const token = headers.get(TAG);
-  const sessionId = headers.get(BILLING_SESSION_HEADER);
+  const token = headers.get(BILLING_TOKEN_HEADER);
 
-  if (token === null && sessionId === null) {
-    return { token, sessionId, init };
+  if (token === null) {
+    return { token, init };
   }
 
-  headers.delete(TAG);
-  headers.delete(BILLING_SESSION_HEADER);
+  headers.delete(BILLING_TOKEN_HEADER);
 
-  return { token, sessionId, init: { ...init, headers } };
-}
-
-function selectedHandler(
-  shared: Shared,
-  token: string | null,
-  sessionId: string | null,
-): FetchWrapper | undefined {
-  if (token !== null) {
-    return shared.handlers.get(token)?.wrap;
-  }
-
-  const matches = Array.from(shared.handlers.values()).filter(
-    (handler) => sessionId === null || handler.sessionId() === sessionId,
-  );
-
-  return matches.length === 1 ? matches[0]?.wrap : undefined;
+  return { token, init: { ...init, headers } };
 }
 
 function createRouter(shared: Shared, upstream: FetchFunction): FetchFunction {
   const wrapped = (input: FetchInput, init?: RequestInit): Promise<Response> => {
     const routed = untag(input, init);
 
-    const handler = selectedHandler(shared, routed.token, routed.sessionId);
+    const handler = routed.token === null ? undefined : shared.handlers.get(routed.token);
 
     const send =
       handler === undefined
         ? billingFetch(
             upstream,
-            new Error("Anthropic billing session is unavailable or ambiguous. Request blocked."),
+            new Error("Anthropic billing session is unavailable. Request blocked."),
           )
         : handler(upstream);
 
@@ -165,14 +140,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     setSession(ctx);
-    shared.handlers.set(token, {
-      sessionId: () => session.sessionId,
-      wrap: (upstream) => {
-        const owner = session;
+    shared.handlers.set(token, (upstream) => {
+      const owner = session;
 
-        return billingFetch(upstream, (model, signal) => identity(model, signal, owner), owner);
-      },
+      return billingFetch(upstream, (model, signal) => identity(model, signal, owner), owner);
     });
+    routeBillingRegistry(ctx.modelRegistry, token);
     prefetch(ctx);
   });
 
@@ -191,7 +164,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_provider_headers", async (event, ctx) => {
     if (ctx.model?.provider === "anthropic") {
       setSession(ctx);
-      event.headers[TAG] = token;
+      event.headers[BILLING_TOKEN_HEADER] = token;
     }
   });
 

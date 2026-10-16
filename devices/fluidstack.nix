@@ -24,6 +24,6 @@
       [
         "granola"
         "slack"
-        "tailscale"
+        "tailscale-app"
       ];
 }

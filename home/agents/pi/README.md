@@ -18,9 +18,9 @@ Extensions read the settings below from `~/.pi/agent/settings.json`. Set them th
 
 ### `anthropic-billing.ts`
 
-Sends pi's Anthropic OAuth requests, including compaction forks and cache warming, with the headers, system prompt, and body signature of the installed `claude --print`. It captures the headers and system prompt by running `claude` against a local mock API, and reads the body signer from its binary. It works only on macOS ARM64 and Linux x86-64.
+Sends pi's Anthropic OAuth requests with the headers, system prompt, and body signature of the installed `claude --print`. This covers agent turns, compaction, cache warming, and extension calls such as `/btw`. It captures the headers and system prompt by running `claude` against a local mock API, and reads the body signer from its binary. It works only on macOS ARM64 and Linux x86-64.
 
-It blocks requests it cannot match. On non-Enterprise plans, it blocks further requests after a response uses usage credits. Run `/reload` after updating `claude` or pi, or switching accounts. No settings.
+Extension calls through `ctx.modelRegistry` use the session's billing identity. It blocks requests it cannot match. On non-Enterprise plans, it blocks further requests after a response uses usage credits. Run `/reload` after updating `claude` or pi, or switching accounts. No settings.
 
 ### `attention.ts`
 
