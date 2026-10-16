@@ -1,5 +1,6 @@
 /**
- * Replaces pi's footer with one line of segments. With invalid settings, pi keeps its own footer.
+ * Replaces pi's footer with a line of segments, plus a line of other extensions' statuses when
+ * there are any. With invalid settings, pi keeps its own footer.
  * The `statusline` key in settings.json configures it.
  */
 
@@ -42,6 +43,9 @@ const Config = Type.Object(
 
 type Segment = (typeof SEGMENTS)[number];
 
+// Statuses that segments show. They stay off the second line even when their segment is left out.
+const SEGMENT_STATUSES = new Set(["talk", "auto-mode", "fast"]);
+
 type Config = Static<typeof Config>;
 
 interface Speed {
@@ -63,6 +67,21 @@ function isModelOutput(event: MessageUpdateEvent): boolean {
   const update = event.assistantMessageEvent;
 
   return OUTPUT.has(update.type) && "delta" in update && update.delta.length > 0;
+}
+
+// Same cleanup as pi's footer, so a status can't break the line.
+function sanitizeStatus(text: string): string {
+  return text
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/ +/g, " ")
+    .trim();
+}
+
+function otherStatuses(statuses: ReadonlyMap<string, string>): string[] {
+  return [...statuses]
+    .filter(([key]) => !SEGMENT_STATUSES.has(key))
+    .toSorted(([a], [b]) => a.localeCompare(b))
+    .flatMap(([, text]) => sanitizeStatus(text) || []);
 }
 
 function formatTokens(tokens: number): string {
@@ -316,11 +335,15 @@ export default function (pi: ExtensionAPI) {
             speed: () => formatSpeed(speed).map((part) => theme.fg("muted", part)),
           };
 
+          const separator = theme.fg("dim", " · ");
+
           const parts = segments
             .flatMap((segment) => pieces[segment]())
             .filter((part) => part !== undefined);
 
-          return [truncateToWidth(parts.join(theme.fg("dim", " · ")), width)];
+          const lines = [parts.join(separator), otherStatuses(statuses).join(separator)];
+
+          return lines.flatMap((line) => (line === "" ? [] : [truncateToWidth(line, width)]));
         },
       };
     });

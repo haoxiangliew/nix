@@ -400,6 +400,7 @@ in
           showCacheMissNotices = true;
           talk.prompt = talkPrompt;
           mcpAncestors.roots = [ "~/Developer" ];
+          rewind.silentCheckpoints = true;
           packages = [
             "npm:pi-web-access"
             "npm:@gotgenes/pi-subagents"

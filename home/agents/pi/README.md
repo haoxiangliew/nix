@@ -104,7 +104,7 @@ Pi's autocomplete only reaches its main editor, and this extension's input handl
 
 ### `statusline.ts`
 
-Replaces pi's footer with one line. If the settings are invalid, pi keeps its footer. `tokens` shows input (`↑`) and output (`↓`) tokens across all requests since your last message, including cached input. Output shows `~` while it's an estimate.
+Replaces pi's footer with a line of segments. If the settings are invalid, pi keeps its footer. Statuses that other extensions set with `setStatus` go on a second line, sorted by key. That line only appears when there are any. The `talk`, `autoMode`, and `fast` segments show their own statuses, so leaving one out hides that status. `tokens` shows input (`↑`) and output (`↓`) tokens across all requests since your last message, including cached input. Output shows `~` while it's an estimate.
 
 | Key                   | Default                  | Meaning                                                                                                                         |
 | --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
