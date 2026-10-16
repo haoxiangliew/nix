@@ -9,6 +9,7 @@
 - `/end-review` keeps the editor open so other extensions' dialogs remain visible. A widget shows progress. Esc cancels.
 - "Review with a custom prompt" and `/review custom <prompt>` let you describe what to review.
 - Each `/review` prompt emits `review:prompt` on `pi.events` for `super-review.ts`.
+- The custom prompt and custom instructions dialogs autocomplete `$name` through `skill-mention.ts`. `$name` in the custom prompt, custom instructions, or `--extra` loads that skill into the review prompt.
 
 The build fails if the patch stops applying after `nix flake update pi-review`.
 
@@ -98,6 +99,8 @@ Keeps extensions that append to the system prompt from breaking the prompt cache
 ### `skill-mention.ts`
 
 `$name` anywhere in a prompt loads that skill. No settings.
+
+Pi's autocomplete only reaches its main editor, and this extension's input handler skips prompts that extensions send. Other extensions get both through `pi.events`. `skill-mention:autocomplete` hands them a `$name` provider for their own editors, and `skill-mention:expand` loads skills for text the user typed.
 
 ### `statusline.ts`
 
