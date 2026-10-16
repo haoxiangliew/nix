@@ -420,7 +420,6 @@ in
           "attention.ts" = ./pi/src/attention.ts;
           "auto-mode.ts" = ./pi/src/auto-mode.ts;
           "compaction.ts" = ./pi/src/compaction.ts;
-          "stream-watchdog.ts" = ./pi/src/stream-watchdog.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
           "mermaid.ts" = ./pi/src/mermaid.ts;
           "super-review.ts" = ./pi/src/super-review.ts;

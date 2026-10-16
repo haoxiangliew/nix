@@ -23,7 +23,6 @@ import { loadOrReport } from "./lib/settings.ts";
 const SEGMENTS = [
   "talk",
   "autoMode",
-  "stall",
   "model",
   "thinking",
   "fast",
@@ -300,7 +299,6 @@ export default function (pi: ExtensionAPI) {
             model: () => [ctx.model && theme.fg("accent", `${ctx.model.provider}/${ctx.model.id}`)],
             thinking: () => [theme.fg("muted", pi.getThinkingLevel())],
             fast: () => [statuses.get("fast")],
-            stall: () => [tint("error", statuses.get("stream-watchdog"))],
             tokens: () => [tint("muted", formatTotals(totals()))],
             cwd: () => {
               const branch = footerData.getGitBranch();

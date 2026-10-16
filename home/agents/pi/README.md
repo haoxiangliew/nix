@@ -99,27 +99,13 @@ Keeps extensions that append to the system prompt from breaking the prompt cache
 
 `$name` anywhere in a prompt loads that skill. No settings.
 
-### `stream-watchdog.ts`
-
-Fails an Anthropic request whose stream stalls, so pi retries it. Anthropic keeps stalled streams open with pings, so pi would otherwise wait forever. The statusline's `stall` segment shows a countdown. The extension logs failed requests with their `request-id` to `~/.pi/agent/stream-watchdog.jsonl`.
-
-| Key                              | Default    | Meaning                                                      |
-| -------------------------------- | ---------- | ------------------------------------------------------------ |
-| `streamWatchdog.headersMs`       | `60000`    | Wait for response headers                                    |
-| `streamWatchdog.uploadMsPer32KB` | `1000`     | Extra header wait per 32 KB of request body                  |
-| `streamWatchdog.firstEventMs`    | `60000`    | Wait from the headers to the first event                     |
-| `streamWatchdog.eventIdleMs`     | `90000`    | Longest gap between events, not counting pings               |
-| `streamWatchdog.byteIdleMs`      | `60000`    | Longest gap between bytes, counting pings                    |
-| `streamWatchdog.warnMs`          | `30000`    | Silence before the statusline shows the countdown            |
-| `streamWatchdog.log`             | `"stalls"` | `off`, `stalls`, or `all`, which also logs finished requests |
-
 ### `statusline.ts`
 
 Replaces pi's footer with one line. If the settings are invalid, pi keeps its footer. `tokens` shows input (`↑`) and output (`↓`) tokens across all requests since your last message, including cached input. Output shows `~` while it's an estimate.
 
-| Key                   | Default                  | Meaning                                                                                                                                  |
-| --------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `statusline.segments` | all, in the order listed | Segments to show, in order. Any of `talk`, `autoMode`, `stall`, `model`, `thinking`, `fast`, `cwd`, `context`, `cost`, `tokens`, `speed` |
+| Key                   | Default                  | Meaning                                                                                                                         |
+| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `statusline.segments` | all, in the order listed | Segments to show, in order. Any of `talk`, `autoMode`, `model`, `thinking`, `fast`, `cwd`, `context`, `cost`, `tokens`, `speed` |
 
 ### `super-review.ts`
 
