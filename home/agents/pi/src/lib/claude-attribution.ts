@@ -34,7 +34,8 @@ import {
   type SymbolReference,
 } from "./javascript.ts";
 
-const optionalGroups = [
+// The builder must interpolate each group exactly once, even if it evaluates to "".
+const requiredOptionalGroups = [
   ["cch"],
   ["cc_workload"],
   ["cc_is_subagent"],
@@ -43,6 +44,12 @@ const optionalGroups = [
   ["cc_turn_origin"],
   ["cc_prompt_index", "cc_turn_index"],
 ];
+
+const requiredOptionalFields = requiredOptionalGroups.flat();
+
+const protectedFields = ["cc_version", "cc_entrypoint", "cc_gateway", ...requiredOptionalFields];
+
+const fieldNameCharacters = new Set("abcdefghijklmnopqrstuvwxyz0123456789_");
 
 // Name matching is only a necessary filter. Keep shadowed spellings here;
 // functionBridges/functionFlows still prove the actual lexical references.
@@ -141,38 +148,64 @@ function before(left: AnyNode, right: AnyNode): boolean {
   return left.end <= right.start;
 }
 
-function staticTemplate(node: AnyNode): string {
-  if (node.type === "Literal") {
-    return text(node);
-  }
-
-  if (node.type !== "TemplateLiteral") {
-    throw new Error("Claude CLI attribution literal changed. Request blocked.");
-  }
-
-  return node.quasis.map(cooked).join("value");
-}
-
 function suffix(node: AnyNode): string[] {
   if (node.type !== "ConditionalExpression" || text(node.alternate) !== "") {
     throw new Error("Claude CLI optional attribution changed. Request blocked.");
   }
 
-  const fields = staticTemplate(node.consequent).trim().split(";");
+  const value = node.consequent;
+  const literals = value.type === "TemplateLiteral" ? value.quasis.map(cooked) : [text(value)];
 
-  if (fields.pop() !== "") {
+  // NUL stands for one whole interpolated value. Reject literals that already contain NUL.
+  if (literals.some((literal) => literal.includes("\0"))) {
+    throw new Error("Claude CLI attribution literal changed. Request blocked.");
+  }
+
+  return attributionEntries(literals.join("\0")).map(([field]) => field);
+}
+
+// Fields are " name=value;" entries. Names are lowercase snake_case, so an interpolated NUL
+// can only appear in a value.
+function attributionEntries(source: string): [string, string][] {
+  const entries = source.split(";");
+
+  if (entries.length < 2 || entries.pop() !== "") {
     throw new Error("Claude CLI attribution field terminator changed. Request blocked.");
   }
 
-  return fields.map((field) => {
-    const separator = field.indexOf("=");
+  return entries.map((entry) => {
+    const separator = entry.indexOf("=");
+    const field = entry.slice(1, separator);
 
-    if (separator < 1) {
+    if (
+      !entry.startsWith(" ") ||
+      separator < 2 ||
+      !field.split("").every((character) => fieldNameCharacters.has(character))
+    ) {
       throw new Error("Claude CLI attribution field changed. Request blocked.");
     }
 
-    return field.trim().slice(0, field.trim().indexOf("="));
+    return [field, entry.slice(separator + 1)];
   });
+}
+
+export function attributionFields(attribution: string, prefix: string): Map<string, string> {
+  if (!attribution.startsWith(prefix)) {
+    throw new Error("Claude CLI attribution prefix changed. Request blocked.");
+  }
+
+  const entries = attributionEntries(attribution.slice(prefix.length));
+  const fields = new Map(entries);
+
+  if (fields.size !== entries.length) {
+    throw new Error("Claude CLI attribution fields are duplicated. Request blocked.");
+  }
+
+  return fields;
+}
+
+export function attributionText(prefix: string, fields: ReadonlyMap<string, string>): string {
+  return `${prefix}${[...fields].map(([field, value]) => ` ${field}=${value};`).join("")}`;
 }
 
 function entrypoint(node: AnyNode): void {
@@ -325,31 +358,37 @@ function versionBinding(fn: BlockFunction, identifier: AnyNode, version: string)
   }
 }
 
-function checksumSource(variable: VariableDeclarator): boolean {
+function checksumSource(node: AnyNode): boolean {
   return (
-    variable.init?.type === "ConditionalExpression" &&
-    !!stringLiteral(variable.init.consequent)?.startsWith(" cch=")
+    node.type === "ConditionalExpression" && !!stringLiteral(node.consequent)?.startsWith(" cch=")
   );
 }
 
-function optionalGroup(body: BlockStatement, identifier: AnyNode): string[] {
-  const fields = suffix(valueOf(body, identifier));
+function optionalGroup(body: BlockStatement, value: Expression): string[] {
+  const fields = suffix(value);
 
-  if (
-    !optionalGroups.some(
-      (group) =>
-        group.length === fields.length && group.every((field, index) => fields[index] === field),
-    )
-  ) {
+  const required = requiredOptionalGroups.some(
+    (group) =>
+      group.length === fields.length && group.every((field, index) => fields[index] === field),
+  );
+
+  const gateway = match(
+    value,
+    '($backend === "gateway" || $enabled) && !$foreign ? ` cc_gateway=${$enabled ? "1" : "env"};` : ""',
+  );
+
+  // Allow new cc_* groups that don't reuse a known field name.
+  const extension = fields.every(
+    (field) => field.startsWith("cc_") && !protectedFields.includes(field),
+  );
+
+  if (!required && !gateway && !extension) {
     throw new Error("Claude CLI optional attribution group changed. Request blocked.");
   }
 
   if (
     fields[0] === "cch" &&
-    !same(
-      one(declarations(body).filter(checksumSource), "checksum attribution source").id,
-      identifier,
-    )
+    one([...scope(body)].filter(checksumSource), "checksum attribution source") !== value
   ) {
     throw new Error("Claude CLI checksum attribution binding changed. Request blocked.");
   }
@@ -357,31 +396,30 @@ function optionalGroup(body: BlockStatement, identifier: AnyNode): string[] {
   return fields;
 }
 
-function optionalFields(body: BlockStatement, optional: Expression[]): void {
+function optionalFields(
+  js: JavaScript,
+  module: Program,
+  body: BlockStatement,
+  optional: Expression[],
+): void {
   const fields: string[] = [];
 
-  for (const value of optional) {
-    if (value.type === "Identifier") {
-      fields.push(...optionalGroup(body, value));
-    } else if (
-      match(
-        value,
-        '($backend === "gateway" || $enabled) && !$foreign ? ` cc_gateway=${$enabled ? "1" : "env"};` : ""',
-      )
+  for (const expression of optional) {
+    const value = expression.type === "Identifier" ? valueOf(body, expression) : expression;
+
+    if (
+      expression.type === "Identifier" &&
+      !js.sameBinding(module, expression, declaration(body, value))
     ) {
-      fields.push("cc_gateway");
-    } else {
-      throw new Error("Claude CLI attribution interpolation changed. Request blocked.");
+      throw new Error("Claude CLI optional attribution binding changed. Request blocked.");
     }
+
+    fields.push(...optionalGroup(body, value));
   }
 
-  const expected = optionalGroups.flat();
-  const actual = fields.filter((field) => field !== "cc_gateway");
-
   if (
-    actual.length !== expected.length ||
     new Set(fields).size !== fields.length ||
-    expected.some((field) => !actual.includes(field))
+    requiredOptionalFields.some((field) => !fields.includes(field))
   ) {
     throw new Error("Claude CLI optional attribution fields changed. Request blocked.");
   }
@@ -398,7 +436,7 @@ function validateBuilder(
   const { prefix, versionId, entrypointId, optional } = templateBindings(template);
   versionBinding(fn, versionId, version);
   entrypoint(valueOf(body, entrypointId));
-  optionalFields(body, optional);
+  optionalFields(js, module, body, optional);
   const result = declaration(body, template);
 
   if (valueOf(body, result) !== template || !js.sameBinding(module, tail(fn), result)) {

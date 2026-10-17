@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import { Type, type StaticDecode } from "typebox";
 import { Value } from "typebox/value";
 
-import { readAttribution, readFingerprintFlow } from "./claude-attribution.ts";
+import { attributionFields, readAttribution, readFingerprintFlow } from "./claude-attribution.ts";
 import { readFingerprint } from "./claude-fingerprint.ts";
 import { discoverCliProfile, type CliProfile } from "./claude-profile.ts";
 import { readRequestIdentity } from "./claude-request-identity.ts";
@@ -159,15 +159,6 @@ export function requestFingerprint(text: string, identity: SourceIdentity): stri
     .update(`${identity.salt}${sample}${identity.version}`)
     .digest("hex")
     .slice(0, identity.digestLength);
-}
-
-export function attributionFields(profile: CliProfile): Map<string, string> {
-  return new Map(
-    Array.from(profile.attributionText.matchAll(/\b(cc_\w+|cch)=([^;]+);/g), (match) => [
-      field(match, 1),
-      field(match, 2),
-    ]),
-  );
 }
 
 export function isUuid(value: string): boolean {
@@ -332,7 +323,7 @@ function verifyProfile(identity: SourceIdentity, profile: CliProfile): void {
   }
 
   verifyFingerprint(identity, profile);
-  verifyTraceFields(profile);
+  verifyTraceFields(identity, profile);
 }
 
 function verifyFingerprint(identity: SourceIdentity, profile: CliProfile): void {
@@ -349,13 +340,13 @@ function verifyFingerprint(identity: SourceIdentity, profile: CliProfile): void 
   // The CLI hashes the prompt before adding system reminders, so hash the probe prompt itself.
   const expected = `${identity.version}.${requestFingerprint(profile.probePrompt, identity)}`;
 
-  if (attributionFields(profile).get("cc_version") !== expected) {
+  if (attributionFields(profile.attributionText, identity.prefix).get("cc_version") !== expected) {
     throw new Error("Claude CLI fingerprint doesn't match its captured request. Request blocked.");
   }
 }
 
-function verifyTraceFields(profile: CliProfile): void {
-  const fields = attributionFields(profile);
+function verifyTraceFields(identity: SourceIdentity, profile: CliProfile): void {
+  const fields = attributionFields(profile.attributionText, identity.prefix);
   const prompt = fields.get("cc_prompt_id");
   const values = Object.values(profile.headers);
   const session = profile.metadataUserId.session_id;

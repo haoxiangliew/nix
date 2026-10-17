@@ -5,9 +5,9 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
 import { assertBillingReady, billingQuotaError } from "./billing-quota.ts";
+import { attributionFields, attributionText } from "./claude-attribution.ts";
 import {
   assertCliUnchanged,
-  attributionFields,
   isUuid,
   requestFingerprint,
   type ClaudeIdentity,
@@ -68,7 +68,7 @@ function firstUserText(payload: Payload): string {
 }
 
 function billingBlock(payload: Payload, identity: ClaudeIdentity, session: BillingSession): string {
-  const fields = attributionFields(identity.profile);
+  const fields = attributionFields(identity.profile.attributionText, identity.prefix);
 
   const replacements = new Map([
     ["cc_version", `${identity.version}.${requestFingerprint(firstUserText(payload), identity)}`],
@@ -81,10 +81,9 @@ function billingBlock(payload: Payload, identity: ClaudeIdentity, session: Billi
     ["cc_turn_index", String(Number(fields.get("cc_turn_index")) + session.turnIndex)],
   ]);
 
-  return identity.profile.attributionText.replace(
-    /\b(cc_\w+|cch)=([^;]+);/g,
-    (original, name: string) =>
-      replacements.has(name) ? `${name}=${replacements.get(name)};` : original,
+  return attributionText(
+    identity.prefix,
+    new Map([...fields].map(([name, value]) => [name, replacements.get(name) ?? value])),
   );
 }
 
@@ -109,7 +108,7 @@ async function assertHeaders(
 }
 
 function tracedHeaders(identity: ClaudeIdentity, session: BillingSession): Headers {
-  const fields = attributionFields(identity.profile);
+  const fields = attributionFields(identity.profile.attributionText, identity.prefix);
   const metadata = identity.profile.metadataUserId;
 
   const values = new Map<string, string>([

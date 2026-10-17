@@ -46,6 +46,18 @@ const transportHeaders = new Set([
   "accept-encoding",
 ]);
 
+// Headers yields lowercase names.
+const secretHeaderParts = [
+  "auth",
+  "cookie",
+  "apikey",
+  "api-key",
+  "api_key",
+  "token",
+  "secret",
+  "credential",
+];
+
 function profileHeaders(headers: Headers): Readonly<Record<string, string>> {
   const excluded = new Set(transportHeaders);
 
@@ -54,8 +66,7 @@ function profileHeaders(headers: Headers): Readonly<Record<string, string>> {
   }
 
   const entries = [...headers].filter(
-    ([name]) =>
-      !excluded.has(name) && !/(?:auth|cookie|api[-_]?key|token|secret|credential)/i.test(name),
+    ([name]) => !excluded.has(name) && !secretHeaderParts.some((part) => name.includes(part)),
   );
 
   return Object.freeze(Object.fromEntries(entries));
