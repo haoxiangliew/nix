@@ -151,8 +151,28 @@ function isSubscription(ctx: ExtensionContext): boolean {
   );
 }
 
-function formatCost(ctx: ExtensionContext): string | undefined {
-  const cost = ctx.sessionManager.getEntries().reduce((sum, entry) => sum + entryCost(entry), 0);
+// The footer renders on every frame. Each new entry moves the leaf, so the sum only changes with
+// the session or the leaf.
+function trackCost(): (ctx: ExtensionContext) => number {
+  let cached: { sessionId: string; leafId: string | null; cost: number } | undefined;
+
+  return (ctx) => {
+    const { sessionManager } = ctx;
+    const sessionId = sessionManager.getSessionId();
+    const leafId = sessionManager.getLeafId();
+
+    if (cached?.sessionId !== sessionId || cached.leafId !== leafId) {
+      const entries = sessionManager.getEntries();
+      const cost = entries.reduce((sum, entry) => sum + entryCost(entry), 0);
+
+      cached = { sessionId, leafId, cost };
+    }
+
+    return cached.cost;
+  };
+}
+
+function formatCost(cost: number, ctx: ExtensionContext): string | undefined {
   const subscription = isSubscription(ctx);
 
   if (cost === 0 && !subscription) {
@@ -285,6 +305,7 @@ export default function (pi: ExtensionAPI) {
 
   const speed = trackSpeed(pi, () => requestRender?.());
   const totals = trackTotals(pi, () => requestRender?.());
+  const sessionCost = trackCost();
 
   pi.on("session_start", async (_event, ctx) => {
     const config = loadOrReport(ctx, "The custom status line", "statusline", Config);
@@ -331,7 +352,7 @@ export default function (pi: ExtensionAPI) {
 
               return [usage && formatContext(usage, theme)];
             },
-            cost: () => [tint("muted", formatCost(ctx))],
+            cost: () => [tint("muted", formatCost(sessionCost(ctx), ctx))],
             speed: () => formatSpeed(speed).map((part) => theme.fg("muted", part)),
           };
 
