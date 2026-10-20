@@ -40,24 +40,27 @@ The reviewer can deny `path` and `external_directory` requests, but allowing one
 
 After a denial, the agent must not work around it. For most requests, it asks you with `ask_user_question` and retries once if you approve. A subagent stops and reports the denial instead. A denied `path` or `external_directory` request gets one unchanged retry, which opens the dialog.
 
-| Key                                     | Default                                                          | Meaning                                                                  |
-| --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `autoMode.models`                       | `["openai/codex-auto-review", "openai-codex/codex-auto-review"]` | Reviewer models as `provider/id`. The first one with credentials reviews |
-| `autoMode.reasoning`                    | `"low"`                                                          | Reasoning for the second stage                                           |
-| `autoMode.firstStage`                   | `true`                                                           | Run the one-word first stage                                             |
-| `autoMode.timeoutMs`                    | `30000`                                                          | Timeout for each model call, including its retries                       |
-| `autoMode.maxRetries`                   | `3`                                                              | Retries per model call after a transient error                           |
-| `autoMode.retryDelayMs`                 | `250`                                                            | Wait before the first retry                                              |
-| `autoMode.maxRetryDelayMs`              | `2000`                                                           | Longest wait between retries                                             |
-| `autoMode.maxDenials`                   | `3`                                                              | Denials in a row before asks go to the dialog until your next message    |
-| `autoMode.environment`                  | `[]`                                                             | Organizations, domains, and services the reviewer trusts                 |
-| `autoMode.context.messageTokens`        | `5000`                                                           | Limit per user message                                                   |
-| `autoMode.context.toolCallTokens`       | `1000`                                                           | Limit per tool call                                                      |
-| `autoMode.context.threadTokens`         | `30000`                                                          | Review thread size before it starts over                                 |
-| `autoMode.investigation.maxCommands`    | `5`                                                              | Programs the assessment may run per review. `0` turns this off           |
-| `autoMode.investigation.timeoutMs`      | `10000`                                                          | Timeout per program                                                      |
-| `autoMode.investigation.totalTimeoutMs` | `60000`                                                          | Time for the whole second stage, checked before each model call          |
-| `autoMode.investigation.outputTokens`   | `2000`                                                           | Output kept per program                                                  |
+| Key                                     | Default                                                          | Meaning                                                                                                                |
+| --------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `autoMode.models`                       | `["openai/codex-auto-review", "openai-codex/codex-auto-review"]` | Reviewer models as `provider/id`. The first one with credentials reviews                                               |
+| `autoMode.reasoning`                    | `"low"`                                                          | Reasoning for the second stage                                                                                         |
+| `autoMode.firstStage`                   | `true`                                                           | Run the first stage                                                                                                    |
+| `autoMode.classifiers`                  | `["typesafe/jev-latest"]`                                        | Classifier models for the first stage. The first one with credentials runs it. Without one, the reviewer model runs it |
+| `autoMode.allowProbability`             | `0.9`                                                            | Lowest probability of allow at which a classifier allows a request                                                     |
+| `autoMode.timeoutMs`                    | `30000`                                                          | Timeout for each model call, including its retries                                                                     |
+| `autoMode.maxRetries`                   | `3`                                                              | Retries per model call after a transient error                                                                         |
+| `autoMode.retryDelayMs`                 | `250`                                                            | Wait before the first retry                                                                                            |
+| `autoMode.maxRetryDelayMs`              | `2000`                                                           | Longest wait between retries                                                                                           |
+| `autoMode.maxDenials`                   | `3`                                                              | Denials in a row before asks go to the dialog until your next message                                                  |
+| `autoMode.environment`                  | `[]`                                                             | Organizations, domains, and services the reviewer trusts                                                               |
+| `autoMode.context.messageTokens`        | `5000`                                                           | Limit per user message                                                                                                 |
+| `autoMode.context.classifierTokens`     | `20000`                                                          | Transcript sent to a classifier                                                                                        |
+| `autoMode.context.toolCallTokens`       | `1000`                                                           | Limit per tool call                                                                                                    |
+| `autoMode.context.threadTokens`         | `30000`                                                          | Review thread size before it starts over                                                                               |
+| `autoMode.investigation.maxCommands`    | `5`                                                              | Programs the assessment may run per review. `0` turns this off                                                         |
+| `autoMode.investigation.timeoutMs`      | `10000`                                                          | Timeout per program                                                                                                    |
+| `autoMode.investigation.totalTimeoutMs` | `60000`                                                          | Time for the whole second stage, checked before each model call                                                        |
+| `autoMode.investigation.outputTokens`   | `2000`                                                           | Output kept per program                                                                                                |
 
 ### `compaction.ts`
 
