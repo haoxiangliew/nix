@@ -216,6 +216,7 @@ in
                 "ls *" = "allow";
                 "pwd" = "allow";
                 "rg *" = "allow";
+                "grep *" = "allow";
                 "cat *" = "allow";
                 "head *" = "allow";
                 "tail *" = "allow";
