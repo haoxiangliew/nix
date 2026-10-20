@@ -8,7 +8,7 @@ draft a pr review for us here. do not post or push anything until you get my exp
 
 iterate with me on each draft. print the full draft and verdict each time
 
-no top-level review body. every comment is inline on a line range in the diff. do not mention line numbers in a comment, since the range already shows them. use suggestion blocks where they help
+no top-level review body. every comment is inline on a line range in the diff. do not mention line numbers in a comment, since the range already shows them. use github suggested changes where they help
 
 if an issue comes from a specific source, like a skill or lint rule, do not name the source. describe the issue directly
 
