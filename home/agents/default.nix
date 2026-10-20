@@ -199,6 +199,7 @@ in
               get_search_content = "allow";
               ask_user_question = "allow";
               web_enable = "allow";
+              skill = "allow";
 
               # tier 2: writes inside the project. external_directory sends writes outside it to the reviewer
               edit = "allow";
