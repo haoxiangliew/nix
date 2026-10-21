@@ -443,6 +443,7 @@ in
           "statusline.ts" = ./pi/src/statusline.ts;
           "skill-mention.ts" = ./pi/src/skill-mention.ts;
           "attention.ts" = ./pi/src/attention.ts;
+          "herdr-agents.ts" = ./pi/src/herdr-agents.ts;
           "auto-mode.ts" = ./pi/src/auto-mode.ts;
           "compaction.ts" = ./pi/src/compaction.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;

@@ -80,6 +80,10 @@ If a fork for pi's own compaction or a branch summary fails, pi's summarizer run
 | `fast.costMultiplier` | `2`                                                       | Price multiple for fast replies                 |
 | `fastMode`            | `false`                                                   | Default on or off. `/fast` saves it with ctrl+s |
 
+### `herdr-agents.ts`
+
+In herdr, this extension messages pi when a herdr agent that pi prompted finishes or needs input, so pi doesn't poll. The message names the agent and its state, and pi reads the output itself. If watching stops first, for example because the agent exits, the message says so. While pi waits, a Herdr block above the editor lists each agent by name, or by pane if it has no name. Each row shows the agent's state and the time since the prompt. Before a bash call runs `herdr agent prompt` without `--wait`, or `herdr agent send-keys`, the extension subscribes to that agent's status through herdr's event socket. A prompt with `--wait` gets no subscription or message, because the call itself waits for the agent. No settings.
+
 ### `mcp-ancestors.ts`
 
 Registers MCP servers from the `.mcp.json` in each folder from a configured root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. Untrusted projects load none.
