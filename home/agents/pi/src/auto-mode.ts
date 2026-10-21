@@ -358,7 +358,8 @@ function answerText(details: ToolResultMessage["details"]): string {
 
   const answers = details.answers.map(({ question, answer, selected, notes }) => ({
     question,
-    answer: selected ?? answer,
+    answer,
+    selected,
     notes,
   }));
 
