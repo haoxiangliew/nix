@@ -25,7 +25,7 @@ const HERDR_TIMEOUT_MS = 2000;
 
 const ASK_TOOL = "ask_user_question";
 
-const ASK_RULE = `When you need the user's approval or decision before you can continue, ask with ${ASK_TOOL} instead of ending your turn with a question.`;
+const ASK_RULE = `Use ${ASK_TOOL} only for a choice the user hasn't made and you can't make yourself. Explain the options in your message and say which one you recommend before you ask. Show drafts and diffs in your message and end your turn, instead of asking whether to apply them. Don't end your turn with a question in chat.`;
 
 const paneId = process.env.HERDR_ENV === "1" ? process.env.HERDR_PANE_ID : undefined;
 
