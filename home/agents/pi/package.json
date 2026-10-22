@@ -23,6 +23,7 @@
     "oxlint-tsgolint": "7.0.2004",
     "pi-better-background-tasks": "0.9.1",
     "taze": "21.3.0",
-    "typebox": "1.4.3"
+    "typebox": "1.4.3",
+    "unbash": "6.0.1"
   }
 }

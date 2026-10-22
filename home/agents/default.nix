@@ -471,6 +471,7 @@ in
           "mermaid.ts" = ./pi/src/mermaid.ts;
           "super-review.ts" = ./pi/src/super-review.ts;
           "node_modules/acorn" = npmPackage "acorn";
+          "node_modules/unbash" = npmPackage "unbash";
           "node_modules/lovely-mermaid" = npmPackage "lovely-mermaid";
           "review.ts" = "${
             pkgs.applyPatches {
