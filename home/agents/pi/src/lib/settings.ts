@@ -1,13 +1,13 @@
 /**
  * Loads and saves extension settings under top-level keys of pi's settings.json. Unknown keys and
- * invalid values are errors, so a typo turns the extension off. pi skips this directory because it
- * has no index.ts.
+ * invalid values are errors, so a typo turns the extension off. piSettings reads pi's own settings.
+ * pi skips this directory because it has no index.ts.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -16,6 +16,24 @@ import { Value } from "typebox/value";
 type SettingsError = ReturnType<typeof Value.Errors>[number];
 
 const SettingsFile = Type.Object({});
+
+// Like pi, this skips project settings in an untrusted project, which pi's settings manager reads
+// unless told not to. The manager uses defaults when a file is broken, so this throws instead.
+export function piSettings(ctx: ExtensionContext): SettingsManager {
+  const settings = SettingsManager.create(ctx.cwd, undefined, {
+    projectTrusted: ctx.isProjectTrusted(),
+  });
+
+  const [problem] = settings.drainErrors();
+
+  if (problem !== undefined) {
+    throw new Error(
+      `can't read ${problem.path ?? `${problem.scope} settings`}: ${problem.error.message}`,
+    );
+  }
+
+  return settings;
+}
 
 export function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);

@@ -1,12 +1,13 @@
 /**
- * Writes compaction and branch summaries by forking the session, so the summary sees full tool
- * results. A fork reuses the last recorded request's prefix and settings, so it reads the prompt
- * cache. After a restart there's no recording, so the fork rebuilds the context and writes no
- * cache. Pi's trigger is a fixed reserve per model, so this also compacts at the end of a turn once
- * context reaches `compactAt` of the window. A fork over `compactAt` drops its oldest turns. If a
- * fork for pi's own compaction or a branch summary fails, pi's summarizer runs. If an end-of-turn
- * fork fails, compaction waits for pi's threshold. The `summaryFork` key in settings.json
- * configures it.
+ * Writes compaction and branch summaries from a fork of the session, so the summary sees full tool
+ * results. The fork repeats the last recorded request with the summary request added, so it reads
+ * the prompt cache and keeps the settings other extensions add, such as /fast's. A request that
+ * isn't JSON, such as Google's, is sent as pi builds it. After a restart there's no recorded
+ * request, so the fork rebuilds the context and writes no cache. Pi compacts at a fixed reserve per
+ * model, so this also compacts at the end of a turn once context reaches `compactAt` of the window.
+ * A fork over `compactAt` drops its oldest turns. If a fork for pi's compaction or a branch summary
+ * fails, pi's summarizer runs. If an end-of-turn fork fails, compaction waits for pi's threshold.
+ * The `summaryFork` key in settings.json configures it.
  */
 
 import type { Api, AssistantMessage, Model, Usage, UserMessage } from "@earendil-works/pi-ai";
@@ -30,12 +31,11 @@ import {
   getLatestCompactionEntry,
   prepareBranchEntries,
   sessionEntryToContextMessages,
-  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
-import { errorMessage, loadOrReport } from "./lib/settings.ts";
+import { errorMessage, loadOrReport, piSettings } from "./lib/settings.ts";
 
 type AgentMessage = ContextWithSystemEvent["messages"][number];
 
@@ -56,19 +56,22 @@ const Config = Type.Object(
 
 type Config = Static<typeof Config>;
 
-const Block = Type.Object({ cache_control: Type.Optional(Type.Unknown()) });
+// A request body as pi-ai builds it. Google's carries an abort signal, so it isn't JSON.
+type Json = string | number | boolean | null | undefined | Json[] | Fields;
 
-const Payload = Type.Object({
-  model: Type.String(),
-  max_tokens: Type.Number(),
-  messages: Type.Array(
-    Type.Object({ role: Type.String(), content: Type.Union([Type.String(), Type.Array(Block)]) }),
-  ),
-});
+interface Fields {
+  [key: string]: Json;
+}
 
-type Payload = Static<typeof Payload>;
+const Primitive = Type.Union([
+  Type.String(),
+  Type.Number(),
+  Type.Boolean(),
+  Type.Null(),
+  Type.Undefined(),
+]);
 
-type PayloadMessage = Payload["messages"][number];
+const Dictionary = Type.Record(Type.String(), Type.Unknown());
 
 const FileLists = Type.Object({
   readFiles: Type.Array(Type.String()),
@@ -77,16 +80,22 @@ const FileLists = Type.Object({
 
 type FileLists = Static<typeof FileLists>;
 
+type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
+
 interface Request {
   model: string;
   leafId: string | null;
   messages: AgentMessage[];
-  payload?: Payload;
+  thinkingLevel: ThinkingLevel;
+  payload?: Fields;
 }
 
+// A replayed fork uses the recorded request's thinking level, so its thinking settings match the
+// recorded ones.
 interface ForkInput {
   messages: AgentMessage[];
-  payload?: Payload;
+  thinkingLevel: ThinkingLevel;
+  payload?: Fields;
 }
 
 type Forked = { text: string; usage: Usage } | { failure: string };
@@ -166,59 +175,130 @@ function userMessage(text: string): AgentMessage {
   return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
 }
 
-function stripCacheControl(message: PayloadMessage): PayloadMessage {
-  if (!Array.isArray(message.content)) {
-    return message;
+function isJson(value: unknown): value is Json {
+  if (Value.Check(Primitive, value)) {
+    return true;
+  }
+
+  if (Array.isArray(value)) {
+    return value.every(isJson);
+  }
+
+  return (
+    Value.Check(Dictionary, value) &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    Object.values(value).every(isJson)
+  );
+}
+
+function isFields(value: Json): value is Fields {
+  return !Value.Check(Primitive, value) && !Array.isArray(value);
+}
+
+function itemsOf(body: Fields, key: string): Json[] {
+  const items = body[key];
+
+  return Array.isArray(items) ? items : [];
+}
+
+// The conversation is the top-level array whose items have roles. Tools and system blocks have
+// none.
+function conversationKey(body: Fields): string | undefined {
+  return Object.keys(body).find((key) =>
+    itemsOf(body, key).some((item) => isFields(item) && Value.Check(Type.String(), item.role)),
+  );
+}
+
+// Anthropic and some OpenAI-compatible APIs mark cache breakpoints with cache_control.
+function stripCacheControl(item: Json): Json {
+  const content = isFields(item) ? item.content : undefined;
+
+  if (!isFields(item) || !Array.isArray(content)) {
+    return item;
   }
 
   return {
-    ...message,
-    content: message.content.map((block) => {
-      const copy = { ...block };
+    ...item,
+    content: content.map((block) => {
+      if (!isFields(block)) {
+        return block;
+      }
 
-      delete copy.cache_control;
+      const { cache_control: _breakpoint, ...rest } = block;
 
-      return copy;
+      return rest;
     }),
   };
 }
 
-function sameMessages(a: PayloadMessage[], b: PayloadMessage[]): boolean {
+function sameItems(a: Json[], b: Json[]): boolean {
   return JSON.stringify(a.map(stripCacheControl)) === JSON.stringify(b.map(stripCacheControl));
 }
 
 // Managed-effort models end each payload with a system message that sets the effort.
-function conversationLength(messages: PayloadMessage[]): number {
-  let length = messages.length;
+function conversationLength(items: Json[]): number {
+  let length = items.length;
+  let last = items[length - 1];
 
-  while (length > 0 && messages[length - 1]?.role === "system") {
+  while (length > 0 && isFields(last) && last.role === "system") {
     length--;
+    last = items[length - 1];
   }
 
   return length;
 }
 
-// If the built conversation starts with the recorded one, reuses the recorded prefix and request
-// settings. Keeps built.max_tokens, which pi-ai fits to the room left in the window.
-function replayPayload(recorded: Payload, built: Payload): Payload | undefined {
-  const length = conversationLength(recorded.messages);
-  const prefix = recorded.messages.slice(0, length);
+// The recorded value, except that a number takes the smaller of the two. pi-ai fits output limits
+// and thinking budgets to the room left in the window, and the fork has more input, so its own are
+// no larger. A number an extension lowered keeps its value.
+function merge(recorded: Json, built: Json): Json {
+  if (recorded === undefined) {
+    return built;
+  }
 
-  if (!sameMessages(built.messages.slice(0, length), prefix)) {
+  if (Value.Check(Type.Number(), recorded) && Value.Check(Type.Number(), built)) {
+    return Math.min(recorded, built);
+  }
+
+  return isFields(recorded) && isFields(built) ? mergeFields(recorded, built) : recorded;
+}
+
+function mergeFields(recorded: Fields, built: Fields): Fields {
+  const keys = new Set([...Object.keys(recorded), ...Object.keys(built)]);
+
+  return Object.fromEntries([...keys].map((key) => [key, merge(recorded[key], built[key])]));
+}
+
+// If the built conversation starts with the recorded one, reuses the recorded prefix and request
+// settings.
+function replayPayload(recorded: Fields, built: Fields, key: string): Fields | undefined {
+  const recordedItems = itemsOf(recorded, key);
+  const builtItems = itemsOf(built, key);
+  const length = conversationLength(recordedItems);
+  const prefix = recordedItems.slice(0, length);
+
+  if (length === 0 || !sameItems(builtItems.slice(0, length), prefix)) {
     return undefined;
   }
 
-  const rest = built.messages.slice(length).map(stripCacheControl);
+  const rest = builtItems.slice(length).map(stripCacheControl);
 
-  return { ...recorded, messages: [...prefix, ...rest], max_tokens: built.max_tokens };
+  return { ...mergeFields(recorded, built), [key]: [...prefix, ...rest] };
 }
 
 // Without the recorded prefix, nothing reads this conversation's cache, so this drops the message
-// breakpoints. It keeps the system and tool breakpoints because the session shares them.
-function forkPayload(recorded: Payload | undefined, built: Payload): Payload {
-  const replayed = recorded && replayPayload(recorded, built);
+// breakpoints. It keeps the system and tool breakpoints because the session shares them. A body
+// with no conversation is sent as pi-ai built it.
+function forkPayload(recorded: Fields | undefined, built: Fields): Fields | undefined {
+  const key = conversationKey(built);
 
-  return replayed ?? { ...built, messages: built.messages.map(stripCacheControl) };
+  if (key === undefined) {
+    return undefined;
+  }
+
+  const replayed = recorded && replayPayload(recorded, built, key);
+
+  return replayed ?? { ...built, [key]: itemsOf(built, key).map(stripCacheControl) };
 }
 
 // A missing leaf or a later summary invalidates the recorded context.
@@ -310,7 +390,7 @@ function compactionSpan(ctx: ExtensionContext, entries: SessionEntry[], model: M
   const keptId = getLatestCompactionEntry(entries)?.firstKeptEntryId;
   const keptIndex = entries.findIndex((entry) => entry.id === keptId);
   const start = Math.max(0, keptIndex);
-  const { keepRecentTokens } = SettingsManager.create(ctx.cwd).getCompactionSettings(model);
+  const { keepRecentTokens } = piSettings(ctx).getCompactionSettings(model);
   const cut = findCutPoint(entries, start, entries.length, keepRecentTokens).firstKeptEntryIndex;
   const kept = entries[cut];
 
@@ -410,7 +490,7 @@ async function piBranchSummary(
   model: Model<Api>,
 ) {
   const { preparation, signal } = event;
-  const settings = SettingsManager.create(ctx.cwd);
+  const settings = piSettings(ctx);
 
   // Returning nothing lets pi summarize, but pi would drop the file lists from this extension's
   // earlier summaries.
@@ -440,6 +520,39 @@ async function piBranchSummary(
   return treeSummary(result.summary, files, result.usage);
 }
 
+async function send(
+  ctx: ExtensionContext,
+  model: Model<Api>,
+  input: ForkInput,
+  signal: AbortSignal,
+): Promise<AssistantMessage> {
+  const settings = piSettings(ctx);
+  const { thinkingLevel, payload } = input;
+
+  // before_provider_request doesn't run for this request, so other extensions' changes come only
+  // from the replayed request.
+  return retryAssistantCall(
+    () =>
+      ctx.modelRegistry
+        .streamSimple(
+          model,
+          { messages: convertToLlm(input.messages) },
+          {
+            signal,
+            reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
+            sessionId: ctx.sessionManager.getSessionId(),
+            transport: settings.getTransport(),
+            thinkingBudgets: settings.getThinkingBudgets(),
+            onPayload: (built) =>
+              isJson(built) && isFields(built) ? forkPayload(payload, built) : undefined,
+          },
+        )
+        .result(),
+    settings.getRetrySettings(),
+    signal,
+  );
+}
+
 export default function compaction(pi: ExtensionAPI) {
   let request: Request | undefined;
 
@@ -451,11 +564,12 @@ export default function compaction(pi: ExtensionAPI) {
       model: `${ctx.model.provider}/${ctx.model.id}`,
       leafId: ctx.sessionManager.getLeafId(),
       messages: event.messages,
+      thinkingLevel: pi.getThinkingLevel(),
     };
   });
 
   pi.on("before_provider_request", (event) => {
-    if (request && Value.Check(Payload, event.payload)) {
+    if (request && isJson(event.payload) && isFields(event.payload)) {
       request.payload = event.payload;
     }
   });
@@ -465,39 +579,12 @@ export default function compaction(pi: ExtensionAPI) {
     const since = recorded && messagesSince(ctx.sessionManager.getBranch(), recorded.leafId);
 
     if (!recorded || !since) {
-      return { messages: rebuiltContext(ctx) };
+      return { messages: rebuiltContext(ctx), thinkingLevel: pi.getThinkingLevel() };
     }
 
-    return { messages: [...recorded.messages, ...since], payload: recorded.payload };
-  }
+    const { thinkingLevel, payload } = recorded;
 
-  async function send(
-    ctx: ExtensionContext,
-    model: Model<Api>,
-    input: ForkInput,
-    signal: AbortSignal,
-  ): Promise<AssistantMessage> {
-    const thinkingLevel = pi.getThinkingLevel();
-    const { payload } = input;
-
-    return retryAssistantCall(
-      () =>
-        ctx.modelRegistry
-          .streamSimple(
-            model,
-            { messages: convertToLlm(input.messages) },
-            {
-              signal,
-              reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
-              sessionId: ctx.sessionManager.getSessionId(),
-              onPayload: (built) =>
-                Value.Check(Payload, built) ? forkPayload(payload, built) : undefined,
-            },
-          )
-          .result(),
-      SettingsManager.create(ctx.cwd).getRetrySettings(),
-      signal,
-    );
+    return { messages: [...recorded.messages, ...since], thinkingLevel, payload };
   }
 
   async function fork(

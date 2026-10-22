@@ -1,33 +1,37 @@
 # pi extensions
 
-`home/agents/default.nix` links these [pi](https://pi.dev) extensions and the theme into `~/.pi/agent`. `src/lib/` contains shared code.
+Extensions and a theme for [pi](https://pi.dev). `home/agents/default.nix` installs them into `~/.pi/agent`. `src/lib/` holds code they share.
 
 ## Patches
 
-`patches/pi-review.patch` changes [pi-review](https://github.com/earendil-works/pi-review):
+`patches/pi-review.patch` adds to [pi-review](https://github.com/earendil-works/pi-review):
 
-- `/end-review` keeps the editor open so other extensions' dialogs remain visible. A widget shows progress. Esc cancels.
-- "Review with a custom prompt" and `/review custom <prompt>` let you describe what to review.
-- Each `/review` prompt emits `review:prompt` on `pi.events` for `super-review.ts`.
-- The custom prompt and custom instructions dialogs autocomplete `$name` through `skill-mention.ts`. `$name` in the custom prompt, custom instructions, or `--extra` loads that skill into the review prompt.
+- `/end-review` keeps the editor open and shows its progress. Esc cancels.
+- `/review custom <prompt>`, or "Review with a custom prompt", reviews what you describe.
+- `$name` in a custom prompt, custom instructions, or `--extra` loads that skill into the review.
+- `super-review.ts` can add reviewers to `/review`.
 
-The build fails if the patch stops applying after `nix flake update pi-review`.
+`patches/pi-better-background-tasks.patch` applies [pi-better-harness#460](https://github.com/1aboveio/pi-better-harness/pull/460) to [pi-better-background-tasks](https://www.npmjs.com/package/pi-better-background-tasks). Without it, a subagent can hide this session's background tasks and their completion messages until `/reload`. Remove the patch once a release includes #460.
 
-`patches/pi-better-background-tasks.patch` applies [pi-better-harness#460](https://github.com/1aboveio/pi-better-harness/pull/460) to [pi-better-background-tasks](https://www.npmjs.com/package/pi-better-background-tasks). Without it, a subagent's session start and shutdown hide this session's background tasks and stop their completion messages until `/reload`. The version comes from `bun.lock`, and the build fails if the patch stops applying after an update. Remove the patch once a release includes #460.
+The build fails if either patch stops applying after an update.
 
 ## Configure
 
-Extensions read the settings below from `~/.pi/agent/settings.json`. Set them through `programs.pi-coding-agent.settings` in `home/agents/default.nix`. Missing fields use the listed defaults. Run `/reload` after changes. Unknown keys or invalid values disable the extension and show an error. Activation does not delete old keys. Remove renamed keys by hand.
+Extensions read their settings from `~/.pi/agent/settings.json`. Set them through `programs.pi-coding-agent.settings` in `home/agents/default.nix`, then run `/reload`. Missing keys use the defaults below. An unknown key or invalid value turns the extension off and shows an error. Activation doesn't delete old keys, so remove renamed keys by hand.
+
+## Extensions
 
 ### `anthropic-billing.ts`
 
-Sends pi's Anthropic OAuth requests with the headers, system prompt, and body signature of the installed `claude --print`. This covers agent turns, compaction, cache warming, and extension calls such as `/btw`. It captures the headers and system prompt by running `claude` against a local mock API, and reads the body signer from its binary. It reads the fingerprint, attribution fields, and request identity by parsing the JavaScript bundled in the `claude` binary. It re-scans when `claude`, the runtime, the scanner, or Acorn changes. It works only on macOS ARM64 and Linux x86-64.
+Sends pi's Anthropic OAuth requests with the same headers, system prompt, and body signature as the installed `claude --print`. This covers agent turns, compaction, cache warming, and extension calls such as `/btw`. It works only on macOS ARM64 and Linux x86-64.
 
-Extension calls through `ctx.modelRegistry` use the session's billing identity. It blocks requests it cannot match. On non-Enterprise plans, it blocks further requests after a response uses usage credits. Run `/reload` after updating `claude` or pi, or switching accounts. No settings.
+It blocks a request it can't send that way. On non-Enterprise plans, it also blocks further requests once a response uses usage credits. Run `/reload` after updating `claude` or pi, or after switching accounts. No settings.
 
 ### `attention.ts`
 
-Notifies when pi waits on a prompt or finishes, but not when you cancel with Esc. In herdr it marks prompts as blocked and only notifies for the active tab. It also tells the agent to use `ask_user_question` only for choices it can't make itself, and to explain the options and recommend one before it asks. The agent shows drafts in its message instead of asking whether to apply them. It never ends a turn with a question in chat, because herdr shows that turn as done.
+Sends a notification when pi waits for you or finishes, unless you cancelled with Esc. In herdr, it shows pi as blocked while a question is open and notifies only for the active tab.
+
+It also tells the agent to ask with `ask_user_question` only for choices it can't make, and to recommend an option when it asks. The agent shows drafts instead of asking whether to apply them. It never ends a turn with a question in chat, because herdr shows that turn as done.
 
 | Key                 | Default | Meaning                            |
 | ------------------- | ------- | ---------------------------------- |
@@ -36,11 +40,9 @@ Notifies when pi waits on a prompt or finishes, but not when you cancel with Esc
 
 ### `auto-mode.ts`
 
-Reviews pi-permission-system requests with a model instead of asking you. Static rules in `home/agents/default.nix` allow read-only tools, read-only commands, and writes inside the project. Every other request goes to the reviewer. The reviewer trusts your messages and your answers to `ask_user_question`, not the agent's calls or output. Its checks run only programs and paths the agent may use without asking.
+A model reviews pi-permission-system requests instead of asking you. Rules in `home/agents/default.nix` allow read-only tools, read-only commands, and writes inside the project without a review. The reviewer trusts your messages and your answers to `ask_user_question`, not the agent's tool calls or output.
 
-The reviewer can deny `path` and `external_directory` requests, but allowing one opens the dialog. Errors and repeated denials also open the dialog.
-
-After a denial, the agent takes the safer step if the reason names one. Otherwise it must not work around the denial. For most requests, it asks you with `ask_user_question` and retries once if you approve. A subagent stops and reports the denial instead, and its parent gets the reason. A denied `path` or `external_directory` request gets one unchanged retry, which opens the dialog.
+When the reviewer denies a request, the agent takes the safer step if the reason names one. Otherwise it asks you with `ask_user_question` and retries once if you approve. A subagent stops and reports the denial to its parent instead. Errors and repeated denials open the permission dialog. So does a `path` or `external_directory` request that the reviewer doesn't deny.
 
 | Key                                     | Default                                                          | Meaning                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -63,9 +65,9 @@ After a denial, the agent takes the safer step if the reason names one. Otherwis
 
 ### `compaction.ts`
 
-Writes the summaries for compaction, `/tree`, and `/end-review` by forking the session, so the summary sees full tool results. Anthropic forks reuse the conversation's prompt cache when the request prefix matches. End-of-turn compaction starts when context reaches `compactAt` of the model's window.
+Writes the summaries for compaction, `/tree`, and `/end-review` from a fork of the session, so they see full tool results. It works with every provider. It also compacts at the end of a turn once context reaches `compactAt` of the model's window. If a fork for pi's own compaction or a `/tree` summary fails, pi's summarizer runs instead. If an end-of-turn fork fails, compaction waits for pi's own threshold.
 
-If a fork for pi's own compaction or a branch summary fails, pi's summarizer runs instead. If an end-of-turn fork fails, compaction waits for pi's threshold. These settings use `summaryFork` because pi owns the `compaction` key.
+The fork repeats the session's last request, so it reads the prompt cache and keeps settings other extensions add, such as `/fast`. Requests it can't repeat, such as Google's, go out as pi builds them and may miss the cache. So does the first fork after pi restarts. A notice after each fork shows how much of its input came from the cache.
 
 | Key                     | Default | Meaning                                                      |
 | ----------------------- | ------- | ------------------------------------------------------------ |
@@ -73,7 +75,7 @@ If a fork for pi's own compaction or a branch summary fails, pi's summarizer run
 
 ### `fast.ts`
 
-`/fast` requests fast mode from supported Anthropic models and the priority service tier from OpenAI. `--fast` starts with it on.
+`/fast` turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. In the picker, enter applies it to this session and ctrl+s also saves it as the default. `--fast` starts with it on.
 
 | Key                   | Default                                                   | Meaning                                         |
 | --------------------- | --------------------------------------------------------- | ----------------------------------------------- |
@@ -84,11 +86,15 @@ If a fork for pi's own compaction or a branch summary fails, pi's summarizer run
 
 ### `herdr-agents.ts`
 
-In herdr, this extension messages pi when a herdr agent that pi prompted finishes or needs input, so pi doesn't poll. The message names the agent and its state, and pi reads the output itself. If watching stops first, for example because the agent exits, the message says so. While pi waits, a Herdr block above the editor lists each agent by name, or by pane if it has no name. Each row shows the agent's state and the time since the prompt. Before a bash call runs `herdr agent prompt` without `--wait`, or `herdr agent send-keys`, the extension subscribes to that agent's status through herdr's event socket. A prompt with `--wait` gets no subscription or message, because the call itself waits for the agent. No settings.
+In herdr, pi gets a message when an agent it prompted finishes or needs input, so it doesn't have to poll. A Herdr block above the editor lists the agents pi is waiting on, with each one's state and the time since the prompt. If pi stops watching an agent first, for example because the agent exits, the message says so. A prompt sent with `--wait` gets no message, because the call itself waits.
+
+If pi prompts an agent or sends it keys and the extension can't tell which agent that is, it blocks the command and tells pi how to rewrite it. That happens for a name built with `$(…)`, or a call through `xargs` or with `--machine`.
+
+While pi waits on an agent, the extension also blocks commands and background tasks that check on it with `herdr agent get`, `read`, or `wait`. The block tells pi to wait for the message instead. If the agent doesn't start working within 5 seconds of a prompt or keys, pi gets a message saying so. No settings.
 
 ### `mcp-ancestors.ts`
 
-Registers MCP servers from the `.mcp.json` in each folder from a configured root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. Untrusted projects load none.
+Loads MCP servers from the `.mcp.json` in each folder from a configured root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. It expands `${VAR}` and `${VAR:-default}` in them. Untrusted projects load none.
 
 | Key                  | Default | Meaning                                                       |
 | -------------------- | ------- | ------------------------------------------------------------- |
@@ -96,21 +102,19 @@ Registers MCP servers from the `.mcp.json` in each folder from a configured root
 
 ### `mermaid.ts`
 
-Draws mermaid blocks with [lovely-mermaid](https://github.com/xl0/lovely-mermaid). It supports more mermaid syntax than pi's built-in renderer, so `home/agents/default.nix` turns pi's renderer off. It quotes labels containing semicolons and redraws wide flowcharts top to bottom. Failed diagrams show their source and an error. A prompt rule lists supported diagrams and label limits. Nix installs the version in `bun.lock`. No settings.
+Draws mermaid diagrams with [lovely-mermaid](https://github.com/xl0/lovely-mermaid), which handles more syntax than pi's built-in renderer. `home/agents/default.nix` turns pi's renderer off. It redraws wide flowcharts top to bottom. A diagram that fails shows its source and the error. It tells the agent which diagram types draw and how long labels can be. No settings.
 
 ### `prompt-sections.ts`
 
-Keeps extensions that append to the system prompt from breaking the prompt cache. It moves their text into an `appended` prompt section, so pi sends only the change instead of the whole prompt. `home/agents/default.nix` lists it last in `packages`, so it runs after the extensions it fixes. No settings.
+Keeps the prompt cache working when other extensions add text to the system prompt. Without it, pi resends the whole prompt after each change. It has to run after those extensions, so `home/agents/default.nix` lists it last in `packages`. No settings.
 
 ### `skill-mention.ts`
 
-`$name` anywhere in a prompt loads that skill. No settings.
-
-Pi's autocomplete only reaches its main editor, and this extension's input handler skips prompts that extensions send. Other extensions get both through `pi.events`. `skill-mention:autocomplete` hands them a `$name` provider for their own editors, and `skill-mention:expand` loads skills for text the user typed.
+`$name` anywhere in a prompt loads that skill. pi's `/skill:name` works only at the start of a prompt. Other extensions can offer the same `$name` completion and loading in their own prompts, as pi-review's custom prompt does. No settings.
 
 ### `statusline.ts`
 
-Replaces pi's footer with a line of segments. If the settings are invalid, pi keeps its footer. Statuses that other extensions set with `setStatus` go on a second line, sorted by key. That line only appears when there are any. The `talk`, `autoMode`, and `fast` segments show their own statuses, so leaving one out hides that status. `tokens` shows input (`↑`) and output (`↓`) tokens across all requests since your last message, including cached input. Output shows `~` while it's an estimate.
+Replaces pi's footer with a line of segments. Statuses from other extensions go on a second line when there are any. The `talk`, `autoMode`, and `fast` segments show those extensions' statuses, so leaving a segment out hides its status. `tokens` shows input (`↑`) and output (`↓`) tokens since your last message, with `~` while output is an estimate. If the settings are invalid, pi keeps its own footer.
 
 | Key                   | Default                  | Meaning                                                                                                                         |
 | --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -118,9 +122,9 @@ Replaces pi's footer with a line of segments. If the settings are invalid, pi ke
 
 ### `super-review.ts`
 
-Adds reviewers to pi-review's `/review`. Pick models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6.1-sol`, or `openai-codex/gpt-6.1-sol` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-opus-5-5`.
+Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6.1-sol`, or `openai-codex/gpt-6.1-sol` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-opus-5-5`.
 
-Each model reviews the same change as a subagent. The parent model collects their reviews, compares findings, and runs discussion rounds. After the round limit, it drops findings that remain disputed and uses the lowest disputed priority. It prints the final review after the reviewers confirm the result.
+Each reviewer reviews the same change. The session's model compares their findings and runs discussion rounds. After the round limit, it drops findings still in dispute and gives each finding whose priority is in dispute the lowest priority proposed. It prints the final review once the reviewers confirm it.
 
 | Key                                  | Default | Meaning                                                                                                   |
 | ------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------- |
@@ -129,7 +133,7 @@ Each model reviews the same change as a subagent. The parent model collects thei
 
 ### `talk.ts`
 
-`/talk` or shift+tab toggles read-only talk mode. It blocks `talk.blockedTools` and adds the prompt to each user-started run. The tool list and history stay unchanged to preserve the prompt cache. `--talk` starts with it on.
+`/talk` or shift+tab turns read-only talk mode on and off. It blocks `talk.blockedTools` and adds `talk.prompt` to each turn you start. Bash stays available for research. `--talk` starts with it on.
 
 | Key                 | Default             | Meaning                                                  |
 | ------------------- | ------------------- | -------------------------------------------------------- |

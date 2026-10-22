@@ -1,8 +1,8 @@
 /**
- * Wakes pi when a herdr agent that pi prompted stops working, so pi doesn't poll. Before a bash call
- * runs `herdr agent prompt` without --wait, it subscribes to that agent's status on herdr's event
- * socket. When the agent settles or needs input, it sends a message with its state, and pi reads the
- * output itself. If watching stops first, the message says so. No settings.
+ * Wakes pi when a herdr agent that pi prompted stops working, so pi doesn't poll. Before a bash
+ * call runs `herdr agent prompt` without --wait, it subscribes to that agent's status on herdr's
+ * event socket. When the agent settles or needs input, it sends a message with its state, and pi
+ * reads the output itself. If watching stops first, the message says so. No settings.
  */
 
 import type {
@@ -11,6 +11,7 @@ import type {
   ExtensionUIContext,
   Theme,
   ThemeColor,
+  ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 
@@ -39,9 +40,30 @@ const WIDGET = "herdr-agents";
 const SETTLED = new Set(["idle", "done", "blocked"]);
 
 // Keys answer a blocked agent, so they need a message like a prompt does.
-const ACTIONS = new Set(["start", "prompt", "send-keys"]);
+const ACTIONS = new Set(["start", "prompt", "send-keys", "get", "read", "wait"]);
 
-const VALUE_OPTIONS = new Set(["--until", "--timeout", "--pane", "--kind"]);
+// Calls that check on an agent instead of waiting for the extension's message
+const CHECKS = new Set(["get", "read", "wait"]);
+
+// Background task tools that take a shell command
+const BACKGROUND_TOOLS = new Set(["bg_task", "bg_task_spawn", "bg_task_watch"]);
+
+// A task run over `ssh` talks to another machine's herdr, like `--machine`.
+const CommandInput = Type.Object({
+  command: Type.Optional(Type.String()),
+  argv: Type.Optional(Type.Array(Type.String())),
+  ssh: Type.Optional(Type.Unknown()),
+});
+
+const VALUE_OPTIONS = new Set([
+  "--until",
+  "--timeout",
+  "--pane",
+  "--kind",
+  "--source",
+  "--lines",
+  "--format",
+]);
 
 // Wrappers that run the next word after their options as the command.
 const WRAPPERS = new Set(["builtin", "command", "env", "exec", "nice", "nohup", "time"]);
@@ -50,7 +72,7 @@ const WRAPPERS = new Set(["builtin", "command", "env", "exec", "nice", "nohup", 
 const WRAPPER_VALUE_OPTIONS = new Set(["-a", "-C", "-k", "-n", "-S", "-s", "-u"]);
 
 const RULE =
-  "After you prompt a herdr agent without `--wait` or send it keys, an extension messages you when the agent is done, idle, or blocked, or when it can't watch the agent. Don't poll a watched agent with `sleep` or `herdr agent get`, `read`, or `wait`. End your turn or keep working, then read the output with `herdr agent read`. The extension can watch an agent when its name is written in the call, in a variable set earlier in the command, or in a `for` loop over listed names.";
+  "After you prompt a herdr agent without `--wait` or send it keys, an extension messages you when the agent is done, idle, or blocked. End your turn or keep working, and read its output with `herdr agent read` after the message. Name each agent in the call, in a variable set to a literal earlier in the command, in a `for` loop over listed names, or as a literal function argument. A blocked command's message says how to fix it.";
 
 const socketPath = process.env.HERDR_ENV === "1" ? process.env.HERDR_SOCKET_PATH : undefined;
 
@@ -82,12 +104,23 @@ interface HerdrCall {
   target?: string;
   pane?: string;
   wait: boolean;
+  // Whether the target needs the shell, so its agent can't be found
+  unresolved?: boolean;
+  // Source text of a `--pane` value that needs the shell
+  unresolvedPane?: string;
+  // Source of the call, for messages to the model
+  source: string;
 }
 
 interface Armed {
   pane: string;
   before: Pick<Watch, "name" | "armed" | "active" | "status" | "since">;
+  // A prompt that doesn't start the agent working may be lost. Keys may just move through a menu.
+  prompted: boolean;
 }
+
+// One step of a command, applied in order once every call in it can be watched.
+type Step = { kind: "disarm"; target: string } | { kind: "arm"; agent: Agent; action: string };
 
 interface Agent {
   pane: string;
@@ -101,6 +134,8 @@ const STALL_MS = 5000;
 
 // Nested loops multiply the commands to check, and checking blocks the tool call.
 const MAX_VISITS = 20_000;
+
+class TooComplex extends Error {}
 
 // Bash runs these in a child process, so their assignments don't reach later commands.
 const CHILD_SCOPES = new Set(["Subshell", "CommandExpansion", "ProcessSubstitution", "Coproc"]);
@@ -153,12 +188,19 @@ const STEP_TRAPS = new Set(["DEBUG", "ERR", "RETURN"]);
 // Built-ins that can set any variable.
 const ANY_WRITERS = new Set(["eval", "source", "."]);
 
+const SINGLE_PARTS = new Set(["Literal", "SingleQuoted", "AnsiCQuoted", "LocaleString"]);
+
+// Positional parameters, which a function call sets from its arguments.
+const POSITIONAL = /^(?:[1-9]\d*|#)$/;
+
 type Vars = Map<string, string>;
 
 // A command argument, with its value when it doesn't need the shell.
 interface Item {
   arg: string;
   value: string | undefined;
+  // Whether the word is one argument even when its value is unknown
+  single: boolean;
 }
 
 interface Definition {
@@ -182,6 +224,9 @@ interface Walk {
   typed: Set<string>;
   // After `trap … DEBUG`, any command can change any variable.
   trapped: boolean;
+  // ksh keeps a prefix variable that a function changed. bash, dash, sh, and zsh put the old value
+  // back.
+  keepsPrefix: boolean;
   // Source of the herdr agent calls it can't watch, such as `xargs herdr` or `herdr --machine`.
   missed: Set<string>;
 }
@@ -412,32 +457,92 @@ function callFunction(walk: Walk, program: string, vars: Vars): void {
   walk.calling.delete(program);
 }
 
-// Assignments before a function call, as in `a=b f`, only last for the call.
-function runFunction(walk: Walk, node: Command, program: string, vars: Vars): void {
-  const assignments = node.prefix.flatMap((item) => (item.type === "Assignment" ? [item] : []));
-
-  if (!walk.functions.has(program) || assignments.length === 0) {
-    callFunction(walk, program, vars);
-
-    return;
+function forgetPositional(vars: Vars): void {
+  for (const name of vars.keys()) {
+    if (POSITIONAL.test(name)) {
+      vars.delete(name);
+    }
   }
+}
 
-  const inner = copyVars(vars);
+// A function call sets `$1`, `$2`, … and `$#` from its arguments, so `run rv1` sets `$1` to `rv1`.
+// A quoted argument with an unknown value still takes one position. Any other argument that needs
+// the shell can expand to any number of arguments, so every position from it on stays unknown.
+// This doesn't track `$@` or `$*`.
+function setPositional(vars: Vars, args: Item[]): void {
+  forgetPositional(vars);
 
-  readAssignments(walk, node, inner);
-  callFunction(walk, program, inner);
+  const spread = args.findIndex((item) => !item.single);
+  const counted = spread === -1 ? args : args.slice(0, spread);
 
-  for (const { name } of assignments) {
+  counted.forEach(({ value }, index) => {
+    if (value !== undefined) {
+      vars.set(String(index + 1), value);
+    }
+  });
+
+  if (spread === -1) {
+    vars.set("#", String(args.length));
+  }
+}
+
+// Puts back the caller's prefix variables, as in `a=b f`, and positional parameters, as the shell
+// does when a function returns. Under ksh, a prefix variable the body changed becomes unknown.
+// Returns the names it put back.
+function restoreCaller(
+  vars: Vars,
+  inner: Vars,
+  assigned: Map<string, string | undefined>,
+  keepsPrefix: boolean,
+): string[] {
+  const positional = [...vars.keys(), ...inner.keys()].filter((name) => POSITIONAL.test(name));
+  const restored: string[] = [];
+
+  for (const name of [...assigned.keys(), ...positional]) {
     const value = vars.get(name);
+    const kept = keepsPrefix && assigned.has(name) && inner.get(name) !== assigned.get(name);
 
-    if (value === undefined) {
+    if (value === undefined || kept) {
       inner.delete(name);
     } else {
       inner.set(name, value);
     }
+
+    if (!kept) {
+      restored.push(name);
+    }
   }
 
+  return restored;
+}
+
+// restoreCaller's writes aren't the body's, so they're removed from the recorded writes.
+function runFunction(walk: Walk, node: Command, program: string, args: Item[], vars: Vars): void {
+  if (!walk.functions.has(program)) {
+    return;
+  }
+
+  const assignments = node.prefix.flatMap((item) => (item.type === "Assignment" ? [item] : []));
+  const written = recorders.get(vars);
+  const before = new Set(written);
+  const inner = copyVars(vars);
+
+  readAssignments(walk, node, inner);
+
+  const assigned = new Map(assignments.map(({ name }) => [name, inner.get(name)]));
+
+  setPositional(inner, args);
+  callFunction(walk, program, inner);
+
+  const restored = restoreCaller(vars, inner, assigned, walk.keepsPrefix);
+
   intersect(vars, inner);
+
+  for (const name of restored) {
+    if (!before.has(name)) {
+      written?.delete(name);
+    }
+  }
 }
 
 // A function defined in a part that may not run keeps its earlier bodies too.
@@ -467,13 +572,13 @@ function inChild(walk: Walk, run: () => void): void {
 }
 
 // A new shell starts with no functions, and only exported variables, which aren't tracked.
-function walkScript(walk: Walk, script: string): void {
-  const { source, functions, nameref, typed, trapped } = walk;
+function walkScript(walk: Walk, script: string, shell: string): void {
+  const { source, functions, nameref, typed, trapped, keepsPrefix } = walk;
   const fresh = { functions: new Map(), nameref: false, typed: new Set(), trapped: false };
 
-  Object.assign(walk, { source: script, ...fresh });
+  Object.assign(walk, { source: script, ...fresh, keepsPrefix: shell === "ksh" });
   visit(walk, parse(script), new Map([["IFS", DEFAULT_IFS]]));
-  Object.assign(walk, { source, functions, nameref, typed, trapped });
+  Object.assign(walk, { source, functions, nameref, typed, trapped, keepsPrefix });
 }
 
 // Returns where the `-c` script is, reading options up to `--` or the first other argument.
@@ -497,11 +602,12 @@ function scriptIndex(args: string[], at: number): number | undefined {
 }
 
 function readShell(walk: Walk, node: Command, args: string[], values: Item[], at: number): void {
-  const index = SHELLS.has(args[at]?.split("/").at(-1) ?? "") ? scriptIndex(args, at) : undefined;
+  const shell = args[at]?.split("/").at(-1) ?? "";
+  const index = SHELLS.has(shell) ? scriptIndex(args, at) : undefined;
   const script = index === undefined ? undefined : values[index];
 
   if (script?.value !== undefined) {
-    walkScript(walk, script.value);
+    walkScript(walk, script.value, shell);
   } else if (script?.arg.includes("herdr") === true) {
     walk.missed.add(walk.source.slice(node.pos, node.end));
   }
@@ -528,6 +634,15 @@ function readAssignments(walk: Walk, node: Command, vars: Vars): void {
   }
 }
 
+// Bash doesn't split quoted text or literals into more arguments. `"$@"` and `"${a[@]}"` are the
+// exception.
+function isSingle(word: Word): boolean {
+  return (word.parts ?? []).every(
+    (part) =>
+      SINGLE_PARTS.has(part.type) || (part.type === "DoubleQuoted" && !part.text.includes("@")),
+  );
+}
+
 // A word that needs the shell keeps its source text, so its agent can't be found.
 function commandItems(node: Command, vars: Vars): Item[] {
   return [node.name, ...node.args].flatMap((arg): Item[] => {
@@ -538,30 +653,66 @@ function commandItems(node: Command, vars: Vars): Item[] {
     const pieces = splitWord(arg, vars);
 
     return pieces === undefined
-      ? [{ arg: arg.text, value: undefined }]
-      : pieces.map((piece) => ({ arg: piece, value: piece }));
+      ? [{ arg: arg.text, value: undefined, single: isSingle(arg) }]
+      : pieces.map((piece) => ({ arg: piece, value: piece, single: true }));
   });
 }
 
-// Returns the program, which may be a function to run.
-function readCommand(walk: Walk, node: Command, vars: Vars): string {
+function readHerdr(walk: Walk, node: Command, items: Item[], args: string[], at: number): void {
+  const call = herdrCall(args, items, at);
+  const source = walk.source.slice(node.pos, node.end);
+
+  if (call !== undefined) {
+    walk.calls.push({ ...call, source });
+  } else if (runsHerdrAgent(args, at)) {
+    walk.missed.add(source);
+  }
+}
+
+// `--` replaces the positional parameters. `-` replaces them only when arguments follow it. The
+// first argument that isn't an option replaces them. `-o` and `+o` take an option name. An argument
+// that needs the shell could be anything.
+function setsPositional(items: Item[]): boolean {
+  for (let index = 0; index < items.length; index += 1) {
+    const value = items[index]?.value;
+
+    if (value === undefined || !/^[-+]/.test(value) || value === "--") {
+      return true;
+    }
+
+    if (value === "-") {
+      return index + 1 < items.length;
+    }
+
+    index += /^[-+][A-Za-z]*o[A-Za-z]*$/.test(value) ? 1 : 0;
+  }
+
+  return false;
+}
+
+interface Invocation {
+  program: string;
+  args: Item[];
+}
+
+// Returns the program, which may be a function to run, and its arguments.
+function readCommand(walk: Walk, node: Command, vars: Vars): Invocation {
   // A command of only assignments sets variables for the commands after it.
   if (node.name === undefined) {
     readAssignments(walk, node, vars);
 
-    return "";
+    return { program: "", args: [] };
   }
 
   const items = commandItems(node, vars);
   const args = items.map((item) => item.arg);
   const at = commandStart(args);
   const program = args[at] ?? "";
-  const call = herdrCall(args);
 
-  if (call !== undefined) {
-    walk.calls.push(call);
-  } else if (runsHerdrAgent(args, at)) {
-    walk.missed.add(walk.source.slice(node.pos, node.end));
+  readHerdr(walk, node, items, args, at);
+
+  if (program === "shift" || (program === "set" && setsPositional(items.slice(at + 1)))) {
+    forgetPositional(vars);
   }
 
   readShell(walk, node, args, items, at);
@@ -575,7 +726,7 @@ function readCommand(walk: Walk, node: Command, vars: Vars): string {
     readWrites(walk, node, program, vars);
   }
 
-  return program;
+  return { program, args: items.slice(at + 1) };
 }
 
 // Arithmetic and `${name:=value}` can set variables, so every name they use becomes unknown.
@@ -764,7 +915,7 @@ function visit(walk: Walk, node: SyntaxNode, vars: Vars): void {
   walk.visits += 1;
 
   if (walk.visits > MAX_VISITS) {
-    throw new Error("its loops run too many commands to check");
+    throw new TooComplex(`its loops run more than ${MAX_VISITS} commands`);
   }
 
   const source = walk.source;
@@ -783,7 +934,9 @@ function visit(walk: Walk, node: SyntaxNode, vars: Vars): void {
       vars.clear();
     }
 
-    runFunction(walk, node, readCommand(walk, node, vars), vars);
+    const { program, args } = readCommand(walk, node, vars);
+
+    runFunction(walk, node, program, args, vars);
   }
 
   walk.source = source;
@@ -805,41 +958,41 @@ function herdrCalls(command: string): Pick<Walk, "calls" | "missed"> {
     nameref: false,
     typed: new Set(),
     trapped: false,
+    keepsPrefix: false,
     missed: new Set(),
   };
 
-  walkScript(walk, command);
+  walkScript(walk, command, "bash");
 
-  // A call sent again needs one watch. Keeping the last one keeps a prompt after a `--wait`.
-  const keys = walk.calls.map((call) => JSON.stringify(call));
-  const calls = walk.calls.filter((_call, index) => keys.lastIndexOf(keys[index] ?? "") === index);
-
-  return { calls, missed: walk.missed };
+  return { calls: walk.calls, missed: walk.missed };
 }
 
 // Returns how many values the option takes.
 function readOption(
-  call: Omit<HerdrCall, "action">,
+  call: Omit<HerdrCall, "action" | "source">,
   arg: string,
-  next: string | undefined,
+  next: Item | undefined,
 ): number {
   if (arg === "--wait" || arg === "--until") {
     call.wait = true;
   }
 
   if (arg === "--pane") {
-    call.pane = next;
+    call.pane = next?.value;
+    call.unresolvedPane = next !== undefined && next.value === undefined ? next.arg : undefined;
   }
 
   return VALUE_OPTIONS.has(arg) ? 1 : 0;
 }
 
-// A prompt's text follows its target and can look like an option, so it's skipped.
-function parseOptions(args: string[], hasText: boolean): Omit<HerdrCall, "action"> {
-  const call: Omit<HerdrCall, "action"> = { wait: false };
+// herdr takes the word after a prompt's target as its text, even one that looks like an option, so
+// it's skipped. A target that needs the shell keeps its source text and is marked unresolved, so
+// it's never looked up as a name.
+function parseOptions(items: Item[], hasText: boolean): Omit<HerdrCall, "action" | "source"> {
+  const call: Omit<HerdrCall, "action" | "source"> = { wait: false };
 
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index] ?? "";
+  for (let index = 0; index < items.length; index += 1) {
+    const { arg, value } = items[index] ?? { arg: "", value: "", single: true };
 
     if (arg === "--") {
       break;
@@ -847,9 +1000,10 @@ function parseOptions(args: string[], hasText: boolean): Omit<HerdrCall, "action
 
     if (call.target === undefined && !arg.startsWith("-")) {
       call.target = arg;
+      call.unresolved = value === undefined;
       index += hasText ? 1 : 0;
     } else {
-      index += readOption(call, arg, args[index + 1]);
+      index += readOption(call, arg, items[index + 1]);
     }
   }
 
@@ -898,10 +1052,14 @@ function isHerdr(arg: string): boolean {
 }
 
 // --machine targets another server, so `herdr --machine x agent …` doesn't match.
-function herdrCall(args: string[]): HerdrCall | undefined {
-  const at = commandStart(args);
+function herdrCall(
+  args: string[],
+  items: Item[],
+  at: number,
+): Omit<HerdrCall, "source"> | undefined {
   const program = args[at] ?? "";
-  const [group, action, ...rest] = args.slice(at + 1);
+  const [group, action] = args.slice(at + 1);
+  const rest = items.slice(at + 3);
 
   if (!isHerdr(program)) {
     return undefined;
@@ -912,6 +1070,104 @@ function herdrCall(args: string[]): HerdrCall | undefined {
   }
 
   return { action: action ?? "", ...parseOptions(rest, action === "prompt") };
+}
+
+// An agent started earlier in the same command, with its pane if `--pane` was literal.
+interface StartedAgent {
+  pane?: string;
+  unresolvedPane?: string;
+}
+
+// What a call needs before the command runs: nothing, a step, a name to look up, or a fix.
+type Need =
+  | { kind: "none" }
+  | { kind: "step"; step: Step }
+  | { kind: "lookup"; target: string; action: string }
+  | { kind: "problem"; problem: string };
+
+function missedProblem(text: string): string {
+  return `\`${clip(text)}\` runs \`herdr agent\` through another command or with \`--machine\`, so its agent can't be watched. Call \`herdr agent\` directly, or add \`--wait\` so the call itself waits.`;
+}
+
+function unresolvedProblem(call: HerdrCall, target: string): string {
+  return `In \`${clip(call.source)}\`, the agent \`${target}\` needs the shell to expand, so the extension can't tell which agent this is. Write the name literally, set the variable to a literal earlier in the command, use a \`for\` loop over listed names, or pass the name as a literal function argument.`;
+}
+
+function checkProblem(target: string): string {
+  return `You're waiting on \`${target}\`, and the extension messages you when it's done, idle, or blocked. Remove the call that checks on it, then end your turn or keep working.`;
+}
+
+function startedProblem(target: string, { unresolvedPane }: StartedAgent): string {
+  const how =
+    unresolvedPane === undefined
+      ? "without `--pane`"
+      : `with a \`--pane\` that needs the shell (\`${clip(unresolvedPane)}\`)`;
+
+  return `\`${target}\` starts in this command ${how}, so the extension can't tell which pane to watch. Start the agent in an earlier command, or write its pane ID literally.`;
+}
+
+// A call that waits needs no watch, and disarms an earlier one. `waiting` holds the agents pi
+// waits on at this point in the command, by name or pane.
+function needOf(call: HerdrCall, started: Map<string, StartedAgent>, waiting: Set<string>): Need {
+  const { target, action } = call;
+
+  if (target === undefined) {
+    return { kind: "none" };
+  }
+
+  if (CHECKS.has(action)) {
+    const problem = checkOf(call, waiting);
+
+    return problem === undefined ? { kind: "none" } : { kind: "problem", problem };
+  }
+
+  if (action === "start") {
+    return { kind: "none" };
+  }
+
+  if (call.wait) {
+    return call.unresolved !== true
+      ? { kind: "step", step: { kind: "disarm", target } }
+      : { kind: "none" };
+  }
+
+  if (call.unresolved === true) {
+    return { kind: "problem", problem: unresolvedProblem(call, target) };
+  }
+
+  const start = started.get(target);
+
+  if (start === undefined) {
+    return { kind: "lookup", target, action };
+  }
+
+  return start.pane === undefined
+    ? { kind: "problem", problem: startedProblem(target, start) }
+    : { kind: "step", step: { kind: "arm", agent: { pane: start.pane, name: target }, action } };
+}
+
+// A call that checks on an agent pi waits on, by name or pane, instead of waiting for the message
+function checkOf(call: Omit<HerdrCall, "source">, waiting: Set<string>): string | undefined {
+  const { action, target } = call;
+
+  return target !== undefined && CHECKS.has(action) && waiting.has(target)
+    ? checkProblem(target)
+    : undefined;
+}
+
+function idsOf(agent: Agent): string[] {
+  return agent.name === undefined ? [agent.pane] : [agent.pane, agent.name];
+}
+
+function quote(arg: string): string {
+  return `'${arg.replaceAll("'", "'\\''")}'`;
+}
+
+// Keeps quoted source short in messages to the model.
+function clip(text: string): string {
+  const line = text.replaceAll(/\s+/g, " ").trim();
+
+  return line.length > 200 ? `${line.slice(0, 199)}\u2026` : line;
 }
 
 function elapsed(ms: number): string {
@@ -1046,7 +1302,8 @@ function subscribe(
 
 export default function (pi: ExtensionAPI) {
   const watches = new Map<string, Watch>();
-  // Panes each bash call armed, with their watch from before, restored if the call never ran.
+  // Panes each bash call armed or disarmed, with their watch from before, restored if the call
+  // never ran.
   const pending = new Map<string, Armed[]>();
   const openings = new Map<string, Promise<Watch>>();
   let context: ExtensionContext | undefined;
@@ -1188,24 +1445,46 @@ export default function (pi: ExtensionAPI) {
     return { pane, name, status };
   }
 
-  // A prompt that the agent never acts on, because it failed or got lost, would otherwise leave
-  // the model waiting for good.
-  function checkStall(pane: string, watch: Watch, since: number): void {
+  // An agent that never starts working would otherwise leave the model waiting for good.
+  function checkStall(pane: string, watch: Watch, since: number, prompted: boolean): void {
+    const reason = prompted
+      ? ", so it may not have the prompt. Check on it yourself."
+      : " after the keys, so there's nothing to wait for.";
+
     setTimeout(() => {
       if (watch.armed && !watch.active && watch.since === since && watches.get(pane) === watch) {
         watch.armed = false;
         tell(
-          `Herdr agent ${label(pane, watch)} didn't start working within ${STALL_MS / 1000} seconds, so it may not have the prompt. Check on it yourself.`,
+          `Herdr agent ${label(pane, watch)} didn't start working within ${STALL_MS / 1000} seconds${reason}`,
         );
         refresh();
       }
     }, STALL_MS).unref();
   }
 
+  // The first change to a pane in a call keeps its watch from before, which a call that never ran
+  // restores.
+  function remember(toolCallId: string, pane: string, watch: Watch, prompted: boolean): void {
+    const entries = pending.get(toolCallId) ?? [];
+    const entry = entries.find((item) => item.pane === pane);
+
+    if (entry === undefined) {
+      const { name, armed, active, status, since } = watch;
+
+      pending.set(toolCallId, [
+        ...entries,
+        { pane, before: { name, armed, active, status, since }, prompted },
+      ]);
+    } else {
+      entry.prompted ||= prompted;
+    }
+  }
+
   // A prompt with --wait returns once the agent settles, so it needs no message.
-  function disarm(target: string): void {
+  function disarm(target: string, toolCallId: string): void {
     for (const [pane, watch] of watches) {
       if (pane === target || watch.name === target) {
+        remember(toolCallId, pane, watch, false);
         watch.armed = false;
       }
     }
@@ -1249,22 +1528,8 @@ export default function (pi: ExtensionAPI) {
     return opening;
   }
 
-  async function arm(
-    path: string,
-    agent: Agent,
-    action: string,
-    toolCallId: string,
-  ): Promise<void> {
-    const watch = await watchOf(path, agent.pane);
-    const { name, armed, active, status, since } = watch;
-    const before = { name, armed, active, status, since };
-
-    const entries = pending.get(toolCallId) ?? [];
-
-    // The first entry keeps the state from before the call, which a call that never ran restores.
-    if (!entries.some((entry) => entry.pane === agent.pane)) {
-      pending.set(toolCallId, [...entries, { pane: agent.pane, before }]);
-    }
+  function arm(watch: Watch, agent: Agent, action: string, toolCallId: string): void {
+    remember(toolCallId, agent.pane, watch, action === "prompt");
 
     // herdr refuses a prompt to a blocked agent, but keys answer it. So after keys, a blocked agent
     // counts as active, and an Esc that leaves it idle still reports.
@@ -1277,37 +1542,128 @@ export default function (pi: ExtensionAPI) {
     watch.since = Date.now();
   }
 
-  async function watchCommand(path: string, command: string, toolCallId: string): Promise<void> {
-    // An agent started earlier in the same command doesn't exist yet, so --pane gives its pane.
-    const started = new Map<string, string>();
+  function waitingNow(): Set<string> {
+    return new Set(waiting().flatMap(([pane, watch]) => idsOf({ pane, name: watch.name })));
+  }
+
+  // The names and panes of the agent a call targets, from the watches and this command's steps
+  function aliases(target: string, steps: Step[]): string[] {
+    const watched = [...watches].map(([pane, watch]) => ({ pane, name: watch.name }));
+    const armed = steps.flatMap((step) => (step.kind === "arm" ? [step.agent] : []));
+
+    const same = [...watched, ...armed].filter(
+      (agent) => agent.pane === target || agent.name === target,
+    );
+
+    return [target, ...same.flatMap(idsOf)];
+  }
+
+  // A prompt without --wait makes pi wait on the agent, and one with --wait ends that.
+  function trackWaiting(step: Step, steps: Step[], waitingOn: Set<string>): void {
+    if (step.kind === "arm") {
+      idsOf(step.agent).forEach((id) => waitingOn.add(id));
+    } else {
+      aliases(step.target, steps).forEach((id) => waitingOn.delete(id));
+    }
+  }
+
+  // A failed lookup is a problem the block message reports, with what to check. A call sent again
+  // reuses its lookup.
+  async function stepOf(
+    need: Need,
+    problems: string[],
+    lookups: Map<string, Promise<Agent>>,
+  ): Promise<Step | undefined> {
+    if (need.kind === "step") {
+      return need.step;
+    }
+
+    if (need.kind === "problem") {
+      problems.push(need.problem);
+    } else if (need.kind === "lookup") {
+      const lookup = lookups.get(need.target) ?? agentOf(need.target);
+
+      lookups.set(need.target, lookup);
+
+      try {
+        return { kind: "arm", agent: await lookup, action: need.action };
+      } catch (error) {
+        problems.push(`${errorMessage(error)}. Check the name with \`herdr agent list\`.`);
+      }
+    }
+
+    return undefined;
+  }
+
+  // Finds the agent behind each call without changing any watch, and returns what it can't find.
+  async function planCommand(command: string): Promise<{ steps: Step[]; problems: string[] }> {
+    const steps: Step[] = [];
     const { calls, missed } = herdrCalls(command);
+    const problems = [...missed].map(missedProblem);
+    const started = new Map<string, StartedAgent>();
+    const waitingOn = waitingNow();
+    const lookups = new Map<string, Promise<Agent>>();
 
     for (const call of calls) {
-      if (call.target === undefined) {
-        continue;
+      // An agent started in the command can be watched by its `--pane` before herdr knows its name.
+      if (call.action === "start" && call.target !== undefined && call.unresolved !== true) {
+        started.set(call.target, { pane: call.pane, unresolvedPane: call.unresolvedPane });
       }
 
-      const startedPane = started.get(call.target);
+      const step = await stepOf(needOf(call, started, waitingOn), problems, lookups);
 
-      if (call.action === "start" && call.pane !== undefined) {
-        started.set(call.target, call.pane);
-      } else if (call.wait) {
-        disarm(call.target);
-      } else if (call.action !== "start") {
-        const agent =
-          startedPane === undefined
-            ? await agentOf(call.target)
-            : { pane: startedPane, name: call.target };
-
-        await arm(path, agent, call.action, toolCallId);
+      if (step !== undefined) {
+        trackWaiting(step, steps, waitingOn);
+        steps.push(step);
       }
     }
 
-    if (missed.size > 0) {
-      const snippets = [...missed].map((text) => `\`${text.slice(0, 200)}\``);
+    return { steps, problems: [...new Set(problems)] };
+  }
 
-      throw new Error(`it can't read ${snippets.join(", ")}`);
+  // Returns the problems that stop it watching every agent. It arms nothing unless it can arm all.
+  async function watchCommand(
+    path: string,
+    command: string,
+    toolCallId: string,
+  ): Promise<string[]> {
+    const { steps, problems } = await planCommand(command);
+
+    if (problems.length > 0) {
+      return problems;
     }
+
+    // Opening a watch can fail, so all of them open before any watch changes.
+    const opened = await Promise.all(
+      steps.map((step) =>
+        step.kind === "arm" ? watchOf(path, step.agent.pane) : Promise.resolve(undefined),
+      ),
+    );
+
+    // A watch that closed while the others opened would never report.
+    const closed = steps.flatMap((step, index) =>
+      step.kind === "arm" && watches.get(step.agent.pane) !== opened[index]
+        ? [
+            `The watch on herdr agent ${label(step.agent.pane, opened[index])} closed before the command ran. Run the command again.`,
+          ]
+        : [],
+    );
+
+    if (closed.length > 0) {
+      return closed;
+    }
+
+    steps.forEach((step, index) => {
+      const watch = opened[index];
+
+      if (step.kind === "disarm") {
+        disarm(step.target, toolCallId);
+      } else if (watch !== undefined) {
+        arm(watch, step.agent, step.action, toolCallId);
+      }
+    });
+
+    return [];
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -1330,36 +1686,60 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // Watching is best effort, so a failure tells the model to check on its agents instead of
-  // blocking the command.
+  // A background task can't arm a watch, so only the check on waited agents applies.
+  function checkProblems(command: string): string[] {
+    const waitingOn = waitingNow();
+
+    return herdrCalls(command).calls.flatMap((call) => checkOf(call, waitingOn) ?? []);
+  }
+
+  async function problemsOf(path: string, event: ToolCallEvent): Promise<string[]> {
+    if (isToolCallEventType("bash", event)) {
+      return watchCommand(path, event.input.command, event.toolCallId);
+    }
+
+    if (!BACKGROUND_TOOLS.has(event.toolName) || !Value.Check(CommandInput, event.input)) {
+      return [];
+    }
+
+    const { command, argv, ssh } = event.input;
+    const script = command ?? argv?.map(quote).join(" ");
+
+    return ssh === undefined && script !== undefined ? checkProblems(script) : [];
+  }
+
+  // A prompt this can't watch would leave the model waiting or polling, so this blocks the command
+  // before it runs and says what to change. The watches a blocked call changed go back to how they
+  // were in tool_execution_end.
   pi.on("tool_call", async (event) => {
-    if (socketPath === undefined || !isToolCallEventType("bash", event)) {
+    if (socketPath === undefined) {
       return;
     }
 
+    let problems: string[];
+
     try {
-      await watchCommand(socketPath, event.input.command, event.toolCallId);
+      problems = await problemsOf(socketPath, event);
     } catch (error) {
-      const panes = new Set((pending.get(event.toolCallId) ?? []).map(({ pane }) => pane));
-
-      // A later `--wait` in the command can disarm a pane.
-      const watched = [...panes].flatMap((pane) => {
-        const watch = watches.get(pane);
-
-        return watch?.armed === true ? [label(pane, watch)] : [];
-      });
-
-      const fallback =
-        "you prompted, run `herdr agent wait <name>` as a background task, with `--machine` if the prompt used it.";
-
-      tell(
-        watched.length === 0
-          ? `Couldn't watch the herdr agents in this command: ${errorMessage(error)}. For each agent ${fallback}`
-          : `Couldn't watch every herdr agent in this command: ${errorMessage(error)}. It's watching ${watched.join(", ")}. For any other agent ${fallback}`,
-      );
+      problems = [
+        error instanceof TooComplex
+          ? `The extension can't check this command because ${error.message}. Move the herdr calls into a command with fewer nested loops.`
+          : `${errorMessage(error)}. Run the command again, or add \`--wait\` to its prompts so the calls wait themselves.`,
+      ];
     }
 
     refresh();
+
+    if (problems.length > 0) {
+      return {
+        block: true,
+        reason: [
+          "Nothing ran. The herdr-agents extension blocked this command:",
+          ...problems.map((problem) => `- ${problem}`),
+          "Fix the command and run it again. Don't start background tasks to wait on these agents instead.",
+        ].join("\n"),
+      };
+    }
   });
 
   // Unlike tool_result, this also fires for calls a hook blocked or the user aborted. Those never
@@ -1370,7 +1750,7 @@ export default function (pi: ExtensionAPI) {
 
     pending.delete(event.toolCallId);
 
-    for (const { pane, before } of armed) {
+    for (const { pane, before, prompted } of armed) {
       const watch = watches.get(pane);
 
       if (watch === undefined) {
@@ -1382,7 +1762,7 @@ export default function (pi: ExtensionAPI) {
       if (event.durationMs === undefined) {
         Object.assign(watch, before);
       } else {
-        checkStall(pane, watch, watch.since);
+        checkStall(pane, watch, watch.since, prompted);
       }
     }
 
