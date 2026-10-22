@@ -44,9 +44,6 @@ const NAME = "compaction";
 // Pi uses the `compaction` key.
 const KEY = "summaryFork";
 
-// Caps pi's branch summarizer after a failed fork, at OpenCode's default. Pi's own cap is 4,096.
-const FALLBACK_BRANCH_TOKENS = 32_000;
-
 const HEAD_ROLES = new Set<string>(["system", "compactionSummary", "branchSummary"]);
 
 const Config = Type.Object(
@@ -414,21 +411,18 @@ async function piBranchSummary(
 ) {
   const { preparation, signal } = event;
   const settings = SettingsManager.create(ctx.cwd);
-  const maxTokens = Math.min(FALLBACK_BRANCH_TOKENS, model.maxTokens || FALLBACK_BRANCH_TOKENS);
 
+  // Returning nothing lets pi summarize, but pi would drop the file lists from this extension's
+  // earlier summaries.
   const result = await generateBranchSummary(asPiSummaries(preparation.entriesToSummarize), {
     model,
     signal,
     customInstructions: preparation.customInstructions,
     replaceInstructions: preparation.replaceInstructions,
-    // Pi's reserve leaves room for its 4,096-token output, not this one.
-    reserveTokens: settings.getBranchSummarySettings().reserveTokens + maxTokens,
+    reserveTokens: settings.getBranchSummarySettings().reserveTokens,
     retry: settings.getRetrySettings(),
     streamFn: (requestModel, context, options) =>
-      ctx.modelRegistry.streamSimple(requestModel, context, {
-        ...options,
-        maxTokens,
-      }),
+      ctx.modelRegistry.streamSimple(requestModel, context, options),
   });
 
   if (result.aborted) {
