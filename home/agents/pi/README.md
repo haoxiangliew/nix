@@ -13,6 +13,8 @@
 
 The build fails if the patch stops applying after `nix flake update pi-review`.
 
+`patches/pi-better-background-tasks.patch` applies [pi-better-harness#460](https://github.com/1aboveio/pi-better-harness/pull/460) to [pi-better-background-tasks](https://www.npmjs.com/package/pi-better-background-tasks). Without it, a subagent's session start and shutdown hide this session's background tasks and stop their completion messages until `/reload`. The version comes from `bun.lock`, and the build fails if the patch stops applying after an update. Remove the patch once a release includes #460.
+
 ## Configure
 
 Extensions read the settings below from `~/.pi/agent/settings.json`. Set them through `programs.pi-coding-agent.settings` in `home/agents/default.nix`. Missing fields use the listed defaults. Run `/reload` after changes. Unknown keys or invalid values disable the extension and show an error. Activation does not delete old keys. Remove renamed keys by hand.

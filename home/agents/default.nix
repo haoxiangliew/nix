@@ -63,6 +63,27 @@ let
     '') config.programs.pi-coding-agent.extensions}
   '';
 
+  # pi-better-background-tasks with upstream PR #460, so a subagent can't hide this session's tasks
+  # or stop their completion messages. Drop the patch once #460 ships. pi loads a local package
+  # without installing it, so its dependencies go in its node_modules.
+  backgroundTasks = pkgs.runCommand "pi-better-background-tasks" { } ''
+    cp -r ${
+      pkgs.applyPatches {
+        name = "pi-better-background-tasks";
+        src = npmPackage "pi-better-background-tasks";
+        patches = [ ./pi/patches/pi-better-background-tasks.patch ];
+      }
+    } $out
+    chmod -R u+w $out
+    mkdir $out/node_modules
+    ${lib.concatMapStringsSep "\n" (name: "cp -r ${npmPackage name} $out/node_modules/${name}") [
+      "proper-lockfile"
+      "graceful-fs"
+      "retry"
+      "signal-exit"
+    ]}
+  '';
+
   talkPrompt = "You are a read-only agent that works through code changes with the user. Inspect and reason about the codebase, but never modify, create, or delete files, whether with edit tools or with shell commands that write to disk. When you propose a change, write the complete updated code in your response so the user can review it, give feedback, and apply it. Refine your proposal from their replies instead of finalizing edits yourself. Never claim to have edited a file, and never try to.";
 
   herdrAgents = {
@@ -406,7 +427,7 @@ in
           packages = [
             "npm:pi-web-access"
             "npm:@gotgenes/pi-subagents"
-            "npm:pi-better-background-tasks"
+            "${backgroundTasks}"
             "npm:@gotgenes/pi-permission-system"
             "npm:pi-pigment"
             "npm:@juicesharp/rpiv-ask-user-question"

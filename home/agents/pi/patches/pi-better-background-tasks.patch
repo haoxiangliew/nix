@@ -1,0 +1,667 @@
+diff --git a/src/failures.ts b/src/failures.ts
+index d388d41b..5e866333 100644
+--- a/src/failures.ts
++++ b/src/failures.ts
+@@ -103,18 +103,19 @@ export function recoverDeclaredOperation(meta: BackgroundTaskMeta, at = Date.now
+   }
+ }
+ 
++export function createFailureAttention() {
+ const attentionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+ let attentionSuspended = false;
+ /** Session shutdown: stop this instance's attention timers; the next session_start reschedules (#324). */
+-export function suspendFailureAttention(): void {
++function suspendFailureAttention(): void {
+   attentionSuspended = true;
+   for (const timer of attentionTimers.values()) clearTimeout(timer);
+   attentionTimers.clear();
+ }
+-export function resumeFailureAttention(): void {
++function resumeFailureAttention(): void {
+   attentionSuspended = false;
+ }
+-export function stopFailureAttention(id: string): void {
++function stopFailureAttention(id: string): void {
+   const timer = attentionTimers.get(id);
+   if (timer) clearTimeout(timer);
+   attentionTimers.delete(id);
+@@ -125,7 +126,7 @@ export function stopFailureAttention(id: string): void {
+  * identity is per incident set; the inspect target is the real task id.
+  * Only the pending incidents are rows; earlier deliveries are counted, never repeated (#315).
+  */
+-export function failureAttentionFields(meta: BackgroundTaskMeta, state: FailureState, pending: { key: string; incidents: string[] }) {
++function failureAttentionFields(meta: BackgroundTaskMeta, state: FailureState, pending: { key: string; incidents: string[] }) {
+   const rows = pendingAttentionRows(state, pending.incidents);
+   const note = pendingAttentionNote(state, pending.incidents);
+   const due = pending.incidents.length;
+@@ -144,7 +145,7 @@ export function failureAttentionFields(meta: BackgroundTaskMeta, state: FailureS
+ }
+ 
+ /** Running incidents get one grace wake. Terminal incidents ride the completion callback. */
+-export function scheduleFailureAttention(pi: ExtensionAPI, id: string, getActiveSession?: ActiveSessionProvider): void {
++function scheduleFailureAttention(pi: ExtensionAPI, id: string, getActiveSession?: ActiveSessionProvider): void {
+   stopFailureAttention(id);
+   if (attentionSuspended) return;
+   const meta = readMeta(id);
+@@ -167,6 +168,7 @@ export function scheduleFailureAttention(pi: ExtensionAPI, id: string, getActive
+         return current.status !== "running" || failureAttentionHandled(now, pending.incidents);
+       },
+       getSuppressionReason: () => {
++        if (attentionSuspended) throw new Error("Failure attention instance is suspended; defer notification");
+         const current = readMeta(id);
+         if (!current) throw new Error("Task metadata is unavailable; defer failure notification");
+         if (current.status !== "running" || current.callback === false || current.stopRequestedAt) return "task is no longer running";
+@@ -179,7 +181,7 @@ export function scheduleFailureAttention(pi: ExtensionAPI, id: string, getActive
+       onDelivered: (at) => { markFailureAttentionDelivered(failurePath(id), pending, at); },
+     });
+     void Promise.resolve(delivery).then((sent) => {
+-      if (!sent && (!readMeta(id) || readMeta(id)?.status === "running")) {
++      if (!sent && !attentionSuspended && (!readMeta(id) || readMeta(id)?.status === "running")) {
+         const timer = setTimeout(() => scheduleFailureAttention(pi, id, getActiveSession), 1_000);
+         timer.unref();
+         attentionTimers.set(id, timer);
+@@ -197,6 +199,12 @@ export function scheduleFailureAttention(pi: ExtensionAPI, id: string, getActive
+   }
+ }
+ 
++return { suspendFailureAttention, resumeFailureAttention, stopFailureAttention, scheduleFailureAttention, failureAttentionFields };
++}
++/** Shared by the compatibility exports here and the legacy background runtime. */
++export const defaultAttention = createFailureAttention();
++export const { suspendFailureAttention, resumeFailureAttention, stopFailureAttention, scheduleFailureAttention, failureAttentionFields } = defaultAttention;
++
+ export function terminalFailureAttention(id: string) {
+   return pendingFailureAttention(readFailureState(failurePath(id)), Date.now(), { terminal: true });
+ }
+diff --git a/src/index.ts b/src/index.ts
+index 047621e8..16524ee6 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,13 +1,15 @@
+ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+-import { disposeBackgroundWorkNavigator } from "./shared-navigator.ts";
+ import { registerBackgroundTasksGoalProvider } from "./goal-provider.js";
+-import { clearBackgroundTasksNavigatorSession, ensureBackgroundTasksNavigator, ensureBackgroundTasksNavigatorProvider } from "./navigator-provider.js";
+-import { resumeScheduledWork, suspendScheduledWork } from "./runtime.js";
++import { createBackgroundTasksNavigator } from "./navigator-provider.js";
++import { createBackgroundTaskRuntime } from "./runtime.js";
+ import { observeForegroundSandboxPolicy } from "./sandbox.js";
+ import { registerTools } from "./tools.js";
+ import { appendExecutionPolicy } from "./shared-execution-policy.js";
+ 
+ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
++  const runtime = createBackgroundTaskRuntime();
++  const navigator = createBackgroundTasksNavigator(runtime);
++  const { ensureBackgroundTasksNavigatorProvider, ensureBackgroundTasksNavigator, clearBackgroundTasksNavigatorSession } = navigator;
+   pi.on("before_agent_start", (event) => ({ systemPrompt: appendExecutionPolicy(event.systemPrompt) }));
+   registerBackgroundTasksGoalProvider(pi);
+   ensureBackgroundTasksNavigatorProvider(pi);
+@@ -16,19 +18,17 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
+   observeForegroundSandboxPolicy(pi);
+   // Registered before registerTools(pi), so this runs before running tasks are resumed.
+   pi.on("session_start", async (_event, ctx) => {
+-    resumeScheduledWork();
++    runtime.resumeScheduledWork();
+     registerBackgroundTasksGoalProvider(pi);
+     ensureBackgroundTasksNavigator(ctx);
+   });
+   pi.on("session_before_switch", async () => {
+     clearBackgroundTasksNavigatorSession();
+-    disposeBackgroundWorkNavigator();
+   });
+   pi.on("session_shutdown", async (_event, ctx) => {
+     // /reload, session replacement, and quit load a fresh instance; stop this one's timers (#324).
+-    suspendScheduledWork();
++    runtime.suspendScheduledWork();
+     clearBackgroundTasksNavigatorSession();
+-    disposeBackgroundWorkNavigator(ctx);
+   });
+-  registerTools(pi);
++  registerTools(pi, runtime, navigator.refreshBackgroundTasksNavigator);
+ }
+\ No newline at end of file
+diff --git a/src/navigator-provider.ts b/src/navigator-provider.ts
+index d0083e12..705fe793 100644
+--- a/src/navigator-provider.ts
++++ b/src/navigator-provider.ts
+@@ -1,6 +1,8 @@
+ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+ import {
+   DEFAULT_LOG_TAIL_ROWS as NAVIGATOR_DETAIL_ROWS,
++  disposeBackgroundWorkNavigator,
++  isNavigatorUiAvailable,
+   ensureBackgroundWorkNavigator,
+   refreshBackgroundWorkNavigator,
+   registerBackgroundWorkProvider,
+@@ -14,37 +16,49 @@ import { actionableFailures, failureLabel, readFailureState } from "./shared-fai
+ import { failurePath, failureView } from "./failures.js";
+ import { readLog } from "./logs.js";
+ import { listMetasForOrigin, onMetaChanged, readMeta, writeMeta } from "./registry.js";
+-import { stopTask } from "./runtime.js";
++import { stopTask, type BackgroundTaskRuntime } from "./runtime.js";
+ import { observeBackgroundTaskStall } from "./stall.js";
+ import type { BackgroundTaskCallbackOrigin, BackgroundTaskMeta, BackgroundTaskStatus } from "./types.js";
+ 
++const TERMINAL_NAVIGATOR_RETENTION_MS = 30_000;
++
++export function createBackgroundTasksNavigator(runtime: Pick<BackgroundTaskRuntime, "stopTask"> = { stopTask }) {
++const owner = Symbol("background-tasks navigator factory");
+ let unregister: (() => void) | undefined;
++let navigatorContext: ExtensionContext | undefined;
+ let piRef: ExtensionAPI | undefined;
+ let activeNavigatorOrigin: BackgroundTaskCallbackOrigin | undefined;
+-const TERMINAL_NAVIGATOR_RETENTION_MS = 30_000;
+-
+-export function ensureBackgroundTasksNavigatorProvider(pi: ExtensionAPI): void {
++function ensureBackgroundTasksNavigatorProvider(pi: ExtensionAPI): void {
+   piRef = pi;
+-  if (unregister) return;
++  // Provider registration is deferred until an actual TUI session owns it.
++  if (!navigatorContext || unregister) return;
+   unregister = registerBackgroundWorkProvider(provider);
+ }
+ 
+-export function ensureBackgroundTasksNavigator(ctx: ExtensionContext): void {
++function ensureBackgroundTasksNavigator(ctx: ExtensionContext): void {
++  if (!isNavigatorUiAvailable(ctx)) return;
++  navigatorContext = ctx;
++  if (piRef) ensureBackgroundTasksNavigatorProvider(piRef);
+   activeNavigatorOrigin = getNavigatorOrigin(ctx);
+   ensureBackgroundWorkNavigator(ctx, {
+     createDefaultEditor: (tui, theme, keybindings) => new CustomEditor(tui as never, theme as never, keybindings as never),
+     isOpenTrigger: (data) => matchesKey(data, Key.left),
+     matchKey: (data, keyId) => matchesKey(data, keyId as Parameters<typeof matchesKey>[1]),
+     truncate: truncateToWidth,
+-  });
++  }, owner);
+ }
+ 
+-export function clearBackgroundTasksNavigatorSession(): void {
++function clearBackgroundTasksNavigatorSession(): void {
+   activeNavigatorOrigin = undefined;
++  unregister?.();
++  unregister = undefined;
++  if (navigatorContext) disposeBackgroundWorkNavigator(navigatorContext, owner);
++  navigatorContext = undefined;
+ }
+ 
+-export function refreshBackgroundTasksNavigator(ctx?: ExtensionContext): void {
+-  refreshBackgroundWorkNavigator(ctx);
++function refreshBackgroundTasksNavigator(ctx?: ExtensionContext): void {
++  if (!navigatorContext || (ctx && !isNavigatorUiAvailable(ctx))) return;
++  refreshBackgroundWorkNavigator(ctx ?? navigatorContext);
+ }
+ 
+ const provider: BackgroundWorkProvider = {
+@@ -59,7 +73,7 @@ const provider: BackgroundWorkProvider = {
+     const meta = readMeta(id);
+     if (!meta) return { action: "missing", providerId: "background-tasks", id };
+     if (meta.status === "running") {
+-      void stopTask(piRef as ExtensionAPI, id);
++      void runtime.stopTask(piRef as ExtensionAPI, id);
+       return { action: "stopped", providerId: "background-tasks", id, status: "stopping" };
+     }
+     meta.dismissedAt = Date.now();
+@@ -98,6 +112,11 @@ function belongsToActiveNavigatorSession(meta: BackgroundTaskMeta): boolean {
+   return meta.cwd === active.cwd;
+ }
+ 
++return { ensureBackgroundTasksNavigatorProvider, ensureBackgroundTasksNavigator, clearBackgroundTasksNavigatorSession, refreshBackgroundTasksNavigator };
++}
++const defaultNavigator = createBackgroundTasksNavigator();
++export const { ensureBackgroundTasksNavigatorProvider, ensureBackgroundTasksNavigator, clearBackgroundTasksNavigatorSession, refreshBackgroundTasksNavigator } = defaultNavigator;
++
+ function isExpiredTerminalNavigatorRow(meta: BackgroundTaskMeta, now: number): boolean {
+   if (meta.status === "running") return false;
+   const endedAt = meta.endedAt;
+diff --git a/src/runtime.ts b/src/runtime.ts
+index 39d5ed9a..c65d6c27 100644
+--- a/src/runtime.ts
++++ b/src/runtime.ts
+@@ -9,7 +9,7 @@ import type { RemoteRunner, ResolvedSshRemoteTask } from "./remote-task-preset.j
+ import { ensureTaskDir, logPathFor, nextTaskId, readMeta, sandboxProfilePathFor, writeMeta } from "./registry.js";
+ import { confineCommandSpec, resolveForegroundSandboxPlan } from "./sandbox.js";
+ import { takeRecoverySnapshot } from "./shared-sandbox-core.js";
+-import { failurePath, readTaskIntent, recordExitFailure, recordFailure, recoverDeclaredOperation, recoverFailure, resumeFailureAttention, scheduleFailureAttention, stopFailureAttention, suspendFailureAttention, terminalFailureAttention } from "./failures.js";
++import { failurePath, readTaskIntent, recordExitFailure, recordFailure, recoverDeclaredOperation, recoverFailure, createFailureAttention, defaultAttention, terminalFailureAttention } from "./failures.js";
+ import { markFailureAttentionDelivered } from "./shared-failure-observations.js";
+ import { getCallbackBatcher } from "./shared-callback-batcher.js";
+ import { formatCallbackFacts } from "./output.js";
+@@ -26,6 +26,61 @@ import type {
+ } from "./types.js";
+ import { isTerminalStatus } from "./types.js";
+ 
++export type ActiveSessionProvider = () => BackgroundTaskCallbackOrigin | undefined;
++
++/** Structured intent (#325), declared by the launching agent and shared by spawns and watchers. */
++export interface TaskIntentParams {
++  /** Stable id shared by modified retries of one operation. */
++  operation_id?: string | null;
++  /** Non-zero exit codes declared intentional before launch. */
++  expected_exit_codes?: number[] | null;
++}
++
++export interface SpawnTaskParams extends CommandSpec, TaskIntentParams {
++  name?: string;
++  callback?: boolean;
++  timeout_seconds?: number;
++  max_log_bytes?: number;
++  ssh?: SshConnectionParams;
++  remote?: RemoteTaskParams;
++}
++
++export interface WatchTaskParams extends CommandSpec, TaskIntentParams {
++  name?: string;
++  callback?: boolean;
++  interval_seconds?: number;
++  timeout_seconds?: number;
++  max_log_bytes?: number;
++  success_when: Condition;
++  failure_when?: Condition;
++  /** Consecutive blind checks before the watch is flagged (#359). Default 3; 0 turns it off. */
++  blind_checks?: number;
++  ssh?: SshConnectionParams;
++  remote?: RemoteTaskParams;
++}
++
++export interface TaskRuntimeDependencies {
++  remoteRunner?: RemoteRunner;
++}
++
++export const DEFAULT_WATCH_TIMEOUT_SECONDS = 15 * 60;
++/** Consecutive blind checks (exit 0, stderr, no condition matched) before a watch is flagged (#359). */
++export const DEFAULT_BLIND_CHECKS = 3;
++/** How long bg_task_watch waits for the first check before returning (#359). */
++export const FIRST_WATCH_CHECK_WAIT_MS = 15_000;
++/** How to fix a false alarm: some tools write progress or warnings to stderr on success. */
++export const BLIND_CHECK_HINT = "If the stderr is expected (progress or warnings), redirect it (2>/dev/null) or set blind_checks:0.";
++/**
++ * Why the launch stopped waiting before the first check finished (#359): the bounded wait
++ * ran out, the tool call was aborted (Esc), or the session shut down.
++ */
++export type FirstCheckWaitEnd = "timeout" | "aborted" | "suspended";
++/** A first check's outcome, or why it is not known yet; undefined when the watch ended without one. */
++export type FirstCheckOutcome = FirstWatchCheck | { pending: FirstCheckWaitEnd; waitedMs: number } | undefined;
++
++/** Each cached extension factory owns its scheduling and suspension state. */
++export function createBackgroundTaskRuntime(attention = createFailureAttention()) {
++const { resumeFailureAttention, scheduleFailureAttention, stopFailureAttention, suspendFailureAttention } = attention;
+ const watcherTimers = new Map<string, ReturnType<typeof setTimeout>>();
+ const remoteSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+ const processTimeoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
+@@ -46,22 +101,7 @@ const HANDOFF_LOST_GRACE_MS = 5_000;
+ let scheduledWorkSuspended = false;
+ const REMOTE_SESSION_POLL_MS = 100;
+ 
+-export const DEFAULT_WATCH_TIMEOUT_SECONDS = 15 * 60;
+-/** Consecutive blind checks (exit 0, stderr, no condition matched) before a watch is flagged (#359). */
+-export const DEFAULT_BLIND_CHECKS = 3;
+-/** How long bg_task_watch waits for the first check before returning (#359). */
+-export const FIRST_WATCH_CHECK_WAIT_MS = 15_000;
+ const BLIND_OPERATION = "watch-blind";
+-/** How to fix a false alarm: some tools write progress or warnings to stderr on success. */
+-export const BLIND_CHECK_HINT = "If the stderr is expected (progress or warnings), redirect it (2>/dev/null) or set blind_checks:0.";
+-
+-/**
+- * Why the launch stopped waiting before the first check finished (#359): the bounded wait
+- * ran out, the tool call was aborted (Esc), or the session shut down.
+- */
+-export type FirstCheckWaitEnd = "timeout" | "aborted" | "suspended";
+-/** A first check's outcome, or why it is not known yet; undefined when the watch ended without one. */
+-export type FirstCheckOutcome = FirstWatchCheck | { pending: FirstCheckWaitEnd; waitedMs: number } | undefined;
+ 
+ /** In-flight first checks of watches launched by this instance, keyed by task id. */
+ const firstCheckWaiters = new Map<string, { promise: Promise<FirstWatchCheck | "suspended" | undefined>; resolve: (check: FirstWatchCheck | "suspended" | undefined) => void }>();
+@@ -71,7 +111,7 @@ const firstCheckWaiters = new Map<string, { promise: Promise<FirstWatchCheck | "
+  * outcome when the wait ends first, and undefined when this instance did not launch the watch
+  * or the watch ended without a check.
+  */
+-export async function awaitFirstWatchCheck(id: string, timeoutMs = FIRST_WATCH_CHECK_WAIT_MS, signal?: AbortSignal): Promise<FirstCheckOutcome> {
++async function awaitFirstWatchCheck(id: string, timeoutMs = FIRST_WATCH_CHECK_WAIT_MS, signal?: AbortSignal): Promise<FirstCheckOutcome> {
+   const waiter = firstCheckWaiters.get(id);
+   if (!waiter) return undefined;
+   const started = Date.now();
+@@ -129,7 +169,7 @@ function settleFirstCheck(id: string, check: FirstWatchCheck | "suspended" | und
+  * is recorded as terminal and its callback is delivered when its session resumes;
+  * after Pi quits, a resumed task whose process is gone is marked lost instead.
+  */
+-export function suspendScheduledWork(): void {
++function suspendScheduledWork(): void {
+   scheduledWorkSuspended = true;
+   for (const timer of watcherTimers.values()) clearTimeout(timer);
+   for (const timer of remoteSessionTimers.values()) clearTimeout(timer);
+@@ -147,53 +187,16 @@ export function suspendScheduledWork(): void {
+ }
+ 
+ /** Allow scheduling again; called at session_start before running tasks are resumed. */
+-export function resumeScheduledWork(): void {
++function resumeScheduledWork(): void {
+   scheduledWorkSuspended = false;
+   resumeFailureAttention();
+ }
+ 
+ 
+ 
+-export type ActiveSessionProvider = () => BackgroundTaskCallbackOrigin | undefined;
+-
+-/** Structured intent (#325), declared by the launching agent and shared by spawns and watchers. */
+-export interface TaskIntentParams {
+-  /** Stable id shared by modified retries of one operation. */
+-  operation_id?: string | null;
+-  /** Non-zero exit codes declared intentional before launch. */
+-  expected_exit_codes?: number[] | null;
+-}
+-
+-export interface SpawnTaskParams extends CommandSpec, TaskIntentParams {
+-  name?: string;
+-  callback?: boolean;
+-  timeout_seconds?: number;
+-  max_log_bytes?: number;
+-  ssh?: SshConnectionParams;
+-  remote?: RemoteTaskParams;
+-}
+-
+-export interface WatchTaskParams extends CommandSpec, TaskIntentParams {
+-  name?: string;
+-  callback?: boolean;
+-  interval_seconds?: number;
+-  timeout_seconds?: number;
+-  max_log_bytes?: number;
+-  success_when: Condition;
+-  failure_when?: Condition;
+-  /** Consecutive blind checks before the watch is flagged (#359). Default 3; 0 turns it off. */
+-  blind_checks?: number;
+-  ssh?: SshConnectionParams;
+-  remote?: RemoteTaskParams;
+-}
+-
+-export interface TaskRuntimeDependencies {
+-  remoteRunner?: RemoteRunner;
+-}
+-
+ type WatchPollRunner = (timeoutMs?: number) => Promise<CommandResult>;
+ 
+-export function spawnTask(
++function spawnTask(
+   pi: ExtensionAPI,
+   params: SpawnTaskParams,
+   defaultCwd: string,
+@@ -481,7 +484,7 @@ function failRemoteTask(
+   finalize(meta, { status: "failed", reason }, pi, getActiveSession);
+ }
+ 
+-export function startWatchTask(
++function startWatchTask(
+   pi: ExtensionAPI,
+   params: WatchTaskParams,
+   defaultCwd: string,
+@@ -571,7 +574,7 @@ function resolveWatchTimeoutSeconds(timeoutSeconds: number | undefined): number
+   return timeoutSeconds;
+ }
+ 
+-export function resumeRunningTask(
++function resumeRunningTask(
+   pi: ExtensionAPI,
+   meta: BackgroundTaskMeta,
+   getActiveSession?: ActiveSessionProvider,
+@@ -725,7 +728,7 @@ function resolvePersistedRemoteTask(
+   }, remoteRunner);
+ }
+ 
+-export async function stopTask(
++async function stopTask(
+   pi: ExtensionAPI,
+   id: string,
+   getActiveSession?: ActiveSessionProvider,
+@@ -1322,4 +1325,11 @@ function extractLastState(result: { stdout: string }): unknown {
+   } catch {
+     return result.stdout.slice(0, 4000);
+   }
+-}
+\ No newline at end of file
++}
++return { awaitFirstWatchCheck, suspendScheduledWork, resumeScheduledWork, spawnTask, startWatchTask, resumeRunningTask, stopTask };
++}
++
++export type BackgroundTaskRuntime = ReturnType<typeof createBackgroundTaskRuntime>;
++const defaultRuntime = createBackgroundTaskRuntime(defaultAttention);
++/** Compatibility for callers using the original singleton API. */
++export const { awaitFirstWatchCheck, suspendScheduledWork, resumeScheduledWork, spawnTask, startWatchTask, resumeRunningTask, stopTask } = defaultRuntime;
+\ No newline at end of file
+diff --git a/src/shared-navigator.ts b/src/shared-navigator.ts
+index 226da4d6..e41291f7 100644
+--- a/src/shared-navigator.ts
++++ b/src/shared-navigator.ts
+@@ -81,8 +81,10 @@ type HostDeps = {
+ 
+ type NavigatorState = {
+   providers: Map<string, BackgroundWorkProvider>;
++  registrationTokens?: Map<string, symbol>;
+   unsubscribers: Map<string, () => void>;
+   uiCtx?: ExtensionContext;
++  uiOwner?: symbol;
+   deps?: HostDeps;
+   lastHint?: string | null;
+   lastMainListLines?: string[];
+@@ -136,6 +138,8 @@ function state(): NavigatorState {
+ 
+ export function registerBackgroundWorkProvider(provider: BackgroundWorkProvider): () => void {
+   const s = state();
++  const token = Symbol(provider.id);
++  (s.registrationTokens ??= new Map()).set(provider.id, token);
+   const previousUnsub = s.unsubscribers.get(provider.id);
+   if (previousUnsub) {
+     try { previousUnsub(); } catch { /* ignore */ }
+@@ -151,7 +155,10 @@ export function registerBackgroundWorkProvider(provider: BackgroundWorkProvider)
+     s.unsubscribers.delete(provider.id);
+   }
+   refreshBackgroundWorkNavigator();
+-  return () => unregisterBackgroundWorkProvider(provider.id);
++  // A stale factory must not unregister its replacement from another cached module.
++  return () => {
++    if (state().registrationTokens?.get(provider.id) === token) unregisterBackgroundWorkProvider(provider.id);
++  };
+ }
+ 
+ export function unregisterBackgroundWorkProvider(id: string): void {
+@@ -162,6 +169,7 @@ export function unregisterBackgroundWorkProvider(id: string): void {
+   }
+   s.unsubscribers.delete(id);
+   s.providers.delete(id);
++  s.registrationTokens?.delete(id);
+   refreshBackgroundWorkNavigator();
+ }
+ 
+@@ -190,10 +198,11 @@ export function applyCloseConfirmFooter(ui: { setStatus(key: string, value: stri
+   return hint ?? null;
+ }
+ 
+-export function ensureBackgroundWorkNavigator(ctx: ExtensionContext, deps: HostDeps): void {
++export function ensureBackgroundWorkNavigator(ctx: ExtensionContext, deps: HostDeps, owner?: symbol): void {
+   if (!isNavigatorUiAvailable(ctx)) return;
+   const s = state();
+   s.uiCtx = ctx;
++  s.uiOwner = owner;
+   s.deps = {
+     ...deps,
+     createTranscriptComponent: deps.createTranscriptComponent ?? s.deps?.createTranscriptComponent,
+@@ -209,14 +218,18 @@ export function ensureBackgroundWorkNavigator(ctx: ExtensionContext, deps: HostD
+   refreshMainListWidget();
+ }
+ 
+-export function disposeBackgroundWorkNavigator(ctx?: ExtensionContext): void {
++export function disposeBackgroundWorkNavigator(ctx?: ExtensionContext, owner?: symbol): void {
+   const s = state();
++  if (owner !== undefined && s.uiOwner !== owner) return;
++  // Headless children and superseded UI sessions do not own the current navigator.
++  if (ctx && (!isNavigatorUiAvailable(ctx) || (s.uiCtx && ctx.ui !== s.uiCtx.ui))) return;
+   try { s.dispose?.(); } catch { /* ignore */ }
+   s.dispose = undefined;
+   s.overlay = undefined;
+   stopMainListWidget();
+   const activeCtx = ctx ?? s.uiCtx;
+   s.uiCtx = undefined;
++  s.uiOwner = undefined;
+   if (activeCtx && isNavigatorUiAvailable(activeCtx)) {
+     const ui = activeCtx.ui;
+     try { applyNavigatorFooter(ui as any, 0); } catch { /* ignore */ }
+diff --git a/src/tools.ts b/src/tools.ts
+index 383dd0f2..093acaa6 100644
+--- a/src/tools.ts
++++ b/src/tools.ts
+@@ -15,7 +15,7 @@ import {
+ import { readOutputControls } from "./shared-log-utils.js";
+ import { cancelCallbackBatch, getCallbackBatcher, setCallbackBatchContext } from "./shared-callback-batcher.js";
+ import { inspectMeta, listMetasForOrigin, readMeta, writeMeta } from "./registry.js";
+-import { awaitFirstWatchCheck, FIRST_WATCH_CHECK_WAIT_MS, resumeRunningTask, spawnTask, startWatchTask, stopTask, type WatchTaskParams } from "./runtime.js";
++import { awaitFirstWatchCheck, FIRST_WATCH_CHECK_WAIT_MS, resumeRunningTask, spawnTask, startWatchTask, stopTask, type WatchTaskParams, type BackgroundTaskRuntime } from "./runtime.js";
+ import { runTaskMaintenance } from "./maintenance.js";
+ import { ForegroundSandboxBlockedError } from "./sandbox.js";
+ import type { BackgroundTaskCallbackOrigin, BackgroundTaskMeta } from "./types.js";
+@@ -23,6 +23,8 @@ import { isTerminalStatus } from "./types.js";
+ 
+ export { formatLaunch } from "./output.js";
+ 
++const defaultRuntime = { awaitFirstWatchCheck, resumeRunningTask, spawnTask, startWatchTask, stopTask };
++
+ const JsonPathSchema = Type.String({
+   pattern: "^\\$",
+   description: "Root-prefixed JSON path, e.g. $.status, $.terminalFailure, or $.steps[0].status. Bare keys and wildcards are unsupported.",
+@@ -190,7 +192,8 @@ const BACKGROUND_ORCHESTRATION_GUIDELINES = [
+   "Do not treat launch as completion of the parent milestone; relevant background work must be terminal, inspected, and integrated before verification or completion.",
+ ];
+ 
+-export function registerTools(pi: ExtensionAPI): void {
++export function registerTools(pi: ExtensionAPI, runtime: Pick<BackgroundTaskRuntime, keyof typeof defaultRuntime> = defaultRuntime, refreshNavigator = refreshBackgroundTasksNavigator): void {
++  const { resumeRunningTask, spawnTask } = runtime;
+   let activeSession: BackgroundTaskCallbackOrigin | undefined;
+   const getActiveSession = () => activeSession;
+ 
+@@ -234,7 +237,7 @@ export function registerTools(pi: ExtensionAPI): void {
+     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+       activeSession = getCallbackOrigin(ctx);
+       const launched = reportLaunch(() => spawnTask(pi, params, ctx.cwd, activeSession, getActiveSession));
+-      refreshBackgroundTasksNavigator(ctx);
++      refreshNavigator(ctx);
+       return text(launched);
+     },
+   });
+@@ -247,8 +250,8 @@ export function registerTools(pi: ExtensionAPI): void {
+     parameters: WatchParams,
+     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+       activeSession = getCallbackOrigin(ctx);
+-      const launched = await launchWatch(pi, params, ctx.cwd, activeSession, getActiveSession, FIRST_WATCH_CHECK_WAIT_MS, signal);
+-      refreshBackgroundTasksNavigator(ctx);
++      const launched = await launchWatch(pi, params, ctx.cwd, activeSession, getActiveSession, FIRST_WATCH_CHECK_WAIT_MS, signal, runtime);
++      refreshNavigator(ctx);
+       return text(launched);
+     },
+   });
+@@ -296,8 +299,8 @@ export function registerTools(pi: ExtensionAPI): void {
+     parameters: IdParams,
+     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+       activeSession = getCallbackOrigin(ctx);
+-      const result = await formatStop(pi, params.id, ctx, getActiveSession, statusOptions(params, activeSession));
+-      refreshBackgroundTasksNavigator(ctx);
++      const result = await formatStop(pi, params.id, ctx, getActiveSession, statusOptions(params, activeSession), runtime);
++      refreshNavigator(ctx);
+       return text(result);
+     },
+   });
+@@ -313,7 +316,7 @@ export function registerTools(pi: ExtensionAPI): void {
+     },
+     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+       activeSession = getCallbackOrigin(ctx);
+-      return actionText(pi, params, ctx, activeSession, getActiveSession, signal);
++      return actionText(pi, params, ctx, activeSession, getActiveSession, signal, runtime, refreshNavigator);
+     },
+   });
+ 
+@@ -327,7 +330,7 @@ export function registerTools(pi: ExtensionAPI): void {
+     },
+     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+       activeSession = getCallbackOrigin(ctx);
+-      return actionText(pi, params, ctx, activeSession, getActiveSession);
++      return actionText(pi, params, ctx, activeSession, getActiveSession, undefined, runtime, refreshNavigator);
+     },
+   });
+ }
+@@ -383,12 +386,14 @@ async function actionText(
+   ctx: ExtensionContext,
+   callbackOrigin: BackgroundTaskCallbackOrigin,
+   getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
+-  signal?: AbortSignal,
++  signal: AbortSignal | undefined,
++  runtime: Pick<BackgroundTaskRuntime, keyof typeof defaultRuntime>,
++  refreshNavigator: typeof refreshBackgroundTasksNavigator,
+ ) {
+   if (params.action === "log" && params.id) {
+     return logText(String(params.id), logOptions(params, callbackOrigin));
+   }
+-  return text(await runAction(pi, params, ctx, callbackOrigin, getActiveSession, signal));
++  return text(await runAction(pi, params, ctx, callbackOrigin, getActiveSession, signal, runtime, refreshNavigator));
+ }
+ 
+ async function runAction(
+@@ -397,14 +402,18 @@ async function runAction(
+   ctx: ExtensionContext,
+   callbackOrigin: BackgroundTaskCallbackOrigin,
+   getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
+-  signal?: AbortSignal,
++  signal: AbortSignal | undefined,
++  runtime: Pick<BackgroundTaskRuntime, keyof typeof defaultRuntime>,
++  refreshNavigator: typeof refreshBackgroundTasksNavigator,
+ ): Promise<string> {
++  const { spawnTask } = runtime;
++  const withNavigatorRefresh = (ctx: ExtensionContext, result: string) => { refreshNavigator(ctx); return result; };
+   switch (params.action) {
+     case "spawn":
+       return withNavigatorRefresh(ctx, reportLaunch(() => spawnTask(pi, params, ctx.cwd, callbackOrigin, getActiveSession)));
+     case "watch":
+       if (!params.success_when) return "Invalid parameters: watch requires success_when.";
+-      return withNavigatorRefresh(ctx, await launchWatch(pi, params as unknown as WatchTaskParams, ctx.cwd, callbackOrigin, getActiveSession, FIRST_WATCH_CHECK_WAIT_MS, signal));
++      return withNavigatorRefresh(ctx, await launchWatch(pi, params as unknown as WatchTaskParams, ctx.cwd, callbackOrigin, getActiveSession, FIRST_WATCH_CHECK_WAIT_MS, signal, runtime));
+     case "list":
+       return formatList(listOptions(params, callbackOrigin));
+     case "status":
+@@ -415,7 +424,7 @@ async function runAction(
+       return formatLog(String(params.id), logOptions(params, callbackOrigin));
+     case "stop":
+       if (!params.id) return "Invalid parameters: stop requires id.";
+-      return withNavigatorRefresh(ctx, await formatStop(pi, String(params.id), ctx, getActiveSession, statusOptions(params, callbackOrigin)));
++      return withNavigatorRefresh(ctx, await formatStop(pi, String(params.id), ctx, getActiveSession, statusOptions(params, callbackOrigin), runtime));
+     case "clear":
+       return withNavigatorRefresh(ctx, formatClear(params, statusOptions(params, callbackOrigin)));
+     default:
+@@ -450,7 +459,9 @@ export async function launchWatch(
+   getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
+   waitMs = FIRST_WATCH_CHECK_WAIT_MS,
+   signal?: AbortSignal,
++  runtime: Pick<BackgroundTaskRuntime, keyof typeof defaultRuntime> = defaultRuntime,
+ ): Promise<string> {
++  const { startWatchTask, awaitFirstWatchCheck } = runtime;
+   let meta: BackgroundTaskMeta;
+   try {
+     meta = startWatchTask(pi, params, cwd, callbackOrigin, getActiveSession);
+@@ -465,11 +476,6 @@ export async function launchWatch(
+   return formatLaunch(latest);
+ }
+ 
+-function withNavigatorRefresh(ctx: ExtensionContext, result: string): string {
+-  refreshBackgroundTasksNavigator(ctx);
+-  return result;
+-}
+-
+ /** Origins whose session identity could not be read (the host threw). */
+ const unavailableSessionOrigins = new WeakSet<BackgroundTaskCallbackOrigin>();
+ 
+@@ -601,7 +607,9 @@ async function formatStop(
+   _ctx: ExtensionContext,
+   getActiveSession?: () => BackgroundTaskCallbackOrigin | undefined,
+   options: OutputOptions = {},
++  runtime: Pick<BackgroundTaskRuntime, "stopTask"> = defaultRuntime,
+ ): Promise<string> {
++  const { stopTask } = runtime;
+   const existing = inspectMeta(id);
+   if (!existing.meta && !existing.found) return formatStopResult(existing, options);
+   if (!existing.meta) return formatMissingTask(existing, options);

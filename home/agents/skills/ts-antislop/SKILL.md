@@ -6,4 +6,4 @@ disable-model-invocation: true
 
 make sure the code has nothing the rules in https://github.com/dmmulroy/anti-slop reject
 
-you can clone anti-slop to a temp directory and run its rules from there. do not install it in this repo
+if the repo already has anti-slop in its lint setup, run the repo's lint. otherwise keep one clone of anti-slop at `$TMPDIR/anti-slop` and run its rules from there. if the clone already exists, reuse it and update it with `git pull` instead of cloning again. do not install it in this repo
