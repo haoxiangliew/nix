@@ -552,17 +552,13 @@ function functionBridges(
   const candidates: SymbolReference[] = [];
 
   for (const variable of declarations(body)) {
-    const argumentsPattern =
-      "$options.fingerprint, $options.agentContext, $options.previousRequestId, $options.promptId, $options.turnOrigin, $options.turnPosition";
-
     const call =
       variable.init &&
-      (match(variable.init, `$builder(${argumentsPattern})`, bindings) ??
-        match(
-          variable.init,
-          `$builder(${argumentsPattern}, { attributionProject: $project() })`,
-          bindings,
-        ));
+      match(
+        variable.init,
+        "$builder($options.fingerprint, $options.agentContext, $options.previousRequestId, $options.promptId, $options.turnOrigin, $options.turnPosition, { attributionProject: $project() })",
+        bindings,
+      );
 
     if (!variable.init || !call || !js.references(module, capture(call, "builder"), builder)) {
       continue;

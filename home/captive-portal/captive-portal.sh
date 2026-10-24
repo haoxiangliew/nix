@@ -39,9 +39,7 @@ if [ -z "$link" ]; then
 fi
 
 protocols() {
-  # systemd 247 and newer report DNS-over-TLS in the per-link Protocols line.
-  # Older releases print a separate "DNSOverTLS setting:" line. Match either.
-  resolvectl status "$link" | awk '/DNSOverTLS/ { $1 = $1; print; exit }'
+  resolvectl status "$link" | awk '/Protocols:/ { $1 = $1; print; exit }'
 }
 
 confirm() {

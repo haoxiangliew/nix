@@ -19,12 +19,12 @@ type BlockKind = "signer" | "helper" | "hash";
 // SHA-256 of each block's words, with addresses and extracted constants masked out.
 const schemas = {
   signer: {
-    words: 191,
-    digest: "eeddf2633ed6bf0975430420cb8d4b4abaf69f56eed1ca1ef9b714d105154c94",
+    words: 202,
+    digest: "2e85d0d3baae5e5489ae0bbd912b64a53bd4287aaef06a840e20d7bd6eac22a9",
   },
   helper: {
-    words: 228,
-    digest: "f262eddd85d47b8b9b80fe87aa3b90b9ca4f33d4a8793743108551f33efa5d45",
+    words: 230,
+    digest: "804a6fa8a7b708b1da7ef834d5a4fb4ca2a8654b74e8189f1df6974b3bdc4116",
   },
   hash: { words: 214, digest: "9bb9ecb6c755f94690b370c70d757912da4dc91ca03e0eeb4e77f4512c0355a6" },
 } satisfies Record<BlockKind, { words: number; digest: string }>;
@@ -38,7 +38,7 @@ const seedPattern: Pattern = [
   [0x910003e0, 0xffc003ff],
   [0x94000000, 0xfc000000],
   [0xd10003a0, 0xffc003ff],
-  [0xaa1903e1, 0xffffffff],
+  [0xaa1503e1, 0xffffffff],
   [0xaa1803e2, 0xffffffff],
   [0xd2800003, 0xffffffff],
   [0x94000000, 0xfc000000],
@@ -50,9 +50,9 @@ const seedCalls = { reset: 5, helper: 10 };
 // MOVZ/STRB of the first two request path bytes.
 const signerStart: Pattern = [
   [0x52800008, 0xffe0001f],
-  [0x390343e8, 0xffffffff],
+  [0x390303e8, 0xffffffff],
   [0x52800009, 0xffe0001f],
-  [0x390347e9, 0xffffffff],
+  [0x390307e9, 0xffffffff],
 ];
 
 const signerEnd = [0x39001109, 0xbd000100];
@@ -73,6 +73,7 @@ const signerCallLayout = [
   "search",
   "update",
   "helper",
+  "quote",
   "update",
   "update",
   "digest",
@@ -433,12 +434,14 @@ function signerCalls(image: Arm64MachO, seed: Block, block: Block) {
     helper: seedCall(seedCalls.helper),
     update: reset + hashEntries.update * 4,
     digest: reset + hashEntries.digest * 4,
+    quote: targets[signerCallLayout.indexOf("quote")]!,
   };
 
   requireSupported(targets.every((target, index) => target === entries[signerCallLayout[index]!]));
+  requireSupported(entries.quote !== entries.search);
   verifyHash(image, reset);
 
-  return { search: entries.search, helper: entries.helper };
+  return { search: entries.search, helper: entries.helper, quote: entries.quote };
 }
 
 // Returns how many bytes past the body marker the signer searches for the placeholder.
@@ -469,11 +472,19 @@ function checksumLayout(image: Arm64MachO, block: Block, placeholder: Buffer) {
   return { checksumOffset, checksumDigits };
 }
 
-function omissionMarkers(image: Arm64MachO, helper: number, search: number): CliOmission[] {
+function omissionMarkers(
+  image: Arm64MachO,
+  helper: number,
+  search: number,
+  quote: number,
+): CliOmission[] {
   const words = image.words(helper, schemas.helper.words);
   checkSchema(words, "helper");
   const targets = calls(words, helper);
-  requireSupported(targets.slice(0, omissionKinds.length).every((target) => target === search));
+  const helperCalls = [search, search, quote, search];
+
+  requireSupported(targets.length === helperCalls.length + 2);
+  requireSupported(helperCalls.every((target, index) => targets[index] === target));
   const searches = readSearches(image, words, helper, search);
 
   requireSupported(
@@ -502,7 +513,7 @@ export function extractArm64CliSigner(bytes: Buffer): CliSignerConfig {
     seed: seedValue(seed),
     bodyMarker: bodyMarker!,
     modelMarker: modelMarker!,
-    omissions: omissionMarkers(image, targets.helper, targets.search),
+    omissions: omissionMarkers(image, targets.helper, targets.search, targets.quote),
     placeholder: placeholder!,
     window: windowLimit(block, placeholder!),
     ...checksumLayout(image, block, placeholder!),

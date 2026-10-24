@@ -31,12 +31,12 @@ type BlockKind = "signer" | "helper" | "update" | "digest";
 // SHA-256 of each block's non-NOP instructions, normalized by InstructionSchema.
 const schemas = {
   signer: {
-    instructions: 219,
-    digest: "254ebd8e7e560c7d18f32a59426e6e3b8b61eb983e37d92ccc7d531aea3432cd",
+    instructions: 234,
+    digest: "9f7e837fc0db81c7bfaef997a6960d23254a0fe97b7bcb69c3311ac3bbb3a56b",
   },
   helper: {
-    instructions: 228,
-    digest: "5eebcb117c1de760267f80d04ba26b5a18ee2167a7907e99652ee3e5ce6949b6",
+    instructions: 251,
+    digest: "3108186ac03f7bb92ba5af41abd9495161551c626c8584304e53202448d65bf1",
   },
   update: {
     instructions: 114,
@@ -870,13 +870,14 @@ function requireCallState(direct: readonly Call[], seed: Seed): void {
 
 function signerCalls(image: X64Elf, instructions: readonly Instruction[], seed: Seed) {
   const { calls } = analyzeX64(instructions);
-  const searches = calls.filter((call) => call.instruction.flow === FlowControl.IndirectCall);
+  const indirect = calls.filter((call) => call.instruction.flow === FlowControl.IndirectCall);
   const direct = calls.filter((call) => call.instruction.flow === FlowControl.Call);
 
   requireSupported(
-    searches.length === searchSources.length && direct.length === signerCallLayout.length,
+    indirect.length === searchSources.length + 1 && direct.length === signerCallLayout.length,
   );
 
+  const searches = indirect.slice(0, searchSources.length);
   const slot = searches[0]!.target;
 
   requireSupported(
@@ -895,7 +896,27 @@ function signerCalls(image: X64Elf, instructions: readonly Instruction[], seed: 
   functionBlock(image, targets.update, "update");
   functionBlock(image, targets.digest, "digest");
 
-  return { searches, digest: direct.at(-1)!, slot: slot.address, helper: targets.helper };
+  return {
+    searches,
+    digest: direct.at(-1)!,
+    slot: slot.address,
+    helper: targets.helper,
+    quoteSlot: quoteSearchSlot(image, indirect.at(-1)!, slot.address),
+  };
+}
+
+// The long-string path searches for a single closing quote through a distinct slot.
+// The schema pins its surrounding bounds checks and short-string scalar loop.
+function quoteSearchSlot(image: X64Elf, call: Call, searchSlot: number): number {
+  requireSupported(
+    call.target?.kind === "slot" &&
+      call.target.address !== searchSlot &&
+      image.contains(call.target.address, 8) &&
+      call.arguments[2]?.kind === "integer" &&
+      call.arguments[2].value === 0x22n,
+  );
+
+  return call.target.address;
 }
 
 // Returns how many bytes past the body marker the signer searches for the placeholder.
@@ -977,15 +998,24 @@ function signerVariables(instructions: readonly Instruction[], seed: Seed): Read
   );
 }
 
-function omissionMarkers(image: X64Elf, helper: number, slot: number): CliOmission[] {
-  const searches = analyzeX64(functionBlock(image, helper, "helper")).calls.filter(
+function omissionMarkers(
+  image: X64Elf,
+  helper: number,
+  slot: number,
+  quoteSlot: number,
+): CliOmission[] {
+  const indirect = analyzeX64(functionBlock(image, helper, "helper")).calls.filter(
     (call) => call.instruction.flow === FlowControl.IndirectCall,
   );
 
-  requireSupported(
-    searches.length === omissionKinds.length &&
-      searches.every((call) => call.target?.kind === "slot" && call.target.address === slot),
+  const searches = indirect.filter(
+    (call) => call.target?.kind === "slot" && call.target.address === slot,
   );
+
+  const quotes = indirect.filter((call) => !searches.includes(call));
+
+  requireSupported(searches.length === omissionKinds.length && quotes.length === 1);
+  requireSupported(quoteSearchSlot(image, quotes[0]!, slot) === quoteSlot);
 
   return searches.map((call, index) => ({
     kind: omissionKinds[index]!,
@@ -1011,7 +1041,7 @@ export function extractElfCliSigner(bytes: Buffer): CliSignerConfig {
     seed: seed.value,
     bodyMarker: bodyMarker!,
     modelMarker: modelMarker!,
-    omissions: omissionMarkers(image, targets.helper, targets.slot),
+    omissions: omissionMarkers(image, targets.helper, targets.slot, targets.quoteSlot),
     placeholder: placeholder!,
     window: window.window,
     ...checksumLayout(block, targets.digest, placeholder!),
