@@ -1,9 +1,9 @@
 import { requireSupported } from "./binary.ts";
 import { extractArm64CliSigner } from "./claude-signer-arm64.ts";
-import { extractElfCliSigner } from "./claude-signer-x64.ts";
+import { omissionKinds } from "./claude-signer-constants.ts";
 
 export interface CliOmission {
-  readonly kind: "array" | "string" | "number";
+  readonly kind: (typeof omissionKinds)[number];
   readonly marker: Buffer;
 }
 
@@ -18,14 +18,19 @@ export interface CliSignerConfig {
   readonly checksumDigits: number;
 }
 
-export function extractCliSigner(bytes: Buffer): CliSignerConfig {
+export async function extractCliSigner(bytes: Buffer): Promise<CliSignerConfig> {
   requireSupported(bytes.length >= 4);
 
   switch (bytes.readUInt32LE(0)) {
     case 0xfeedfacf:
       return extractArm64CliSigner(bytes);
-    case 0x464c457f:
+    case 0x464c457f: {
+      // Loads the iced-x86 WASM decoder only when an ELF binary needs a scan.
+      const { extractElfCliSigner } = await import("./claude-signer-x64.ts");
+
       return extractElfCliSigner(bytes);
+    }
+
     default:
       throw new Error("Unsupported Claude CLI executable format. Request blocked.");
   }

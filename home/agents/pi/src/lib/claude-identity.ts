@@ -188,6 +188,7 @@ function scanHash(): string {
     "claude-attribution",
     "claude-request-identity",
     "claude-signer",
+    "claude-signer-constants",
     "claude-signer-arm64",
     "claude-signer-x64",
     "binary",
@@ -198,6 +199,9 @@ function scanHash(): string {
   }
 
   hash.update(readFileSync(new URL(import.meta.resolve("acorn"))));
+  const decoder = new URL(import.meta.resolve("iced-x86"));
+  hash.update(readFileSync(decoder));
+  hash.update(readFileSync(new URL("./iced_x86_bg.wasm", decoder)));
 
   return hash.digest("hex");
 }
@@ -286,7 +290,7 @@ async function readExecutable(launcher: string) {
 
 async function sourceIdentity(launcher: string, version: string): Promise<SourceIdentity> {
   const { launchers, executable, executableStamp, bytes } = await readExecutable(launcher);
-  const signer = extractCliSigner(bytes);
+  const signer = await extractCliSigner(bytes);
   const runtimePath = process.execPath;
   const runtimeStamp = fileStamp(runtimePath);
 

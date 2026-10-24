@@ -2,6 +2,7 @@ import {
   readAddress,
   requireRange,
   requireSupported,
+  segmentContains,
   sliceSegment,
   type Segment,
 } from "./binary.ts";
@@ -117,6 +118,14 @@ export class X64Elf {
     requireSupported(contents.byteOffset - this.bytes.byteOffset === start);
 
     return contents;
+  }
+
+  contains(address: number, size = 1): boolean {
+    return this.segments.some((segment) => segmentContains(segment, address, size));
+  }
+
+  executable(address: number): boolean {
+    return segmentContains(this.text, address, 1);
   }
 
   slice(address: number, size: number): Buffer {

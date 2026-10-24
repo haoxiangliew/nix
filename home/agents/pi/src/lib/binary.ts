@@ -23,6 +23,16 @@ export function readAddress(bytes: Buffer, offset: number): number {
   return value;
 }
 
+export function segmentContains(segment: Segment, address: number, size: number): boolean {
+  return (
+    Number.isSafeInteger(address) &&
+    Number.isSafeInteger(size) &&
+    size >= 0 &&
+    address >= segment.address &&
+    address - segment.address <= segment.fileSize - size
+  );
+}
+
 export function sliceSegment(
   bytes: Buffer,
   segments: readonly Segment[],
@@ -32,9 +42,7 @@ export function sliceSegment(
   requireSupported(Number.isSafeInteger(address) && address >= 0);
   requireSupported(Number.isSafeInteger(size) && size >= 0);
 
-  const matches = segments.filter(
-    (segment) => address >= segment.address && address - segment.address <= segment.fileSize - size,
-  );
+  const matches = segments.filter((segment) => segmentContains(segment, address, size));
 
   requireSupported(matches.length === 1);
   const offset = matches[0]!.offset + (address - matches[0]!.address);
