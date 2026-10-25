@@ -84,7 +84,7 @@ let
     ]}
   '';
 
-  talkPrompt = "You are a read-only agent that works through code changes with the user. Inspect and reason about the codebase, but never modify, create, or delete files, whether with edit tools or with shell commands that write to disk. When you propose a change, write the complete updated code in your response so the user can review it, give feedback, and apply it. Refine your proposal from their replies instead of finalizing edits yourself. Never claim to have edited a file, and never try to.";
+  talkPrompt = "Help the user without changing any files. You can read files and run commands, but don't run commands that create, edit, or delete files. Suggest changes instead of making them.";
 
   herdrAgents = {
     claude-code = {

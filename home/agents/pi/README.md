@@ -133,9 +133,9 @@ Each reviewer reviews the same change. The session's model compares their findin
 
 ### `talk.ts`
 
-`/talk` or shift+tab turns read-only talk mode on and off. It blocks `talk.blockedTools` and adds `talk.prompt` to each turn you start. Bash stays available for research. `--talk` starts with it on.
+`/talk` or shift+tab turns read-only talk mode on and off. It blocks `talk.blockedTools` and adds `talk.prompt` as a `talk_mode` system prompt section. On models that accept system messages mid-conversation, pi sends one system message each time the mode turns on or off. On other models, each toggle misses the prompt cache. Each branch keeps its own setting, including after `/tree`. Bash stays available for research. `--talk` starts with it on.
 
-| Key                 | Default             | Meaning                                                  |
-| ------------------- | ------------------- | -------------------------------------------------------- |
-| `talk.prompt`       | none, required      | Prompt added to each turn. nix sets it from `talkPrompt` |
-| `talk.blockedTools` | `["edit", "write"]` | Tools blocked in talk mode                               |
+| Key                 | Default             | Meaning                                            |
+| ------------------- | ------------------- | -------------------------------------------------- |
+| `talk.prompt`       | none, required      | Prompt section text. nix sets it from `talkPrompt` |
+| `talk.blockedTools` | `["edit", "write"]` | Tools blocked in talk mode                         |

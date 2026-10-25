@@ -329,7 +329,18 @@ export default function (pi: ExtensionAPI) {
     apply(ctx);
   });
 
-  // Resumed sessions keep their last choice. New sessions use --fast or the saved default.
+  // Resumed sessions and /tree use the branch's last choice. A branch without one uses --fast or
+  // the saved default.
+  function restore(ctx: ExtensionContext): void {
+    const saved = ctx.sessionManager
+      .getBranch()
+      .findLast((e) => e.type === "custom" && e.customType === "fast-mode");
+
+    enabled =
+      saved?.type === "custom" ? saved.data === true : pi.getFlag("fast") === true || readDefault();
+    apply(ctx);
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     config = loadOrReport(ctx, "Fast mode", "fast", Config);
 
@@ -340,12 +351,12 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const saved = ctx.sessionManager
-      .getEntries()
-      .findLast((e) => e.type === "custom" && e.customType === "fast-mode");
+    restore(ctx);
+  });
 
-    enabled =
-      saved?.type === "custom" ? saved.data === true : pi.getFlag("fast") === true || readDefault();
-    apply(ctx);
+  pi.on("session_tree", async (_event, ctx) => {
+    if (config !== undefined) {
+      restore(ctx);
+    }
   });
 }

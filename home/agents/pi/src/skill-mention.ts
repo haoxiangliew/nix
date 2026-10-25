@@ -13,7 +13,11 @@
 
 import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
 
-import { stripFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  parseSkillBlock,
+  stripFrontmatter,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Type } from "typebox";
@@ -100,11 +104,25 @@ const noCompletion: AutocompleteProvider = {
   },
 };
 
-// Matches pi's /skill:name block, so the TUI collapses a single skill.
-function skillBlock(name: string, path: string): string {
-  const body = stripFrontmatter(readFileSync(path, "utf8")).trim();
-
+// Builds the same block as pi's /skill:name, so the TUI collapses a single skill. Pi exports a
+// parser for the block but no builder, so formatMatchesPi() checks that pi still parses it.
+function formatSkillBlock(name: string, path: string, body: string): string {
   return `<skill name="${name}" location="${path}">\nReferences are relative to ${dirname(path)}.\n\n${body}\n</skill>`;
+}
+
+function skillBlock(name: string, path: string): string {
+  return formatSkillBlock(name, path, stripFrontmatter(readFileSync(path, "utf8")).trim());
+}
+
+function formatMatchesPi(): boolean {
+  const parsed = parseSkillBlock(`${formatSkillBlock("a", "/x/SKILL.md", "body")}\n\nprompt`);
+
+  return (
+    parsed?.name === "a" &&
+    parsed.location === "/x/SKILL.md" &&
+    parsed.content === "References are relative to /x.\n\nbody" &&
+    parsed.userMessage === "prompt"
+  );
 }
 
 // Strips the $ from known skills and returns their blocks. Throws when a skill file can't be read.
@@ -133,6 +151,14 @@ function expand(pi: ExtensionAPI, text: string) {
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.addAutocompleteProvider((current) => withSkills(pi, current));
+
+    // The skill still reaches the model, but the TUI shows the full block instead of collapsing it.
+    if (!formatMatchesPi()) {
+      ctx.ui.notify(
+        "pi's skill block format changed, so $name skills won't collapse. Update skill-mention.ts.",
+        "warning",
+      );
+    }
   });
 
   pi.events.on("skill-mention:autocomplete", (data) => {
