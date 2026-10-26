@@ -14,7 +14,7 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
     "@gotgenes/pi-permission-system": "41.0.0",
-    "@gotgenes/pi-subagents": "25.0.1",
+    "@gotgenes/pi-subagents": "25.0.4",
     "@types/bun": "1.4.4",
     "acorn": "8.19.0",
     "iced-x86": "1.21.0",
@@ -22,9 +22,8 @@
     "oxfmt": "0.74.0",
     "oxlint": "1.89.0",
     "oxlint-tsgolint": "7.0.2005",
-    "pi-better-background-tasks": "0.9.1",
+    "pi-better-background-tasks": "0.10.0",
     "taze": "21.3.0",
-    "typebox": "1.4.3",
-    "unbash": "6.0.1"
+    "typebox": "1.4.3"
   }
 }

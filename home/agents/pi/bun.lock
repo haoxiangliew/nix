@@ -9,7 +9,7 @@
         "@earendil-works/pi-coding-agent": "1.4.0",
         "@earendil-works/pi-tui": "1.4.0",
         "@gotgenes/pi-permission-system": "41.0.0",
-        "@gotgenes/pi-subagents": "25.0.1",
+        "@gotgenes/pi-subagents": "25.0.4",
         "@types/bun": "1.4.4",
         "acorn": "8.19.0",
         "iced-x86": "1.21.0",
@@ -17,10 +17,9 @@
         "oxfmt": "0.74.0",
         "oxlint": "1.89.0",
         "oxlint-tsgolint": "7.0.2005",
-        "pi-better-background-tasks": "0.9.1",
+        "pi-better-background-tasks": "0.10.0",
         "taze": "21.3.0",
         "typebox": "1.4.3",
-        "unbash": "6.0.1",
       },
     },
   },
@@ -87,7 +86,7 @@
 
     "@gotgenes/pi-permission-system": ["@gotgenes/pi-permission-system@41.0.0", "", { "dependencies": { "tree-sitter-bash": "^0.25.1", "web-tree-sitter": "^0.26.9", "zod": "^4.4.3" }, "peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.0.0", "@earendil-works/pi-tui": ">=1.0.0" } }, "sha512-BJHnj4yrtVMT5A5Tzss+yRhdvRndJSEBMr4j3QGa+T5MxmHof1xTKlVlDA6Xiq3hFQ7LcvTTCxzvXfPW85zftA=="],
 
-    "@gotgenes/pi-subagents": ["@gotgenes/pi-subagents@25.0.1", "", { "peerDependencies": { "@earendil-works/pi-ai": ">=1.0.0", "@earendil-works/pi-coding-agent": ">=1.0.0", "@earendil-works/pi-tui": ">=1.0.0", "typebox": "*" } }, "sha512-k9dYoRYCrJtMap58ziHtld7Jvp48L+iUqsO6ZNMp+p7syMS2FFtnz9BeamBlZjDb2G8ERyHZRExGl+OiOomBQQ=="],
+    "@gotgenes/pi-subagents": ["@gotgenes/pi-subagents@25.0.4", "", { "peerDependencies": { "@earendil-works/pi-ai": ">=1.0.0", "@earendil-works/pi-coding-agent": ">=1.0.0", "@earendil-works/pi-tui": ">=1.0.0", "typebox": "*" } }, "sha512-Cn/dCcc0VAYigboKDgtWtye05UGXvXhyOPrVrQKZf8cLqjIZPRVDhAL9GGDPDkTD0rplt72Z6Ckqu4cqsIuC/Q=="],
 
     "@henrygd/queue": ["@henrygd/queue@1.2.0", "", {}, "sha512-jW/BLSTpcvExDhqJGxtIPgGr2O0IFF8XUNDwEbfCfhrXT8a4xztQ9Lv6U/vbYzYC0xVWn+3zv6YnLUh3bEFUKA=="],
 
@@ -357,7 +356,7 @@
 
     "pathe": ["pathe@2.0.3", "", {}, "sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w=="],
 
-    "pi-better-background-tasks": ["pi-better-background-tasks@0.9.1", "", { "dependencies": { "proper-lockfile": "^4.1.2" }, "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" } }, "sha512-mqNWg39n7asmKnHCNq2Zmd59TiWyG2UTKZ7C5ItSHLXnQiz0698V2bWvcaJogpy6k2LfUb4Rad8HaMZtUT7fGg=="],
+    "pi-better-background-tasks": ["pi-better-background-tasks@0.10.0", "", { "dependencies": { "proper-lockfile": "^4.1.2" }, "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" } }, "sha512-nqyt9SnmrJqlOedHeydsuVGKRWi/osrnrTiDvkKmkLUgZqbv43GAzyKpqj5pPKPpTlLGhccm1u6nnb70+PFoqQ=="],
 
     "picomatch": ["picomatch@4.0.7", "", {}, "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA=="],
 
@@ -406,8 +405,6 @@
     "typebox": ["typebox@1.4.3", "", {}, "sha512-u3nyf7ZciAv1GOijVpI0TDt9At5wmEi7lSHSlRrnjuThv1DcB7fgGBqqrz+fGZ54jAfTpOOX0JXwxSIg3pnxQA=="],
 
     "ufo": ["ufo@1.6.4", "", {}, "sha512-JFNbkD1Svwe0KvGi8GOeLcP4kAWQ609twvCdcHxq1oSL8svv39ZuSvajcD8B+5D0eL4+s1Is2D/O6KN3qcTeRA=="],
-
-    "unbash": ["unbash@6.0.1", "", {}, "sha512-0db9eS5iqybux41zLkX69nk90KTci7F7eZ+gXzEG/Q7E0tAqEBhRh5fkZvk1N7jT7QkGWqq34i8SFGPFEe1V8A=="],
 
     "unconfig": ["unconfig@7.5.0", "", { "dependencies": { "@quansync/fs": "^1.0.0", "defu": "^6.1.4", "jiti": "^2.6.1", "quansync": "^1.0.0", "unconfig-core": "7.5.0" } }, "sha512-oi8Qy2JV4D3UQ0PsopR28CzdQ3S/5A1zwsUwp/rosSbfhJ5z7b90bIyTwi/F7hCLD4SGcZVjDzd4XoUQcEanvA=="],
 

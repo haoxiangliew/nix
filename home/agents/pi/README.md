@@ -86,11 +86,9 @@ The fork repeats the session's last request, so it reads the prompt cache and ke
 
 ### `herdr-agents.ts`
 
-In herdr, pi gets a message when an agent it prompted finishes or needs input, so it doesn't have to poll. A Herdr block above the editor lists the agents pi is waiting on, with each one's state and the time since the prompt. If pi stops watching an agent first, for example because the agent exits, the message says so. A prompt sent with `--wait` gets no message, because the call itself waits.
+In herdr, the extension adds a `herdr_watch` tool. It prompts an agent or sends it keys, returns right away, and messages pi when the agent is done, idle, or blocked, so pi doesn't poll. Called with only an agent, it waits on one that's already working. A Herdr block above the editor lists the agents pi is waiting on, with each one's state and the time since the prompt. If pi stops watching an agent first, for example because the agent exits, the message says so. If the agent doesn't start working within 5 seconds of a prompt or keys, pi gets a message saying so.
 
-If pi prompts an agent or sends it keys and the extension can't tell which agent that is, it blocks the command and tells pi how to rewrite it. That happens for a name built with `$(…)`, or a call through `xargs` or with `--machine`.
-
-While pi waits on an agent, the extension also blocks commands and background tasks that check on it with `herdr agent get`, `read`, or `wait`. The block tells pi to wait for the message instead. If the agent doesn't start working within 5 seconds of a prompt or keys, pi gets a message saying so. No settings.
+The herdr skill still covers layout, starting agents, and reading output. Prompts sent from bash aren't watched. No settings.
 
 ### `mcp-ancestors.ts`
 

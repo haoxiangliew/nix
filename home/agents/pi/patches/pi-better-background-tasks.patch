@@ -1,5 +1,5 @@
 diff --git a/src/failures.ts b/src/failures.ts
-index d388d41b..5e866333 100644
+index d388d41..5e86633 100644
 --- a/src/failures.ts
 +++ b/src/failures.ts
 @@ -103,18 +103,19 @@ export function recoverDeclaredOperation(meta: BackgroundTaskMeta, at = Date.now
@@ -74,7 +74,7 @@ index d388d41b..5e866333 100644
    return pendingFailureAttention(readFailureState(failurePath(id)), Date.now(), { terminal: true });
  }
 diff --git a/src/index.ts b/src/index.ts
-index 047621e8..16524ee6 100644
+index 047621e..16524ee 100644
 --- a/src/index.ts
 +++ b/src/index.ts
 @@ -1,13 +1,15 @@
@@ -121,7 +121,7 @@ index 047621e8..16524ee6 100644
  }
 \ No newline at end of file
 diff --git a/src/navigator-provider.ts b/src/navigator-provider.ts
-index d0083e12..705fe793 100644
+index 61ac21e..b3dc928 100644
 --- a/src/navigator-provider.ts
 +++ b/src/navigator-provider.ts
 @@ -1,6 +1,8 @@
@@ -139,7 +139,7 @@ index d0083e12..705fe793 100644
  import { listMetasForOrigin, onMetaChanged, readMeta, writeMeta } from "./registry.js";
 -import { stopTask } from "./runtime.js";
 +import { stopTask, type BackgroundTaskRuntime } from "./runtime.js";
- import { observeBackgroundTaskStall } from "./stall.js";
+ import { formatBackgroundTaskStall, observeBackgroundTaskStall } from "./stall.js";
  import type { BackgroundTaskCallbackOrigin, BackgroundTaskMeta, BackgroundTaskStatus } from "./types.js";
  
 +const TERMINAL_NAVIGATOR_RETENTION_MS = 30_000;
@@ -215,20 +215,20 @@ index d0083e12..705fe793 100644
    if (meta.status === "running") return false;
    const endedAt = meta.endedAt;
 diff --git a/src/runtime.ts b/src/runtime.ts
-index 39d5ed9a..c65d6c27 100644
+index 7a81d48..71c8f22 100644
 --- a/src/runtime.ts
 +++ b/src/runtime.ts
 @@ -9,7 +9,7 @@ import type { RemoteRunner, ResolvedSshRemoteTask } from "./remote-task-preset.j
  import { ensureTaskDir, logPathFor, nextTaskId, readMeta, sandboxProfilePathFor, writeMeta } from "./registry.js";
- import { confineCommandSpec, resolveForegroundSandboxPlan } from "./sandbox.js";
+ import { confineCommandSpec, resolveForegroundSandboxPlan, sandboxProvenance } from "./sandbox.js";
  import { takeRecoverySnapshot } from "./shared-sandbox-core.js";
 -import { failurePath, readTaskIntent, recordExitFailure, recordFailure, recoverDeclaredOperation, recoverFailure, resumeFailureAttention, scheduleFailureAttention, stopFailureAttention, suspendFailureAttention, terminalFailureAttention } from "./failures.js";
 +import { failurePath, readTaskIntent, recordExitFailure, recordFailure, recoverDeclaredOperation, recoverFailure, createFailureAttention, defaultAttention, terminalFailureAttention } from "./failures.js";
  import { markFailureAttentionDelivered } from "./shared-failure-observations.js";
  import { getCallbackBatcher } from "./shared-callback-batcher.js";
  import { formatCallbackFacts } from "./output.js";
-@@ -26,6 +26,61 @@ import type {
- } from "./types.js";
+@@ -27,6 +27,61 @@ import type {
+ import { observeTaskStallAttention } from "./stall-attention.js";
  import { isTerminalStatus } from "./types.js";
  
 +export type ActiveSessionProvider = () => BackgroundTaskCallbackOrigin | undefined;
@@ -289,7 +289,7 @@ index 39d5ed9a..c65d6c27 100644
  const watcherTimers = new Map<string, ReturnType<typeof setTimeout>>();
  const remoteSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
  const processTimeoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
-@@ -46,22 +101,7 @@ const HANDOFF_LOST_GRACE_MS = 5_000;
+@@ -47,22 +102,7 @@ const HANDOFF_LOST_GRACE_MS = 5_000;
  let scheduledWorkSuspended = false;
  const REMOTE_SESSION_POLL_MS = 100;
  
@@ -312,7 +312,7 @@ index 39d5ed9a..c65d6c27 100644
  
  /** In-flight first checks of watches launched by this instance, keyed by task id. */
  const firstCheckWaiters = new Map<string, { promise: Promise<FirstWatchCheck | "suspended" | undefined>; resolve: (check: FirstWatchCheck | "suspended" | undefined) => void }>();
-@@ -71,7 +111,7 @@ const firstCheckWaiters = new Map<string, { promise: Promise<FirstWatchCheck | "
+@@ -72,7 +112,7 @@ const firstCheckWaiters = new Map<string, { promise: Promise<FirstWatchCheck | "
   * outcome when the wait ends first, and undefined when this instance did not launch the watch
   * or the watch ended without a check.
   */
@@ -321,7 +321,7 @@ index 39d5ed9a..c65d6c27 100644
    const waiter = firstCheckWaiters.get(id);
    if (!waiter) return undefined;
    const started = Date.now();
-@@ -129,7 +169,7 @@ function settleFirstCheck(id: string, check: FirstWatchCheck | "suspended" | und
+@@ -130,7 +170,7 @@ function settleFirstCheck(id: string, check: FirstWatchCheck | "suspended" | und
   * is recorded as terminal and its callback is delivered when its session resumes;
   * after Pi quits, a resumed task whose process is gone is marked lost instead.
   */
@@ -330,7 +330,7 @@ index 39d5ed9a..c65d6c27 100644
    scheduledWorkSuspended = true;
    for (const timer of watcherTimers.values()) clearTimeout(timer);
    for (const timer of remoteSessionTimers.values()) clearTimeout(timer);
-@@ -147,53 +187,16 @@ export function suspendScheduledWork(): void {
+@@ -148,53 +188,16 @@ export function suspendScheduledWork(): void {
  }
  
  /** Allow scheduling again; called at session_start before running tasks are resumed. */
@@ -386,7 +386,7 @@ index 39d5ed9a..c65d6c27 100644
    pi: ExtensionAPI,
    params: SpawnTaskParams,
    defaultCwd: string,
-@@ -481,7 +484,7 @@ function failRemoteTask(
+@@ -483,7 +486,7 @@ function failRemoteTask(
    finalize(meta, { status: "failed", reason }, pi, getActiveSession);
  }
  
@@ -395,7 +395,7 @@ index 39d5ed9a..c65d6c27 100644
    pi: ExtensionAPI,
    params: WatchTaskParams,
    defaultCwd: string,
-@@ -571,7 +574,7 @@ function resolveWatchTimeoutSeconds(timeoutSeconds: number | undefined): number
+@@ -575,7 +578,7 @@ function resolveWatchTimeoutSeconds(timeoutSeconds: number | undefined): number
    return timeoutSeconds;
  }
  
@@ -404,7 +404,7 @@ index 39d5ed9a..c65d6c27 100644
    pi: ExtensionAPI,
    meta: BackgroundTaskMeta,
    getActiveSession?: ActiveSessionProvider,
-@@ -725,7 +728,7 @@ function resolvePersistedRemoteTask(
+@@ -729,7 +732,7 @@ function resolvePersistedRemoteTask(
    }, remoteRunner);
  }
  
@@ -413,7 +413,7 @@ index 39d5ed9a..c65d6c27 100644
    pi: ExtensionAPI,
    id: string,
    getActiveSession?: ActiveSessionProvider,
-@@ -1322,4 +1325,11 @@ function extractLastState(result: { stdout: string }): unknown {
+@@ -1334,4 +1337,11 @@ function extractLastState(result: { stdout: string }): unknown {
    } catch {
      return result.stdout.slice(0, 4000);
    }
@@ -429,7 +429,7 @@ index 39d5ed9a..c65d6c27 100644
 +export const { awaitFirstWatchCheck, suspendScheduledWork, resumeScheduledWork, spawnTask, startWatchTask, resumeRunningTask, stopTask } = defaultRuntime;
 \ No newline at end of file
 diff --git a/src/shared-navigator.ts b/src/shared-navigator.ts
-index 226da4d6..e41291f7 100644
+index 226da4d..e41291f 100644
 --- a/src/shared-navigator.ts
 +++ b/src/shared-navigator.ts
 @@ -81,8 +81,10 @@ type HostDeps = {
@@ -506,19 +506,19 @@ index 226da4d6..e41291f7 100644
      const ui = activeCtx.ui;
      try { applyNavigatorFooter(ui as any, 0); } catch { /* ignore */ }
 diff --git a/src/tools.ts b/src/tools.ts
-index 383dd0f2..093acaa6 100644
+index ec6ee50..1d158a1 100644
 --- a/src/tools.ts
 +++ b/src/tools.ts
-@@ -15,7 +15,7 @@ import {
- import { readOutputControls } from "./shared-log-utils.js";
+@@ -16,7 +16,7 @@ import {
+ import { cursorKind, readOutputControls } from "./shared-log-utils.js";
  import { cancelCallbackBatch, getCallbackBatcher, setCallbackBatchContext } from "./shared-callback-batcher.js";
  import { inspectMeta, listMetasForOrigin, readMeta, writeMeta } from "./registry.js";
 -import { awaitFirstWatchCheck, FIRST_WATCH_CHECK_WAIT_MS, resumeRunningTask, spawnTask, startWatchTask, stopTask, type WatchTaskParams } from "./runtime.js";
 +import { awaitFirstWatchCheck, FIRST_WATCH_CHECK_WAIT_MS, resumeRunningTask, spawnTask, startWatchTask, stopTask, type WatchTaskParams, type BackgroundTaskRuntime } from "./runtime.js";
  import { runTaskMaintenance } from "./maintenance.js";
- import { ForegroundSandboxBlockedError } from "./sandbox.js";
- import type { BackgroundTaskCallbackOrigin, BackgroundTaskMeta } from "./types.js";
-@@ -23,6 +23,8 @@ import { isTerminalStatus } from "./types.js";
+ import { backgroundProcessDiagnosticsAccess, ForegroundSandboxBlockedError } from "./sandbox.js";
+ import { inspectTaskProcess } from "./task-diagnostics.js";
+@@ -25,6 +25,8 @@ import { isTerminalStatus } from "./types.js";
  
  export { formatLaunch } from "./output.js";
  
@@ -527,7 +527,7 @@ index 383dd0f2..093acaa6 100644
  const JsonPathSchema = Type.String({
    pattern: "^\\$",
    description: "Root-prefixed JSON path, e.g. $.status, $.terminalFailure, or $.steps[0].status. Bare keys and wildcards are unsupported.",
-@@ -190,7 +192,8 @@ const BACKGROUND_ORCHESTRATION_GUIDELINES = [
+@@ -193,7 +195,8 @@ const BACKGROUND_ORCHESTRATION_GUIDELINES = [
    "Do not treat launch as completion of the parent milestone; relevant background work must be terminal, inspected, and integrated before verification or completion.",
  ];
  
@@ -536,8 +536,8 @@ index 383dd0f2..093acaa6 100644
 +  const { resumeRunningTask, spawnTask } = runtime;
    let activeSession: BackgroundTaskCallbackOrigin | undefined;
    const getActiveSession = () => activeSession;
- 
-@@ -234,7 +237,7 @@ export function registerTools(pi: ExtensionAPI): void {
+   const schemas = new Map<string, object>();
+@@ -245,7 +248,7 @@ export function registerTools(pi: ExtensionAPI): void {
      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
        const launched = reportLaunch(() => spawnTask(pi, params, ctx.cwd, activeSession, getActiveSession));
@@ -546,7 +546,7 @@ index 383dd0f2..093acaa6 100644
        return text(launched);
      },
    });
-@@ -247,8 +250,8 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -258,8 +261,8 @@ export function registerTools(pi: ExtensionAPI): void {
      parameters: WatchParams,
      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
@@ -557,7 +557,7 @@ index 383dd0f2..093acaa6 100644
        return text(launched);
      },
    });
-@@ -296,8 +299,8 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -307,8 +310,8 @@ export function registerTools(pi: ExtensionAPI): void {
      parameters: IdParams,
      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
@@ -568,7 +568,7 @@ index 383dd0f2..093acaa6 100644
        return text(result);
      },
    });
-@@ -313,7 +316,7 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -324,7 +327,7 @@ export function registerTools(pi: ExtensionAPI): void {
      },
      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
@@ -577,7 +577,7 @@ index 383dd0f2..093acaa6 100644
      },
    });
  
-@@ -327,7 +330,7 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -338,7 +341,7 @@ export function registerTools(pi: ExtensionAPI): void {
      },
      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
@@ -586,7 +586,7 @@ index 383dd0f2..093acaa6 100644
      },
    });
  }
-@@ -383,12 +386,14 @@ async function actionText(
+@@ -407,12 +410,14 @@ async function actionText(
    ctx: ExtensionContext,
    callbackOrigin: BackgroundTaskCallbackOrigin,
    getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
@@ -603,7 +603,7 @@ index 383dd0f2..093acaa6 100644
  }
  
  async function runAction(
-@@ -397,14 +402,18 @@ async function runAction(
+@@ -421,14 +426,18 @@ async function runAction(
    ctx: ExtensionContext,
    callbackOrigin: BackgroundTaskCallbackOrigin,
    getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
@@ -624,7 +624,7 @@ index 383dd0f2..093acaa6 100644
      case "list":
        return formatList(listOptions(params, callbackOrigin));
      case "status":
-@@ -415,7 +424,7 @@ async function runAction(
+@@ -439,7 +448,7 @@ async function runAction(
        return formatLog(String(params.id), logOptions(params, callbackOrigin));
      case "stop":
        if (!params.id) return "Invalid parameters: stop requires id.";
@@ -633,7 +633,7 @@ index 383dd0f2..093acaa6 100644
      case "clear":
        return withNavigatorRefresh(ctx, formatClear(params, statusOptions(params, callbackOrigin)));
      default:
-@@ -450,7 +459,9 @@ export async function launchWatch(
+@@ -474,7 +483,9 @@ export async function launchWatch(
    getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
    waitMs = FIRST_WATCH_CHECK_WAIT_MS,
    signal?: AbortSignal,
@@ -643,7 +643,7 @@ index 383dd0f2..093acaa6 100644
    let meta: BackgroundTaskMeta;
    try {
      meta = startWatchTask(pi, params, cwd, callbackOrigin, getActiveSession);
-@@ -465,11 +476,6 @@ export async function launchWatch(
+@@ -489,11 +500,6 @@ export async function launchWatch(
    return formatLaunch(latest);
  }
  
@@ -655,7 +655,7 @@ index 383dd0f2..093acaa6 100644
  /** Origins whose session identity could not be read (the host threw). */
  const unavailableSessionOrigins = new WeakSet<BackgroundTaskCallbackOrigin>();
  
-@@ -601,7 +607,9 @@ async function formatStop(
+@@ -625,7 +631,9 @@ async function formatStop(
    _ctx: ExtensionContext,
    getActiveSession?: () => BackgroundTaskCallbackOrigin | undefined,
    options: OutputOptions = {},
