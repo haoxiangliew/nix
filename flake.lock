@@ -254,11 +254,11 @@
     "home-manager-master": {
       "flake": false,
       "locked": {
-        "lastModified": 1793029262,
-        "narHash": "sha256-CN3Y4hnAjOvvnHFbUE7ogKko0/hM3/ZWPobSpQn/qsQ=",
+        "lastModified": 1793032858,
+        "narHash": "sha256-tZHSKW8a3Dx1tCrN+ZGEqZ2nTBnry0kj2mX1UsMPl1w=",
         "owner": "nix-community",
         "repo": "home-manager",
-        "rev": "b256132d1134c8d73b99b3c33f6b8e6f7bf3727f",
+        "rev": "fb8d92387cd566d2517ed246fb6dc131873a41d0",
         "type": "github"
       },
       "original": {
