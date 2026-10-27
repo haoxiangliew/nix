@@ -32,12 +32,10 @@
     };
     direnv = {
       enable = true;
-      enableFishIntegration = true;
       nix-direnv.enable = true;
     };
     eza = {
       enable = true;
-      enableFishIntegration = true;
       icons = "auto";
       extraOptions = [
         "--group-directories-first"
@@ -52,7 +50,6 @@
     };
     fzf = {
       enable = true;
-      enableFishIntegration = true;
       defaultCommand = "fd --type f --color=always";
       defaultOptions = [ "--ansi" ];
     };
@@ -79,9 +76,6 @@
     };
     ghostty = {
       enable = true;
-      enableBashIntegration = true;
-      enableFishIntegration = true;
-      enableZshIntegration = true;
       settings = {
         font-family = "JetBrainsMono Nerd Font";
 
@@ -123,7 +117,7 @@
           background = "#22212C";
           foreground = "#F8F8F2";
           cursor-color = "#7970A9";
-          cursor-text = "#7970A9";
+          cursor-text = "#22212C";
           selection-background = "#454158";
           selection-foreground = "#F8F8F2";
         };
@@ -149,7 +143,7 @@
           background = "#F5F5F5";
           foreground = "#1F1F1F";
           cursor-color = "#635D97";
-          cursor-text = "#635D97";
+          cursor-text = "#F5F5F5";
           selection-background = "#CFCFDE";
           selection-foreground = "#1F1F1F";
         };
@@ -157,7 +151,6 @@
     };
     lazygit = {
       enable = true;
-      enableFishIntegration = true;
       settings = {
         disableStartupPopups = true;
         promptToReturnFromSubprocess = false;
@@ -181,14 +174,8 @@
       vimAlias = true;
       vimdiffAlias = true;
     };
-    nix-index = {
-      enable = true;
-      enableFishIntegration = true;
-    };
+    nix-index.enable = true;
     nix-index-database.comma.enable = true;
-    starship = {
-      enable = true;
-      enableFishIntegration = true;
-    };
+    starship.enable = true;
   };
 }
