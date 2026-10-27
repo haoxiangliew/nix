@@ -6,7 +6,9 @@ import type {
   FunctionDeclaration,
   Identifier,
   IfStatement,
+  ObjectExpression,
   Pattern,
+  Property,
   Program,
   Statement,
   VariableDeclarator,
@@ -18,6 +20,7 @@ import {
   type JavaScript,
   type SymbolReference,
   capture,
+  childNodes,
   cooked,
   declaredFunction,
   functions,
@@ -29,6 +32,7 @@ import {
   scope,
   stringLiteral,
   text,
+  walk,
 } from "./javascript.ts";
 
 function blocked(description: string): never {
@@ -487,9 +491,137 @@ function template(
     : undefined;
 }
 
-function authenticated(context: Body, options: AnyNode, token: Identifier): boolean {
-  const headers =
-    options.type === "ObjectExpression" ? optionalProperty(options, "headers") : undefined;
+function exportedBinding(context: Body, identifier: Identifier): boolean {
+  for (const node of walk(context.root)) {
+    if (
+      node.type === "ExportNamedDeclaration" &&
+      node.declaration?.type === "VariableDeclaration" &&
+      node.declaration.declarations.some((value) => context.sameBinding(value.id, identifier))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Only object spreads copy this binding without exposing the original object.
+// Reject mutation, aliases, calls, and iteration.
+function spreadOnly(context: Body, identifier: Identifier): boolean {
+  const spreads = new Set<AnyNode>();
+
+  for (const parent of walk(context.root)) {
+    if (parent.type === "ObjectExpression") {
+      for (const property of parent.properties) {
+        if (property.type === "SpreadElement") {
+          spreads.add(property);
+        }
+      }
+    }
+
+    for (const node of childNodes(parent)) {
+      if (!context.sameBinding(node, identifier)) {
+        continue;
+      }
+
+      const declaration = parent.type === "VariableDeclarator" && parent.id === node;
+      const spread = spreads.has(parent);
+
+      if (!declaration && !spread) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function spreadSource(node: AnyNode, local: Body, globals: Body): ObjectExpression | undefined {
+  if (node.type === "ObjectExpression") {
+    return node;
+  }
+
+  const value = resolve(node, local, globals);
+
+  if (
+    node.type !== "Identifier" ||
+    value?.type !== "ObjectExpression" ||
+    value.end > node.start ||
+    exportedBinding(globals, node) ||
+    !spreadOnly(globals, node)
+  ) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function nonHeaderProperty(node: Property): boolean {
+  // Getters run during spreading and could mutate the source object.
+  if (node.computed || node.kind !== "init") {
+    return false;
+  }
+
+  if (node.key.type === "Literal") {
+    return String(node.key.value) !== "headers";
+  }
+
+  return node.key.type === "Identifier" && node.key.name !== "headers";
+}
+
+function excludesHeaders(
+  node: AnyNode,
+  local: Body,
+  globals: Body,
+  checked: Map<ObjectExpression, boolean>,
+): boolean {
+  const object = spreadSource(node, local, globals);
+
+  if (!object) {
+    return false;
+  }
+
+  const cached = checked.get(object);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const safe = object.properties.every((property) =>
+    property.type === "SpreadElement"
+      ? excludesHeaders(property.argument, local, globals, checked)
+      : nonHeaderProperty(property),
+  );
+
+  checked.set(object, safe);
+
+  return safe;
+}
+
+function profileHeaders(options: AnyNode, local: Body, globals: Body): AnyNode | undefined {
+  if (options.type !== "ObjectExpression") {
+    return undefined;
+  }
+
+  const checked = new Map<ObjectExpression, boolean>();
+
+  for (const property of options.properties) {
+    if (
+      property.type === "SpreadElement" &&
+      !excludesHeaders(property.argument, local, globals, checked)
+    ) {
+      return undefined;
+    }
+  }
+
+  // Only omit spreads after proving they cannot define or overwrite headers.
+  const properties = options.properties.filter((property) => property.type !== "SpreadElement");
+
+  return optionalProperty({ ...options, properties }, "headers");
+}
+
+function authenticated(local: Body, globals: Body, options: AnyNode, token: Identifier): boolean {
+  const headers = profileHeaders(options, local, globals);
 
   if (headers?.type !== "ObjectExpression") {
     return false;
@@ -498,7 +630,7 @@ function authenticated(context: Body, options: AnyNode, token: Identifier): bool
   const authorization = optionalProperty(headers, "Authorization");
   const bearer = authorization && template(authorization, "Bearer ");
 
-  if (!bearer || bearer.suffix !== "" || !context.sameBinding(bearer.expression, token)) {
+  if (!bearer || bearer.suffix !== "" || !local.sameBinding(bearer.expression, token)) {
     return false;
   }
 
@@ -507,7 +639,12 @@ function authenticated(context: Body, options: AnyNode, token: Identifier): bool
   return !!agent && !!match(agent, "$agent()");
 }
 
-function profilePath(node: AwaitExpression, token: Identifier, local: Body): string[] {
+function profilePath(
+  node: AwaitExpression,
+  token: Identifier,
+  local: Body,
+  globals: Body,
+): string[] {
   const get = match(node.argument, "$client.get($endpoint, $options)");
 
   if (!get) {
@@ -521,7 +658,7 @@ function profilePath(node: AwaitExpression, token: Identifier, local: Body): str
     return [];
   }
 
-  if (!authenticated(local, capture(get, "options"), token)) {
+  if (!authenticated(local, globals, capture(get, "options"), token)) {
     return [];
   }
 
@@ -554,7 +691,7 @@ function readProfilePaths(fn: BlockFunction, globals: Body): string[] {
     }
   });
 
-  return awaits.flatMap((node) => profilePath(node, token, local));
+  return awaits.flatMap((node) => profilePath(node, token, local, globals));
 }
 
 interface RequestIdentity {
