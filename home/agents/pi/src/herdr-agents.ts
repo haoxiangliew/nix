@@ -19,6 +19,7 @@ import {
   truncateTail,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Type, type Static } from "typebox";
@@ -30,17 +31,21 @@ import {
   AgentList,
   HERDR_TIMEOUT_MS,
   HerdrError,
+  OutputMatched,
   PaneCurrent,
+  PaneGet,
   PaneLayout,
   PaneSplit,
   StatusEvent,
   TabCreated,
   WorktreeList,
   WorktreeOpened,
+  WorktreeRemoved,
   herdr,
   herdrJson,
   subscribe,
   type AgentInfo,
+  type WorktreeInfo,
 } from "./lib/herdr.ts";
 import { tildify, untildify } from "./lib/paths.ts";
 import { errorMessage } from "./lib/settings.ts";
@@ -117,14 +122,29 @@ const WorktreeFields = {
         "Ref a new branch starts from, such as `origin/main`. Default the checkout's HEAD.",
     }),
   ),
+  path: Type.Optional(
+    Type.String({
+      description: "An existing worktree to open, instead of `branch` and `base`.",
+    }),
+  ),
 };
 
-const WorktreeParams = Type.Object({
-  ...WorktreeFields,
-  cwd: Type.Optional(
-    Type.String({
-      description:
-        "Any directory in the repository, including another worktree. Default your own directory.",
+const CwdParam = Type.Optional(
+  Type.String({
+    description:
+      "Any directory in the repository, including another worktree. Default your own directory.",
+  }),
+);
+
+const WorktreeParams = Type.Object({ ...WorktreeFields, cwd: CwdParam });
+
+const RemoveParams = Type.Object({
+  branch: Type.Optional(Type.String({ description: "Branch of the worktree to remove" })),
+  path: Type.Optional(Type.String({ description: "Path of the worktree to remove" })),
+  cwd: CwdParam,
+  force: Type.Optional(
+    Type.Boolean({
+      description: "Discard the worktree's uncommitted changes. Only when the user says to.",
     }),
   ),
 });
@@ -151,20 +171,50 @@ const StartParams = Type.Object({
   ),
 });
 
+// Agent names can't contain `:`, so a target with one is a pane ID.
+const TargetParam = Type.String({
+  description: "Agent name, or the ID of any pane, such as one herdr_run opened",
+});
+
 const ReadParams = Type.Object({
-  agent: AgentParam,
+  target: TargetParam,
   lines: Type.Optional(
     Type.Integer({ minimum: 1, maximum: 1000, description: "Lines to read. Default 120." }),
   ),
   source: Type.Optional(
     Type.Union([Type.Literal("recent"), Type.Literal("visible")], {
       description:
-        "`recent` (default) reads scrollback, or only the screen while the agent isn't idle. `visible` reads only the screen.",
+        "`recent` (default) reads scrollback, or only the screen while an agent isn't idle. `visible` reads only the screen.",
     }),
   ),
 });
 
-const CloseParams = Type.Object({ agent: AgentParam });
+const TargetParams = Type.Object({ target: TargetParam });
+
+const RunParams = Type.Object({
+  command: Type.String({ description: "Shell command to run" }),
+  label: Type.Optional(
+    Type.String({ description: "Name for the pane, and its tab if it gets one" }),
+  ),
+  placement: Type.Optional(
+    Type.Union([Type.Literal("split"), Type.Literal("tab")], {
+      description: "`split` (default) splits your pane. `tab` opens a new tab in your workspace.",
+    }),
+  ),
+  cwd: Type.Optional(Type.String({ description: "Working directory. Default your own." })),
+  wait_for: Type.Optional(
+    Type.String({
+      description: "Regular expression to wait for in the output, such as `listening on`",
+    }),
+  ),
+  timeout_seconds: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: 600,
+      description: "How long to wait for `wait_for`. Default 60.",
+    }),
+  ),
+});
 
 interface Checkout {
   path: string;
@@ -181,6 +231,10 @@ interface Placed {
   pane: string;
   where: string;
 }
+
+type Target =
+  | { kind: "agent"; pane: string; name?: string }
+  | { kind: "pane"; pane: string; tab: string };
 
 interface Agent {
   pane: string;
@@ -297,16 +351,110 @@ function nonBlank(output: string, limit: number): string {
     .join("\n");
 }
 
+function checkWorktreeRequest({ path, branch, base }: Static<typeof WorktreeParams>): void {
+  if (path !== undefined && (branch !== undefined || base !== undefined)) {
+    throw new Error("Pass `path` to open an existing worktree, or `branch` and `base`, not both.");
+  }
+}
+
+// Opening a worktree again would rename its workspace, so one that's open is used as it is.
+function alreadyOpen(existing: WorktreeInfo | undefined): Checkout | undefined {
+  const openIn = existing?.open_workspace_id;
+
+  if (existing === undefined || openIn === undefined || openIn === null) {
+    return undefined;
+  }
+
+  return {
+    path: existing.path,
+    branch: existing.branch ?? undefined,
+    workspace: openIn,
+    reused: true,
+  };
+}
+
+// The pane shows the command as it runs, so a pattern that matches the command matches right away.
+// herdr uses Rust's regex syntax, so a pattern JavaScript can't compile goes to herdr unchecked.
+function checkWaitFor({ command, wait_for: pattern }: Static<typeof RunParams>): void {
+  if (pattern === undefined) {
+    return;
+  }
+
+  let regex: RegExp;
+
+  try {
+    regex = new RegExp(pattern);
+  } catch {
+    return;
+  }
+
+  if (regex.test(command)) {
+    throw new Error(
+      `\`wait_for\` matches the command itself, which the pane shows as it runs. Use a pattern only its output has.`,
+    );
+  }
+}
+
+// Refuses what herdr can't remove, and the worktree pi runs in, even from another workspace.
+async function removable(
+  repo: string,
+  existing: WorktreeInfo | undefined,
+  branch: string | undefined,
+  home: string,
+): Promise<WorktreeInfo> {
+  if (existing === undefined) {
+    throw new Error(`No worktree of ${tildify(repo)} has branch \`${branch}\`.`);
+  }
+
+  if (existing.path === repo) {
+    throw new Error(
+      `${tildify(repo)} is the repository's main checkout, which herdr doesn't remove.`,
+    );
+  }
+
+  // herdr lists real paths, so pi's directory is compared as one too.
+  const here = await realpath(home);
+
+  if (here === existing.path || here.startsWith(`${existing.path}/`)) {
+    throw new Error(
+      `You run in ${tildify(existing.path)}, so removing it would remove your own directory.`,
+    );
+  }
+
+  return existing;
+}
+
 function flag(name: string, value: string | undefined): string[] {
   return value === undefined ? [] : [name, value];
 }
 
-function describe({ path, branch }: Checkout): string {
+function describe({ path, branch }: Pick<Checkout, "path" | "branch">): string {
   return `worktree ${tildify(path)}${branch === undefined ? "" : ` on \`${branch}\``}`;
+}
+
+// Keeps the last lines with text. One line of a log can be huge, so the output also gets the byte
+// limit of pi's own bash output. Returns a note when it cuts, then the output.
+function trimRead(read: string, lines: number): string {
+  const output = truncateTail(nonBlank(read, lines), {
+    maxLines: lines,
+    maxBytes: DEFAULT_MAX_BYTES,
+  });
+
+  const note = output.truncated
+    ? ` Its output is cut to the last ${formatSize(DEFAULT_MAX_BYTES)}.`
+    : "";
+
+  return `${note}\n\n${output.content}`;
 }
 
 function label(pane: string, name: string | undefined): string {
   return name === undefined ? `\`${pane}\`` : `\`${name}\` (\`${pane}\`)`;
+}
+
+function targetLabel(target: Target): string {
+  return target.kind === "agent"
+    ? `herdr agent ${label(target.pane, target.name)}`
+    : `pane \`${target.pane}\``;
 }
 
 function agentLine(agent: AgentInfo, ownPane: string): string {
@@ -614,7 +762,8 @@ export default function (pi: ExtensionAPI) {
       name: agent.name,
       armed: true,
       active: agent.status === "working",
-      status: prompted ? "prompted" : agent.status,
+      // herdr sends no event when a prompt reaches a busy agent, so a busy one shows as working.
+      status: prompted && agent.status !== "working" ? "prompted" : agent.status,
       since: Date.now(),
       arm: watch.arm + 1,
     });
@@ -848,7 +997,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     throw new Error(
-      `Your pane is ${rect.width}x${rect.height}, too small to split again. Start the agent with \`placement: "tab"\`, or close an agent you started with herdr_close.`,
+      `Your pane is ${rect.width}x${rect.height}, too small to split again. Use \`placement: "tab"\`, or close a pane you started with herdr_close.`,
     );
   }
 
@@ -930,6 +1079,28 @@ export default function (pi: ExtensionAPI) {
     return ["worktree", "create", "--cwd", repo, ...flag("--branch", branch), "--base", commit];
   }
 
+  // Finds the worktree that `path` or `branch` names, and the repository's main checkout. A path is
+  // listed from itself, so it can be in another repository.
+  async function locate(
+    cwd: string,
+    { branch, path: wanted }: { branch?: string; path?: string },
+    signal: AbortSignal | undefined,
+  ): Promise<{ repo: string; existing: WorktreeInfo | undefined }> {
+    // herdr lists real paths, such as /private/tmp for /tmp.
+    const at = wanted === undefined ? undefined : await realpath(resolve(cwd, untildify(wanted)));
+    const { repo, worktrees } = await worktreesOf(at ?? cwd, signal);
+
+    const existing = worktrees.find((worktree) =>
+      at === undefined ? branch !== undefined && worktree.branch === branch : worktree.path === at,
+    );
+
+    if (at !== undefined && existing === undefined) {
+      throw new Error(`${tildify(at)} isn't a worktree of its repository.`);
+    }
+
+    return { repo, existing };
+  }
+
   // git checks a branch out in one worktree only, so a branch that has one reuses it. Either way,
   // herdr opens the worktree in its own workspace.
   async function openWorktree(
@@ -938,12 +1109,10 @@ export default function (pi: ExtensionAPI) {
     name: string | undefined,
     signal: AbortSignal | undefined,
   ): Promise<Checkout> {
-    const { branch, base } = request;
-    const { repo, worktrees } = await worktreesOf(cwd, signal);
+    checkWorktreeRequest(request);
 
-    const existing = worktrees.find(
-      (worktree) => branch !== undefined && worktree.branch === branch,
-    );
+    const { branch, base } = request;
+    const { repo, existing } = await locate(cwd, request, signal);
 
     if (existing !== undefined && base !== undefined) {
       throw new Error(
@@ -951,11 +1120,10 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    const openIn = existing?.open_workspace_id;
+    const reused = alreadyOpen(existing);
 
-    // Opening it again would rename its workspace.
-    if (existing !== undefined && openIn !== undefined && openIn !== null) {
-      return { path: existing.path, branch, workspace: openIn, reused: true };
+    if (reused !== undefined) {
+      return reused;
     }
 
     const args = await worktreeArgs(cwd, repo, request, existing?.path, signal);
@@ -978,6 +1146,76 @@ export default function (pi: ExtensionAPI) {
       pane: wasOpen === true ? undefined : root.pane_id,
       reused: existing !== undefined,
     };
+  }
+
+  // herdr removes a worktree by its workspace, so one that isn't open gets opened first.
+  async function workspaceOf(
+    repo: string,
+    worktree: WorktreeInfo,
+    signal: AbortSignal | undefined,
+  ): Promise<{ workspace: string; opened: boolean }> {
+    const openIn = worktree.open_workspace_id;
+
+    if (openIn !== undefined && openIn !== null) {
+      return { workspace: openIn, opened: false };
+    }
+
+    const args = ["worktree", "open", "--cwd", repo, "--path", worktree.path, "--no-focus"];
+    const opened = await herdrJson(pi, WorktreeOpened, args, WORKTREE_TIMEOUT_MS, signal);
+
+    // Another client can open it after the list, and its workspace isn't this call's to close.
+    const { workspace, already_open: wasOpen } = opened.result;
+
+    return { workspace: workspace.workspace_id, opened: wasOpen !== true };
+  }
+
+  // A workspace this call opened only to remove the worktree closes again if herdr refuses, such
+  // as for uncommitted changes.
+  async function removeIn(
+    worktree: WorktreeInfo,
+    { workspace, opened }: { workspace: string; opened: boolean },
+    force: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const args = ["worktree", "remove", "--workspace", workspace, ...(force ? ["--force"] : [])];
+    const remove = () => herdrJson(pi, WorktreeRemoved, args, WORKTREE_TIMEOUT_MS, signal);
+
+    await (opened ? orClose(["workspace", "close", workspace], remove) : remove()).catch(
+      (cause: unknown) => {
+        throw cause instanceof HerdrError && cause.code === "dirty_worktree_requires_force"
+          ? new Error(
+              `${tildify(worktree.path)} has uncommitted changes. Commit them, or ask the user before you remove it with \`force: true\`.`,
+              { cause },
+            )
+          : cause;
+      },
+    );
+  }
+
+  async function removeWorktree(
+    cwd: string,
+    home: string,
+    params: Static<typeof RemoveParams>,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    const { repo, existing } = await locate(cwd, params, signal);
+    const worktree = await removable(repo, existing, params.branch, home);
+
+    // Only an open workspace can be pi's, so this check comes before anything gets opened.
+    if (worktree.open_workspace_id === (await currentPane(signal)).workspace) {
+      throw new Error("You run in that worktree's workspace, so removing it would end you.");
+    }
+
+    const target = await workspaceOf(repo, worktree, signal);
+
+    await removeIn(worktree, target, params.force === true, signal);
+
+    const kept =
+      worktree.branch === undefined || worktree.branch === null
+        ? ""
+        : ` Its branch \`${worktree.branch}\` is kept.`;
+
+    return `Removed ${describe({ path: worktree.path })} and closed its herdr workspace ${target.workspace}, which ended anything running there.${kept}`;
   }
 
   async function worktreePane(
@@ -1003,8 +1241,8 @@ export default function (pi: ExtensionAPI) {
       return worktreePane(params, cwd, signal);
     }
 
-    if (params.branch !== undefined || params.base !== undefined) {
-      throw new Error('`branch` and `base` need `placement: "worktree"`.');
+    if (params.branch !== undefined || params.base !== undefined || params.path !== undefined) {
+      throw new Error('`branch`, `base`, and `path` need `placement: "worktree"`.');
     }
 
     if (params.placement === "tab") {
@@ -1028,8 +1266,25 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // A failed call leaves a pane or workspace it opened, which `close` closes before this rethrows.
+  async function orClose<T>(close: string[], task: () => Promise<T>): Promise<T> {
+    try {
+      return await task();
+    } catch (error) {
+      await run(close).catch((cause: unknown) => {
+        throw new AggregateError(
+          [error, cause],
+          `${errorMessage(error)}. Cleaning up with \`herdr ${close.join(" ")}\` failed too: ${errorMessage(cause)}`,
+          { cause: error },
+        );
+      });
+
+      throw error;
+    }
+  }
+
   // Returns whether the agent is ready. herdr keeps an agent that's blocked during startup, so its
-  // pane stays. Any other failure leaves an empty pane, which this closes.
+  // pane stays.
   async function startAgent(
     pane: string,
     params: Static<typeof StartParams>,
@@ -1038,30 +1293,103 @@ export default function (pi: ExtensionAPI) {
   ): Promise<boolean> {
     const extra = params.args === undefined ? [] : ["--", ...params.args];
     const args = ["agent", "start", params.name, "--kind", kind, "--pane", pane];
+    const timeout = ["--timeout", String(START_TIMEOUT_MS)];
 
-    try {
-      await run(
-        [...args, "--timeout", String(START_TIMEOUT_MS), ...extra],
-        START_TIMEOUT_MS + 5000,
-        signal,
-      );
+    return orClose(["pane", "close", pane], () =>
+      run([...args, ...timeout, ...extra], START_TIMEOUT_MS + 5000, signal).then(
+        () => true,
+        (cause: unknown) => {
+          if (cause instanceof HerdrError && cause.code === "agent_not_ready") {
+            return false;
+          }
 
-      return true;
-    } catch (error) {
-      if (error instanceof HerdrError && error.code === "agent_not_ready") {
-        return false;
+          throw cause;
+        },
+      ),
+    );
+  }
+
+  async function targetOf(target: string, signal: AbortSignal | undefined): Promise<Target> {
+    if (!target.includes(":")) {
+      const { pane, name } = await agentOf(target, signal);
+
+      return { kind: "agent", pane, name };
+    }
+
+    const got = await herdrJson(pi, PaneGet, ["pane", "get", target], HERDR_TIMEOUT_MS, signal);
+    const { pane_id: pane, tab_id: tab, agent } = got.result.pane;
+
+    return agent === undefined || agent === null
+      ? { kind: "pane", pane, tab }
+      : { kind: "agent", pane };
+  }
+
+  // Turns herdr's timeout into a message that names the pattern and the wait.
+  async function waitOutput(
+    pane: string,
+    pattern: string,
+    seconds: number,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    const args = ["pane", "wait-output", pane, "--regex", pattern, "--source", "recent-unwrapped"];
+    const timeout = seconds * 1000;
+
+    const matched = await herdrJson(
+      pi,
+      OutputMatched,
+      [...args, "--timeout", String(timeout)],
+      timeout + 5000,
+      signal,
+    ).catch((cause: unknown) => {
+      throw cause instanceof HerdrError && cause.code === "timeout"
+        ? new Error(`no line matched \`${pattern}\` within ${seconds} seconds`, { cause })
+        : cause;
+    });
+
+    return matched.result.matched_line;
+  }
+
+  async function runInPane(
+    params: Static<typeof RunParams>,
+    cwd: string,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    checkWaitFor(params);
+
+    const { label: name, placement } = params;
+    const { pane, where } = await openPane({ name: name ?? "run", placement }, cwd, signal);
+
+    await orClose(["pane", "close", pane], async () => {
+      if (name !== undefined) {
+        await run(["pane", "rename", pane, name], HERDR_TIMEOUT_MS, signal);
       }
 
-      await run(["pane", "close", pane]).catch((cause: unknown) => {
-        throw new AggregateError(
-          [error, cause],
-          `${errorMessage(error)}. Closing its new pane ${pane} failed too: ${errorMessage(cause)}`,
-          { cause: error },
-        );
-      });
+      await run(["pane", "run", pane, params.command], SEND_TIMEOUT_MS, signal);
+    });
 
-      throw error;
+    const running = `Running \`${params.command}\` in pane \`${pane}\`, in ${where}.`;
+
+    if (params.wait_for === undefined) {
+      return `${running} Read its output with herdr_read, and close it with herdr_close.`;
     }
+
+    const seconds = params.timeout_seconds ?? 60;
+
+    // The command already runs, so a failed wait says where, for pi to read or close it.
+    const line = await waitOutput(pane, params.wait_for, seconds, signal).catch(
+      (cause: unknown) => {
+        throw new Error(
+          `${running} Waiting for its output failed: ${errorMessage(cause)}. The command still runs there. Read it with herdr_read, or close it with herdr_close.`,
+          { cause },
+        );
+      },
+    );
+
+    // herdr returns the whole matching line, and one line of a log can be huge.
+    const matched = truncateTail(line.trim(), { maxBytes: DEFAULT_MAX_BYTES });
+    const cut = matched.truncated ? ` It's cut to the last ${formatSize(DEFAULT_MAX_BYTES)}.` : "";
+
+    return `${running} Its output matched \`${params.wait_for}\`:${cut}\n\n${matched.content}`;
   }
 
   const startTool = defineTool({
@@ -1072,7 +1400,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet:
       "Start a herdr agent in a new pane, tab, or worktree, with an optional first task",
     promptGuidelines: [
-      "Use the herdr_* tools for herdr agents instead of the herdr CLI.",
+      "Use the herdr_* tools instead of the herdr CLI.",
       'Start herdr agents with herdr_start, with a short unique name and the first task as `prompt`. Use `placement: "tab"` only when the user asks for a tab, and `placement: "worktree"` when the agent should work on its own branch.',
     ],
     parameters: StartParams,
@@ -1112,11 +1440,10 @@ export default function (pi: ExtensionAPI) {
     name: "herdr_worktree",
     label: "Herdr Worktree",
     description:
-      'Create a git worktree through herdr, or reuse the one a branch already has, and open it in its own herdr workspace. Returns its path, so you can work in it yourself. To have an agent work in a worktree, use herdr_start with `placement: "worktree"` instead.',
-    promptSnippet: "Create or reuse a git worktree through herdr",
+      'Create a git worktree through herdr, or open an existing one by `path` or `branch`, in its own herdr workspace. Returns its path, so you can work in it yourself. To have an agent work in a worktree, use herdr_start with `placement: "worktree"` instead.',
+    promptSnippet: "Create or open a git worktree through herdr",
     promptGuidelines: [
-      "Make git worktrees with herdr_worktree, or with herdr_start for an agent, instead of `git worktree add`, so they show up in herdr. This includes checkouts for reviewing a PR.",
-      "Leave worktrees in place when you're done. The user removes them in herdr.",
+      "Make, open, and remove git worktrees with herdr_worktree, herdr_start, and herdr_worktree_remove instead of `git worktree add` or `git worktree remove`, so herdr keeps track of them. This includes checkouts for reviewing a PR.",
     ],
     parameters: WorktreeParams,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -1127,6 +1454,27 @@ export default function (pi: ExtensionAPI) {
       return text(
         `${how} ${describe(checkout)}, in herdr workspace ${checkout.workspace}. Work there with absolute paths, or \`cd\` into it in bash.`,
       );
+    },
+  });
+
+  const removeTool = defineTool({
+    name: "herdr_worktree_remove",
+    label: "Herdr Worktree Remove",
+    description:
+      "Remove a git worktree through herdr and close its workspace, which ends any agent running there. Its branch is kept. herdr refuses a worktree with uncommitted changes unless `force` is set.",
+    promptSnippet: "Remove a git worktree through herdr",
+    promptGuidelines: [
+      "Remove a worktree with herdr_worktree_remove when you made it and its work is committed and done, or when the user asks. Pass `force: true` only when the user says to discard its uncommitted changes.",
+    ],
+    parameters: RemoveParams,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if ((params.branch === undefined) === (params.path === undefined)) {
+        throw new Error("Pass either `branch` or `path`.");
+      }
+
+      const cwd = resolve(ctx.cwd, untildify(params.cwd ?? "."));
+
+      return text(await removeWorktree(cwd, ctx.cwd, params, signal));
     },
   });
 
@@ -1160,33 +1508,47 @@ export default function (pi: ExtensionAPI) {
     const source = history ? "recent-unwrapped" : "visible";
     const raw = String(lines * READ_SLACK);
     const args = ["agent", "read", pane, "--source", source, "--lines", raw];
-    const read = nonBlank(await run(args, READ_TIMEOUT_MS, signal), lines);
-    // One line of a log can be huge, so the output gets the byte limit of pi's own bash output.
-    const output = truncateTail(read, { maxLines: lines, maxBytes: DEFAULT_MAX_BYTES });
+    const output = trimRead(await run(args, READ_TIMEOUT_MS, signal), lines);
+    const screenOnly = params.source !== "visible" && !history;
+    const note = screenOnly ? " It isn't idle, so this is only its screen." : "";
 
-    const notes = [
-      params.source !== "visible" && !history ? " It isn't idle, so this is only its screen." : "",
-      output.truncated ? ` Its output is cut to the last ${formatSize(DEFAULT_MAX_BYTES)}.` : "",
-    ].join("");
+    return `Herdr agent ${label(pane, agent.name)} is ${agent.status}.${note}${output}`;
+  }
 
-    return `Herdr agent ${label(pane, agent.name)} is ${agent.status}.${notes}\n\n${output.content}`;
+  async function readPlain(
+    pane: string,
+    params: Static<typeof ReadParams>,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    const lines = params.lines ?? 120;
+    const source = params.source === "visible" ? "visible" : "recent-unwrapped";
+    const args = ["pane", "read", pane, "--source", source, "--lines", String(lines * READ_SLACK)];
+
+    return `Pane \`${pane}\` runs no agent.${trimRead(await run(args, READ_TIMEOUT_MS, signal), lines)}`;
   }
 
   const readTool = defineTool({
     name: "herdr_read",
     label: "Herdr Read",
     description:
-      "Read a herdr agent's state and recent output, without blank lines. Read an agent after its message arrives.",
-    promptSnippet: "Read a herdr agent's state and recent output",
+      "Read a herdr agent's state and recent output, or any pane's output, without blank lines. Read an agent after its message arrives.",
+    promptSnippet: "Read a herdr agent's state and recent output, or a pane's output",
     promptGuidelines: [
       "If herdr_read doesn't show a herdr agent's whole response, ask the agent to write it to a file and reply with the path, then read the file.",
     ],
     parameters: ReadParams,
     async execute(_toolCallId, params, signal) {
-      const { pane } = await agentOf(params.agent, signal);
+      const target = await targetOf(params.target, signal);
+      const { pane } = target;
 
       // herdr collects history by scrolling the agent, which a prompt sent meanwhile cuts short.
-      return text(await serial(pane, () => readPane(pane, params, signal)));
+      return text(
+        await serial(pane, () =>
+          target.kind === "agent"
+            ? readPane(pane, params, signal)
+            : readPlain(pane, params, signal),
+        ),
+      );
     },
   });
 
@@ -1209,37 +1571,77 @@ export default function (pi: ExtensionAPI) {
   const closeTool = defineTool({
     name: "herdr_close",
     label: "Herdr Close",
-    description: "Close a herdr agent's pane, which ends the agent.",
-    promptSnippet: "Close a herdr agent's pane",
+    description: "Close a herdr pane, which ends the agent or command running in it.",
+    promptSnippet: "Close a herdr agent's or command's pane",
     promptGuidelines: [
-      "Close only herdr agents you started, unless the user asks you to close others.",
+      "Close only herdr agents and panes you started, unless the user asks you to close others.",
     ],
-    parameters: CloseParams,
+    parameters: TargetParams,
     async execute(_toolCallId, params, signal) {
-      const agent = await agentOf(params.agent, signal);
-      const { pane } = await currentPane(signal);
+      const target = await targetOf(params.target, signal);
+      const { pane } = target;
 
-      if (agent.pane === pane) {
+      if (pane === (await currentPane(signal)).pane) {
         throw new Error("That's your own pane.");
       }
 
-      await serial(agent.pane, async () => {
-        await withoutWatch(agent.pane, () =>
-          run(["pane", "close", agent.pane], HERDR_TIMEOUT_MS, signal),
-        );
-        unwatch(agent.pane);
+      await serial(pane, async () => {
+        await withoutWatch(pane, () => run(["pane", "close", pane], HERDR_TIMEOUT_MS, signal));
+        unwatch(pane);
       });
 
-      return text(`Closed herdr agent ${label(agent.pane, agent.name)} and its pane.`);
+      return text(
+        `Closed ${targetLabel(target)}${target.kind === "agent" ? " and its pane" : ""}.`,
+      );
+    },
+  });
+
+  const runTool = defineTool({
+    name: "herdr_run",
+    label: "Herdr Run",
+    description:
+      "Run a shell command in a new herdr pane next to yours, or in a new tab, where the user can watch it. With `wait_for`, wait until its output matches. The user's focus stays where it is.",
+    promptSnippet: "Run a command in a new herdr pane the user can watch",
+    promptGuidelines: [
+      "Use herdr_run for a command the user should see in herdr, such as a dev server. Run commands only you need with bash or background tasks.",
+    ],
+    parameters: RunParams,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const cwd = resolve(ctx.cwd, untildify(params.cwd ?? "."));
+
+      return text(await runInPane(params, cwd, signal));
+    },
+  });
+
+  const focusTool = defineTool({
+    name: "herdr_focus",
+    label: "Herdr Focus",
+    description:
+      "Switch the user's herdr view to an agent, or to the tab of a pane that runs none.",
+    promptSnippet: "Switch the user's herdr view to an agent or pane",
+    promptGuidelines: ["Use herdr_focus only when the user asks to see an agent or pane."],
+    parameters: TargetParams,
+    async execute(_toolCallId, params, signal) {
+      const target = await targetOf(params.target, signal);
+
+      const args =
+        target.kind === "agent" ? ["agent", "focus", target.pane] : ["tab", "focus", target.tab];
+
+      await run(args, HERDR_TIMEOUT_MS, signal);
+
+      return text(`Focused ${targetLabel(target)}.`);
     },
   });
 
   pi.registerTool(startTool);
   pi.registerTool(worktreeTool);
+  pi.registerTool(removeTool);
   pi.registerTool(watchTool);
   pi.registerTool(readTool);
   pi.registerTool(agentsTool);
   pi.registerTool(closeTool);
+  pi.registerTool(runTool);
+  pi.registerTool(focusTool);
 
   pi.on("session_start", async (_event, ctx) => {
     context = ctx;

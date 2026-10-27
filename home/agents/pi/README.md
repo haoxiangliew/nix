@@ -86,20 +86,23 @@ The fork repeats the session's last request, so it reads the prompt cache and ke
 
 ### `herdr-agents.ts`
 
-In herdr, pi runs other agents with tools instead of the herdr CLI. pi doesn't get the herdr skill, but Claude Code and Codex still do.
+In herdr, pi uses tools instead of the herdr CLI for most of what the herdr skill covers. pi doesn't get the herdr skill, but Claude Code and Codex still do. Remote machines (`herdr --machine`) aren't covered, because the tools watch agents on the local herdr server.
 
-| Tool             | What it does                                                                                                                     |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `herdr_start`    | Starts an agent in a new pane next to pi's, a new tab, or a git worktree, and can give it a first task. Focus stays where it is. |
-| `herdr_worktree` | Creates a git worktree through herdr, or reuses the one a branch already has, for pi's own work such as reviewing a PR.          |
-| `herdr_watch`    | Prompts an agent or sends it keys. With only an agent, waits on one that's already working.                                      |
-| `herdr_read`     | Shows an agent's state and recent output, without blank lines and divider lines.                                                 |
-| `herdr_agents`   | Lists the agents in herdr, with pi's own pane marked.                                                                            |
-| `herdr_close`    | Closes an agent's pane.                                                                                                          |
+| Tool                    | What it does                                                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `herdr_start`           | Starts an agent in a new pane next to pi's, a new tab, or a git worktree, and can give it a first task. Focus stays where it is. |
+| `herdr_worktree`        | Creates a git worktree through herdr, or opens an existing one by branch or path, for pi's own work such as reviewing a PR.      |
+| `herdr_worktree_remove` | Removes a worktree through herdr and closes its workspace. Its branch is kept.                                                   |
+| `herdr_watch`           | Prompts an agent or sends it keys. With only an agent, waits on one that's already working.                                      |
+| `herdr_run`             | Runs a command in a new pane or tab you can watch. Can wait for a line of output, such as a server's ready message.              |
+| `herdr_read`            | Shows an agent's state and recent output, or any pane's output, without blank lines and divider lines.                           |
+| `herdr_agents`          | Lists the agents in herdr, with pi's own pane marked.                                                                            |
+| `herdr_close`           | Closes an agent's or a command's pane.                                                                                           |
+| `herdr_focus`           | Switches your herdr view to an agent, or to a pane's tab, when you ask to see it.                                                |
 
 A prompt returns right away, and pi gets a message when the agent is done, idle, or blocked, so it doesn't poll. If the agent doesn't start working within 5 seconds of a prompt, the message says so. Keys, such as Esc to interrupt, wait 2 seconds and return the agent's state and the last 20 lines of its screen. If the agent is still working, pi also gets a message when it settles.
 
-Worktrees go in herdr's worktree directory. Each opens in its own workspace, in the space of the repository's main checkout, so it shows up in herdr. pi can start from any directory in the repository, including another worktree, and a new branch starts from the commit there unless `base` says otherwise. If the branch already has a worktree, the tools reuse it. When its workspace is already open, `herdr_start` opens a new tab there rather than taking the first pane, which may be in use. pi leaves worktrees in place for you to remove in herdr.
+Worktrees go in herdr's worktree directory. Each opens in its own workspace, in the space of the repository's main checkout, so it shows up in herdr. pi can start from any directory in the repository, including another worktree, and a new branch starts from the commit there unless `base` says otherwise. If the branch already has a worktree, the tools reuse it. When its workspace is already open, `herdr_start` opens a new tab there rather than taking the first pane, which may be in use. Removing a worktree ends anything running in its workspace. herdr refuses one with uncommitted changes unless pi passes `force`, which it does only when you say to. pi removes a worktree it made once its work is committed and done, or when you ask. It won't remove the main checkout or the worktree it runs in.
 
 A Herdr block above the editor lists the agents pi is waiting on, with each one's state and the time since the prompt. If pi stops watching an agent first, for example because the agent exits, the message says so. No settings.
 

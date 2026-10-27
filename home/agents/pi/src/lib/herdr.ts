@@ -50,6 +50,22 @@ const Pane = Type.Object({ pane_id: Type.String() });
 
 export const PaneSplit = Type.Object({ result: Type.Object({ pane: Pane }) });
 
+// herdr leaves out `agent`, or sends null, for a pane that runs none.
+export const PaneGet = Type.Object({
+  result: Type.Object({
+    pane: Type.Object({
+      pane_id: Type.String(),
+      tab_id: Type.String(),
+      agent: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    }),
+  }),
+});
+
+// herdr answers a wait only once a line matches, so the line is always there.
+export const OutputMatched = Type.Object({
+  result: Type.Object({ matched_line: Type.String() }),
+});
+
 export const PaneCurrent = Type.Object({
   result: Type.Object({
     pane: Type.Object({ pane_id: Type.String(), workspace_id: Type.String() }),
@@ -63,6 +79,12 @@ const Worktree = Type.Object({
   path: Type.String(),
   branch: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   open_workspace_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+});
+
+export type WorktreeInfo = Static<typeof Worktree>;
+
+export const WorktreeRemoved = Type.Object({
+  result: Type.Object({ workspace_id: Type.String(), path: Type.String() }),
 });
 
 export const WorktreeList = Type.Object({

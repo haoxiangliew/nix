@@ -201,6 +201,7 @@ in
                   "bg_task"
                   "bg_task_spawn"
                   "bg_task_watch"
+                  "herdr_run"
                 ]
                 (
                   lib.const {
