@@ -16,9 +16,9 @@ import type {
 
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { homedir } from "node:os";
 import { Type, type Static } from "typebox";
 
+import { tildify } from "./lib/paths.ts";
 import { loadOrReport } from "./lib/settings.ts";
 
 const SEGMENTS = [
@@ -94,12 +94,6 @@ function formatTokens(tokens: number): string {
   }
 
   return `${tokens}`;
-}
-
-function formatCwd(cwd: string): string {
-  const home = homedir();
-
-  return cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd;
 }
 
 function contextColor(percent: number | null): "muted" | "warning" | "error" {
@@ -344,7 +338,7 @@ export default function (pi: ExtensionAPI) {
               const branch = footerData.getGitBranch();
 
               return [
-                formatCwd(ctx.cwd) + (branch === null ? "" : theme.fg("muted", ` (${branch})`)),
+                tildify(ctx.cwd) + (branch === null ? "" : theme.fg("muted", ` (${branch})`)),
               ];
             },
             context: () => {

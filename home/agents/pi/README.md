@@ -86,9 +86,19 @@ The fork repeats the session's last request, so it reads the prompt cache and ke
 
 ### `herdr-agents.ts`
 
-In herdr, the extension adds a `herdr_watch` tool. It prompts an agent or sends it keys, returns right away, and messages pi when the agent is done, idle, or blocked, so pi doesn't poll. Called with only an agent, it waits on one that's already working. A Herdr block above the editor lists the agents pi is waiting on, with each one's state and the time since the prompt. If pi stops watching an agent first, for example because the agent exits, the message says so. If the agent doesn't start working within 5 seconds of a prompt or keys, pi gets a message saying so.
+In herdr, pi runs other agents with tools instead of the herdr CLI. pi doesn't get the herdr skill, but Claude Code and Codex still do.
 
-The herdr skill still covers layout, starting agents, and reading output. Prompts sent from bash aren't watched. No settings.
+| Tool           | What it does                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `herdr_start`  | Starts an agent in a new pane next to pi's, or in a new tab, and can give it a first task. Focus stays where it is. |
+| `herdr_watch`  | Prompts an agent or sends it keys. With only an agent, waits on one that's already working.                         |
+| `herdr_read`   | Shows an agent's state and recent output, without blank lines and divider lines.                                    |
+| `herdr_agents` | Lists the agents in herdr, with pi's own pane marked.                                                               |
+| `herdr_close`  | Closes an agent's pane.                                                                                             |
+
+A prompt returns right away, and pi gets a message when the agent is done, idle, or blocked, so it doesn't poll. If the agent doesn't start working within 5 seconds of a prompt, the message says so. Keys, such as Esc to interrupt, wait 2 seconds and return the agent's state and the last 20 lines of its screen. If the agent is still working, pi also gets a message when it settles.
+
+A Herdr block above the editor lists the agents pi is waiting on, with each one's state and the time since the prompt. If pi stops watching an agent first, for example because the agent exits, the message says so. No settings.
 
 ### `mcp-ancestors.ts`
 

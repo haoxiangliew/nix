@@ -12,11 +12,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
+import { untildify } from "./lib/paths.ts";
 import { errorMessage, loadOrReport } from "./lib/settings.ts";
 
 const Config = Type.Object(
@@ -48,7 +48,7 @@ type Servers = Map<string, McpServerConfig>;
 const FILE = ".mcp.json";
 
 function expandHome(path: string): string {
-  return resolve(path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path);
+  return resolve(untildify(path));
 }
 
 function contains(parent: string, child: string): boolean {

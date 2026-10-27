@@ -14,8 +14,13 @@ let
       map (p: lib.nameValuePair name (path p)) (lib.filter (p: (p.pname or "") == name) packages)
     );
 
+  # pi runs herdr agents with its own tools, from pi/src/herdr-agents.ts, instead of the herdr skill.
   skills = lib.mkMerge [
     (pkgsOf config.home.packages "herdr" (p: "${p.src}/skills/herdr"))
+    piSkills
+  ];
+
+  piSkills = lib.mkMerge [
     (pkgsOf config.programs.gh.extensions "gh-stack" (p: "${p.src}/skills/gh-stack"))
     {
       unslop = "${inputs.pstack}/pstack/skills/unslop";
@@ -481,7 +486,8 @@ in
             }
           }/review.ts";
         };
-        inherit skills integrations;
+        inherit integrations;
+        skills = piSkills;
       };
     };
   };
