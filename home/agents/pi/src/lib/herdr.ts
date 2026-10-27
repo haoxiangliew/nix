@@ -8,6 +8,7 @@ import { createConnection, type Socket } from "node:net";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 
+import { CommandError, runCommand } from "./command.ts";
 import { errorMessage } from "./settings.ts";
 
 export const HERDR_TIMEOUT_MS = 2000;
@@ -57,6 +58,31 @@ export const PaneCurrent = Type.Object({
 
 export const TabCreated = Type.Object({ result: Type.Object({ root_pane: Pane }) });
 
+// herdr leaves out the branch of a detached checkout, and the workspace of one that isn't open.
+const Worktree = Type.Object({
+  path: Type.String(),
+  branch: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  open_workspace_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+});
+
+export const WorktreeList = Type.Object({
+  result: Type.Object({
+    // The repository's main checkout, even when listed from a linked worktree.
+    source: Type.Object({ source_checkout_path: Type.String() }),
+    worktrees: Type.Array(Worktree),
+  }),
+});
+
+// What `worktree create` and `worktree open` return. Only open reports `already_open`.
+export const WorktreeOpened = Type.Object({
+  result: Type.Object({
+    workspace: Type.Object({ workspace_id: Type.String() }),
+    root_pane: Pane,
+    worktree: Worktree,
+    already_open: Type.Optional(Type.Boolean()),
+  }),
+});
+
 export const PaneLayout = Type.Object({
   result: Type.Object({
     layout: Type.Object({
@@ -82,35 +108,32 @@ export const StatusEvent = Type.Object({
   }),
 });
 
-// pi.exec reports a killed process with code 0, so a kill is checked first. herdr prints server
-// errors as JSON with a code, and usage errors as text.
+// herdr prints server errors as JSON with a code, and usage errors as text.
 export async function herdr(
   pi: Exec,
   args: string[],
   timeout = HERDR_TIMEOUT_MS,
   signal?: AbortSignal,
 ): Promise<string> {
-  const result = await pi.exec("herdr", args, { timeout, signal });
   const call = `herdr ${args.slice(0, 2).join(" ")}`;
 
-  if (result.killed) {
-    const why =
-      signal?.aborted === true ? "was cancelled" : `timed out after ${timeout / 1000} seconds`;
+  // Adds herdr's error code, and warns that a killed send may have reached the agent.
+  try {
+    return await runCommand(pi, "herdr", args, { call, timeout, signal });
+  } catch (error) {
+    if (!(error instanceof CommandError)) {
+      throw error;
+    }
 
-    const sent = SENDS.has(args[1] ?? "")
-      ? ". That doesn't prove it wasn't delivered, so read the agent before sending again"
-      : "";
+    const sent =
+      error.killed && SENDS.has(args[1] ?? "")
+        ? ". That doesn't prove it wasn't delivered, so read the agent before sending again"
+        : "";
 
-    throw new HerdrError(`${call} ${why}${sent}`, undefined, true);
+    const code = /"code":"(\w+)"/.exec(error.stderr)?.[1];
+
+    throw new HerdrError(`${error.message}${sent}`, code, error.killed, { cause: error });
   }
-
-  if (result.code !== 0) {
-    const stderr = result.stderr.trim();
-
-    throw new HerdrError(`${call} failed: ${stderr}`, /"code":"(\w+)"/.exec(stderr)?.[1]);
-  }
-
-  return result.stdout;
 }
 
 export async function herdrJson<T extends TSchema>(

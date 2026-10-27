@@ -24,6 +24,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
+import { runCommand } from "./lib/command.ts";
 import {
   AgentGet,
   AgentList,
@@ -34,6 +35,8 @@ import {
   PaneSplit,
   StatusEvent,
   TabCreated,
+  WorktreeList,
+  WorktreeOpened,
   herdr,
   herdrJson,
   subscribe,
@@ -44,6 +47,11 @@ import { errorMessage } from "./lib/settings.ts";
 
 // A prompt is pasted, so a long one takes longer than a lookup.
 const SEND_TIMEOUT_MS = 15_000;
+
+// `git worktree add` checks out every file, which takes a while in a big repository.
+const WORKTREE_TIMEOUT_MS = 60_000;
+
+const GIT_TIMEOUT_MS = 10_000;
 
 // herdr waits this long for a new agent to be ready.
 const START_TIMEOUT_MS = 60_000;
@@ -96,6 +104,31 @@ const WatchParams = Type.Object({
   ),
 });
 
+const WorktreeFields = {
+  branch: Type.Optional(
+    Type.String({
+      description:
+        "Branch to check out. herdr creates it from `base` if it doesn't exist, and names one if you leave it out.",
+    }),
+  ),
+  base: Type.Optional(
+    Type.String({
+      description:
+        "Ref a new branch starts from, such as `origin/main`. Default the checkout's HEAD.",
+    }),
+  ),
+};
+
+const WorktreeParams = Type.Object({
+  ...WorktreeFields,
+  cwd: Type.Optional(
+    Type.String({
+      description:
+        "Any directory in the repository, including another worktree. Default your own directory.",
+    }),
+  ),
+});
+
 const StartParams = Type.Object({
   name: Type.String({
     pattern: "^[a-z][a-z0-9_-]{0,31}$",
@@ -106,10 +139,12 @@ const StartParams = Type.Object({
   ),
   prompt: Type.Optional(Type.String({ description: "First task for the agent" })),
   placement: Type.Optional(
-    Type.Union([Type.Literal("split"), Type.Literal("tab")], {
-      description: "`split` (default) splits your pane. `tab` opens a new tab in your workspace.",
+    Type.Union([Type.Literal("split"), Type.Literal("tab"), Type.Literal("worktree")], {
+      description:
+        "`split` (default) splits your pane. `tab` opens a new tab in your workspace. `worktree` opens a git worktree of `cwd`'s repository in its own workspace, in the repository's space.",
     }),
   ),
+  ...WorktreeFields,
   cwd: Type.Optional(Type.String({ description: "Working directory. Default your own." })),
   args: Type.Optional(
     Type.Array(Type.String(), { description: "Arguments for the agent's own command line" }),
@@ -130,6 +165,22 @@ const ReadParams = Type.Object({
 });
 
 const CloseParams = Type.Object({ agent: AgentParam });
+
+interface Checkout {
+  path: string;
+  branch?: string;
+  workspace: string;
+  // The workspace's first pane, unless the workspace was already open and the pane may be in use.
+  pane?: string;
+  // The branch already had a worktree.
+  reused: boolean;
+}
+
+// A new pane for an agent, and where it is.
+interface Placed {
+  pane: string;
+  where: string;
+}
 
 interface Agent {
   pane: string;
@@ -244,6 +295,14 @@ function nonBlank(output: string, limit: number): string {
     .filter((line) => !/^[\s\u2500-\u257f]*$/.test(line))
     .slice(-limit)
     .join("\n");
+}
+
+function flag(name: string, value: string | undefined): string[] {
+  return value === undefined ? [] : [name, value];
+}
+
+function describe({ path, branch }: Checkout): string {
+  return `worktree ${tildify(path)}${branch === undefined ? "" : ` on \`${branch}\``}`;
 }
 
 function label(pane: string, name: string | undefined): string {
@@ -806,37 +865,155 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // Returns the new pane. Focus stays with the user.
-  async function openPane(
-    params: Static<typeof StartParams>,
+  async function createTab(
+    workspace: string,
     cwd: string,
+    name: string,
     signal: AbortSignal | undefined,
   ): Promise<string> {
-    if (params.placement !== "tab") {
-      return splitPane(cwd, signal);
-    }
-
-    const { workspace } = await currentPane(signal);
+    const args = ["tab", "create", "--workspace", workspace, "--cwd", cwd, "--label", name];
 
     const created = await herdrJson(
       pi,
       TabCreated,
-      [
-        "tab",
-        "create",
-        "--workspace",
-        workspace,
-        "--cwd",
-        cwd,
-        "--label",
-        params.name,
-        "--no-focus",
-      ],
+      [...args, "--no-focus"],
       HERDR_TIMEOUT_MS,
       signal,
     );
 
     return created.result.root_pane.pane_id;
+  }
+
+  async function git(
+    cwd: string,
+    args: string[],
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    const call = `git ${args[0] ?? ""} in ${tildify(cwd)}`;
+    const options = { call, timeout: GIT_TIMEOUT_MS, signal };
+
+    return (await runCommand(pi, "git", ["-C", cwd, ...args], options)).trim();
+  }
+
+  // herdr starts new worktrees from the main checkout, so a relative ref such as the default `HEAD`
+  // would mean its commit instead of the one at `cwd`.
+  async function baseCommit(
+    cwd: string,
+    base: string | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    return git(cwd, ["rev-parse", "--verify", `${base ?? "HEAD"}^{commit}`], signal);
+  }
+
+  // A worktree's workspace joins the space of its repository's main checkout, and herdr refuses to
+  // start from a linked worktree. Listing works from any checkout and names the main one.
+  async function worktreesOf(cwd: string, signal: AbortSignal | undefined) {
+    const args = ["worktree", "list", "--cwd", cwd];
+    const list = await herdrJson(pi, WorktreeList, args, WORKTREE_TIMEOUT_MS, signal);
+
+    return { repo: list.result.source.source_checkout_path, worktrees: list.result.worktrees };
+  }
+
+  async function worktreeArgs(
+    cwd: string,
+    repo: string,
+    { branch, base }: Static<typeof WorktreeParams>,
+    existing: string | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<string[]> {
+    if (existing !== undefined) {
+      return ["worktree", "open", "--cwd", repo, "--path", existing];
+    }
+
+    const commit = await baseCommit(cwd, base, signal);
+
+    return ["worktree", "create", "--cwd", repo, ...flag("--branch", branch), "--base", commit];
+  }
+
+  // git checks a branch out in one worktree only, so a branch that has one reuses it. Either way,
+  // herdr opens the worktree in its own workspace.
+  async function openWorktree(
+    cwd: string,
+    request: Static<typeof WorktreeParams>,
+    name: string | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<Checkout> {
+    const { branch, base } = request;
+    const { repo, worktrees } = await worktreesOf(cwd, signal);
+
+    const existing = worktrees.find(
+      (worktree) => branch !== undefined && worktree.branch === branch,
+    );
+
+    if (existing !== undefined && base !== undefined) {
+      throw new Error(
+        `Branch \`${branch}\` already has a worktree at ${tildify(existing.path)}, so it can't start from \`${base}\`.`,
+      );
+    }
+
+    const openIn = existing?.open_workspace_id;
+
+    // Opening it again would rename its workspace.
+    if (existing !== undefined && openIn !== undefined && openIn !== null) {
+      return { path: existing.path, branch, workspace: openIn, reused: true };
+    }
+
+    const args = await worktreeArgs(cwd, repo, request, existing?.path, signal);
+    const target = [...flag("--label", name), "--no-focus"];
+
+    const opened = await herdrJson(
+      pi,
+      WorktreeOpened,
+      [...args, ...target],
+      WORKTREE_TIMEOUT_MS,
+      signal,
+    );
+
+    const { workspace, root_pane: root, worktree, already_open: wasOpen } = opened.result;
+
+    return {
+      path: worktree.path,
+      branch: worktree.branch ?? undefined,
+      workspace: workspace.workspace_id,
+      pane: wasOpen === true ? undefined : root.pane_id,
+      reused: existing !== undefined,
+    };
+  }
+
+  async function worktreePane(
+    params: Static<typeof StartParams>,
+    cwd: string,
+    signal: AbortSignal | undefined,
+  ): Promise<Placed> {
+    const checkout = await openWorktree(cwd, params, params.name, signal);
+
+    const pane =
+      checkout.pane ?? (await createTab(checkout.workspace, checkout.path, params.name, signal));
+
+    return { pane, where: `the ${describe(checkout)}` };
+  }
+
+  // Focus stays with the user.
+  async function openPane(
+    params: Static<typeof StartParams>,
+    cwd: string,
+    signal: AbortSignal | undefined,
+  ): Promise<Placed> {
+    if (params.placement === "worktree") {
+      return worktreePane(params, cwd, signal);
+    }
+
+    if (params.branch !== undefined || params.base !== undefined) {
+      throw new Error('`branch` and `base` need `placement: "worktree"`.');
+    }
+
+    if (params.placement === "tab") {
+      const { workspace } = await currentPane(signal);
+
+      return { pane: await createTab(workspace, cwd, params.name, signal), where: "a new tab" };
+    }
+
+    return { pane: await splitPane(cwd, signal), where: "a new pane" };
   }
 
   // herdr checks too, but only after a pane opens in the user's layout.
@@ -891,11 +1068,12 @@ export default function (pi: ExtensionAPI) {
     name: "herdr_start",
     label: "Herdr Start",
     description:
-      "Start a coding agent in a new herdr pane next to yours, or in a new tab, and optionally give it its first task. With a prompt, you get a message when the agent is done, idle, or blocked. The user's focus stays where it is.",
-    promptSnippet: "Start a herdr agent in a new pane or tab, with an optional first task",
+      "Start a coding agent in a new herdr pane next to yours, in a new tab, or in a git worktree, and optionally give it its first task. With a prompt, you get a message when the agent is done, idle, or blocked. The user's focus stays where it is.",
+    promptSnippet:
+      "Start a herdr agent in a new pane, tab, or worktree, with an optional first task",
     promptGuidelines: [
       "Use the herdr_* tools for herdr agents instead of the herdr CLI.",
-      'Start herdr agents with herdr_start, with a short unique name and the first task as `prompt`. Use `placement: "tab"` only when the user asks for a tab.',
+      'Start herdr agents with herdr_start, with a short unique name and the first task as `prompt`. Use `placement: "tab"` only when the user asks for a tab, and `placement: "worktree"` when the agent should work on its own branch.',
     ],
     parameters: StartParams,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -903,9 +1081,8 @@ export default function (pi: ExtensionAPI) {
 
       // herdr resolves a relative cwd against its server's directory, so it goes in absolute.
       const cwd = resolve(ctx.cwd, untildify(params.cwd ?? "."));
-      const pane = await openPane(params, cwd, signal);
+      const { pane, where } = await openPane(params, cwd, signal);
       const kind = params.kind ?? "pi";
-      const where = params.placement === "tab" ? "a new tab" : "a new pane";
       const started = `Started ${kind} agent ${label(pane, params.name)} in ${where}.`;
 
       if (!(await startAgent(pane, params, kind, signal))) {
@@ -928,6 +1105,28 @@ export default function (pi: ExtensionAPI) {
           cause: error,
         });
       }
+    },
+  });
+
+  const worktreeTool = defineTool({
+    name: "herdr_worktree",
+    label: "Herdr Worktree",
+    description:
+      'Create a git worktree through herdr, or reuse the one a branch already has, and open it in its own herdr workspace. Returns its path, so you can work in it yourself. To have an agent work in a worktree, use herdr_start with `placement: "worktree"` instead.',
+    promptSnippet: "Create or reuse a git worktree through herdr",
+    promptGuidelines: [
+      "Make git worktrees with herdr_worktree, or with herdr_start for an agent, instead of `git worktree add`, so they show up in herdr. This includes checkouts for reviewing a PR.",
+      "Leave worktrees in place when you're done. The user removes them in herdr.",
+    ],
+    parameters: WorktreeParams,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const cwd = resolve(ctx.cwd, untildify(params.cwd ?? "."));
+      const checkout = await openWorktree(cwd, params, undefined, signal);
+      const how = checkout.reused ? "Opened the existing" : "Created";
+
+      return text(
+        `${how} ${describe(checkout)}, in herdr workspace ${checkout.workspace}. Work there with absolute paths, or \`cd\` into it in bash.`,
+      );
     },
   });
 
@@ -1036,6 +1235,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool(startTool);
+  pi.registerTool(worktreeTool);
   pi.registerTool(watchTool);
   pi.registerTool(readTool);
   pi.registerTool(agentsTool);
