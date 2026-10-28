@@ -67,6 +67,9 @@ const STALL_MS = 5000;
 // How long keys get to take effect before the tool reads the agent's state.
 const KEYS_SETTLE_MS = 2000;
 
+// How often the wait after a slash command checks whether the agent started working.
+const WORK_CHECK_MS = 100;
+
 const SCREEN_LINES = 20;
 
 // herdr_read leaves out blank lines and divider lines, so it asks herdr for this many times as
@@ -787,8 +790,6 @@ export default function (pi: ExtensionAPI) {
 
       throw error;
     }
-
-    checkStall(agent.pane, watch);
   }
 
   // The second lookup reads the status after the subscription starts. An event that comes in while
@@ -858,7 +859,39 @@ export default function (pi: ExtensionAPI) {
 
     await sendPrompt(watch, agent, prompt, before, signal);
 
+    // A slash command such as /review or /new can open a menu or finish without starting a turn,
+    // so the agent may never work.
+    if (prompt.trimStart().startsWith("/")) {
+      return checkAfter(pane, "the command", () => afterCommand(pane, watch, signal));
+    }
+
+    checkStall(pane, watch);
+
     return `Prompted herdr agent ${label(pane, agent.name)}. ${WILL_MESSAGE} End your turn or keep working.`;
+  }
+
+  // Waits as long as the stall check would, then reports the agent's state and screen instead of
+  // a stall message. A watch the agent never worked for stops waiting.
+  async function afterCommand(
+    pane: string,
+    watch: Watch,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    const deadline = Date.now() + STALL_MS;
+
+    try {
+      await sleep(KEYS_SETTLE_MS, undefined, { signal });
+
+      while (!watch.active && watches.get(pane) === watch && Date.now() < deadline) {
+        await sleep(WORK_CHECK_MS, undefined, { signal });
+      }
+    } finally {
+      if (!watch.active) {
+        watch.armed = false;
+      }
+    }
+
+    return showAgent(pane, "the command", signal);
   }
 
   // Keys usually answer a dialog or interrupt the agent, so this reports the result right away
@@ -872,10 +905,22 @@ export default function (pi: ExtensionAPI) {
       run(["agent", "send-keys", pane, ...keys], SEND_TIMEOUT_MS, signal),
     );
 
-    // The keys went out, so a later failure says so, or pi may send them again. On failure, this
-    // also closes the paused watch, unless the check armed it again.
+    return checkAfter(pane, "the keys", async () => {
+      await sleep(KEYS_SETTLE_MS, undefined, { signal });
+
+      return showAgent(pane, "the keys", signal);
+    });
+  }
+
+  // What was sent went out, so a failed check says so, or pi may send it again. On failure, this
+  // also closes the paused watch, unless the check armed it again.
+  async function checkAfter(
+    pane: string,
+    what: string,
+    check: () => Promise<string>,
+  ): Promise<string> {
     try {
-      return await afterKeys(pane, signal);
+      return await check();
     } catch (error) {
       const watch = watches.get(pane);
 
@@ -884,15 +929,17 @@ export default function (pi: ExtensionAPI) {
       }
 
       throw new Error(
-        `Sent the keys to herdr agent \`${pane}\`, but checking on it failed: ${errorMessage(error)}`,
+        `Sent ${what} to herdr agent \`${pane}\`, but checking on it failed: ${errorMessage(error)}`,
         { cause: error },
       );
     }
   }
 
-  async function afterKeys(pane: string, signal: AbortSignal | undefined): Promise<string> {
-    await sleep(KEYS_SETTLE_MS, undefined, { signal });
-
+  async function showAgent(
+    pane: string,
+    what: string,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
     // Keys such as ctrl+c can quit the agent, which is a result, not a failure.
     const watched = await watchAgent(pane, signal).catch((cause: unknown) => {
       if (cause instanceof HerdrError && cause.code === "agent_not_found") {
@@ -903,7 +950,7 @@ export default function (pi: ExtensionAPI) {
     });
 
     if (watched === undefined) {
-      return `Sent the keys to herdr agent \`${pane}\`, and the agent exited.`;
+      return `Sent ${what} to herdr agent \`${pane}\`, and the agent exited.`;
     }
 
     const { agent, pending } = watched;
@@ -916,7 +963,7 @@ export default function (pi: ExtensionAPI) {
 
     const next = pending ? ` ${WILL_MESSAGE}` : "";
 
-    return `Sent the keys to herdr agent ${label(pane, agent.name)}. It's ${agent.status}.${next} Its screen:\n\n${nonBlank(screen, SCREEN_LINES)}`;
+    return `Sent ${what} to herdr agent ${label(pane, agent.name)}. It's ${agent.status}.${next} Its screen:\n\n${nonBlank(screen, SCREEN_LINES)}`;
   }
 
   // Holds back an armed watch's message while a call acts on the agent, and puts the watch back if
@@ -1396,12 +1443,13 @@ export default function (pi: ExtensionAPI) {
     name: "herdr_start",
     label: "Herdr Start",
     description:
-      "Start a coding agent in a new herdr pane next to yours, in a new tab, or in a git worktree, and optionally give it its first task. With a prompt, you get a message when the agent is done, idle, or blocked. The user's focus stays where it is.",
+      "Start a coding agent in a new herdr pane next to yours, in a new tab, or in a git worktree, and optionally give it its first task. With a prompt, you get a message when the agent is done, idle, or blocked. A prompt that starts with `/` instead returns the agent's state and screen, like herdr_watch. The user's focus stays where it is.",
     promptSnippet:
       "Start a herdr agent in a new pane, tab, or worktree, with an optional first task",
     promptGuidelines: [
       "Use the herdr_* tools instead of the herdr CLI.",
       'Start herdr agents with herdr_start, with a short unique name and the first task as `prompt`. Use `placement: "tab"` only when the user asks for a tab, and `placement: "worktree"` when the agent should work on its own branch.',
+      'Give work in a herdr worktree to a herdr agent, not the subagent tool. Start it with herdr_start and `placement: "worktree"`, with `branch` for a new worktree or `path` for an existing one. Give work in one checkout to subagents unless the user asks for a herdr agent.',
     ],
     parameters: StartParams,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -1440,7 +1488,7 @@ export default function (pi: ExtensionAPI) {
     name: "herdr_worktree",
     label: "Herdr Worktree",
     description:
-      'Create a git worktree through herdr, or open an existing one by `path` or `branch`, in its own herdr workspace. Returns its path, so you can work in it yourself. To have an agent work in a worktree, use herdr_start with `placement: "worktree"` instead.',
+      'Create a git worktree through herdr, or open an existing one by `path` or `branch`, in its own herdr workspace. Returns its path, so you can work in it yourself. To have an agent work in a worktree, use herdr_start with `placement: "worktree"` instead of the subagent tool.',
     promptSnippet: "Create or open a git worktree through herdr",
     promptGuidelines: [
       "Make, open, and remove git worktrees with herdr_worktree, herdr_start, and herdr_worktree_remove instead of `git worktree add` or `git worktree remove`, so herdr keeps track of them. This includes checkouts for reviewing a PR.",
@@ -1452,7 +1500,7 @@ export default function (pi: ExtensionAPI) {
       const how = checkout.reused ? "Opened the existing" : "Created";
 
       return text(
-        `${how} ${describe(checkout)}, in herdr workspace ${checkout.workspace}. Work there with absolute paths, or \`cd\` into it in bash.`,
+        `${how} ${describe(checkout)}, in herdr workspace ${checkout.workspace}. Work there with absolute paths, or \`cd\` into it in bash. To hand it to an agent, use herdr_start with \`placement: "worktree"\` and this \`path\`, not the subagent tool.`,
       );
     },
   });
@@ -1481,10 +1529,10 @@ export default function (pi: ExtensionAPI) {
   const watchTool = defineTool({
     name: "herdr_watch",
     label: "Herdr Watch",
-    description: `Prompt a herdr agent or send it keys. A prompt returns right away, and you get a message when the agent is done, idle, or blocked. Keys wait ${KEYS_SETTLE_MS / 1000} seconds, then return the agent's state and screen. With only \`agent\`, wait on an agent that's already working.`,
+    description: `Prompt a herdr agent or send it keys. A prompt returns right away, and you get a message when the agent is done, idle, or blocked. Keys wait ${KEYS_SETTLE_MS / 1000} seconds, then return the agent's state and screen. So does a prompt that starts with \`/\`, after up to ${STALL_MS / 1000} seconds for the agent to start working. With only \`agent\`, wait on an agent that's already working.`,
     promptSnippet: "Prompt a herdr agent or send it keys, and get a message when it settles",
     promptGuidelines: [
-      "After you prompt a herdr agent, end your turn or keep working until its message arrives. Don't poll it with herdr_read, bash, or `sleep`. Keys return the agent's state and screen, so don't check on it after them.",
+      "After you prompt a herdr agent, end your turn or keep working until its message arrives. Don't poll it with herdr_read, bash, or `sleep`. Keys and slash commands return the agent's state and screen, so don't check on it after them.",
       "To prompt several herdr agents at once, call herdr_watch once per agent in parallel.",
       "When a herdr agent is blocked on an approval or a question, read it with herdr_read and ask the user before you answer it with keys.",
     ],
