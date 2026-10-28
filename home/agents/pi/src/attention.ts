@@ -1,6 +1,6 @@
 /**
- * Notifies when pi waits on a prompt or finishes a run, and reports prompts to herdr as blocked.
- * herdr shows a turn that ends on a question as done, so this tells the agent to ask with
+ * Notifies when pi waits on a prompt or finishes a run, and reports prompts to herdr and Rex as
+ * blocked. herdr shows a turn that ends on a question as done, so this tells the agent to ask with
  * ask_user_question. The `attention` key in settings.json configures it.
  */
 
@@ -30,6 +30,14 @@ const ASK_RULE = `Use ${ASK_TOOL} only for a choice the user hasn't made and you
 
 const paneId = multiplexer === "herdr" ? process.env.HERDR_PANE_ID : undefined;
 
+// pi reports its state to Rex with OSC 7501 and shows its own dialogs as blocked, but a dialog from
+// ctx.ui.custom(), such as a permission prompt or ask_user_question, leaves it working. A separate
+// record with the id `dialog` reports that dialog as blocked and leaves pi's own record alone.
+// PI_PROGRAM_STATUS=0 turns pi's reports off.
+const reportsStatus = multiplexer === "rex" && process.env.PI_PROGRAM_STATUS !== "0";
+
+const DIALOG_RECORD = "dialog";
+
 interface PaneInfo {
   result?: { pane?: { tab_id?: string; workspace_id?: string } };
 }
@@ -46,6 +54,20 @@ function firstLine(text: string | undefined): string | undefined {
     .trim();
 
   return line ? line.slice(0, 100) : undefined;
+}
+
+// Without a label, removes the record.
+function reportDialog(label?: string): void {
+  if (!reportsStatus) {
+    return;
+  }
+
+  const pairs =
+    label === undefined
+      ? ["state=clear", `id=${DIALOG_RECORD}`]
+      : ["state=blocked", `id=${DIALOG_RECORD}`, `msg=${Buffer.from(label).toString("base64")}`];
+
+  process.stdout.write(`\u001B]7501;${pairs.join(":")}\u001B\\`);
 }
 
 async function herdrJson<T>(pi: ExtensionAPI, args: string[]): Promise<T | undefined> {
@@ -151,16 +173,25 @@ export default function (pi: ExtensionAPI) {
 
     prompt = label;
     pi.events.emit("herdr:blocked", { active: true, label });
+
+    if (event.kind === "custom") {
+      reportDialog(label);
+    }
+
     notifyLater(pi, config, () => live && prompt === label, label);
   });
 
-  pi.on("ui_prompt_end", async () => {
+  pi.on("ui_prompt_end", async (event) => {
     if (prompt === undefined) {
       return;
     }
 
     prompt = undefined;
     pi.events.emit("herdr:blocked", { active: false });
+
+    if (event.kind === "custom") {
+      reportDialog();
+    }
   });
 
   pi.on("agent_settled", async (event, ctx) => {

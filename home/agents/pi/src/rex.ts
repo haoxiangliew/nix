@@ -37,6 +37,7 @@ import {
   rexJson,
   firstBlock,
   rootRecord,
+  paneStatus,
   subscribe,
   type BlockInfo,
   type StatusRecord,
@@ -272,14 +273,20 @@ export default function (pi: ExtensionAPI) {
     return found;
   }
 
+  function programStatus(pane: string, signal?: AbortSignal) {
+    const call = ["block", "call", ...inSession, "-b", pane, "program_status"];
+
+    return rexJson(pi, ProgramStatus, call, REX_TIMEOUT_MS, signal);
+  }
+
   // A done or error record outlives its program, so a record counts only while the process that
   // reported it is still in the foreground. Otherwise input would go to the shell instead.
   async function liveRecord(pane: string, signal?: AbortSignal): Promise<StatusRecord | undefined> {
-    const call = ["block", "call", ...inSession, "-b", pane];
+    const call = ["block", "call", ...inSession, "-b", pane, "process"];
 
     const [status, process] = await Promise.all([
-      rexJson(pi, ProgramStatus, [...call, "program_status"], REX_TIMEOUT_MS, signal),
-      rexJson(pi, Process, [...call, "process"], REX_TIMEOUT_MS, signal),
+      programStatus(pane, signal),
+      rexJson(pi, Process, call, REX_TIMEOUT_MS, signal),
     ]);
 
     const root = rootRecord(status);
@@ -326,16 +333,33 @@ export default function (pi: ExtensionAPI) {
     tools: "rex",
     agentOf,
     exited: (error) => error instanceof RexError && error.notFound,
-    subscribe: (pane, onEvent, onFail) =>
-      subscribe(
+    // Events report only changes, so the records from before the stream started come from a lookup.
+    // Without them, a dialog that closes would leave the agent blocked.
+    subscribe: async (pane, onEvent, onFail) => {
+      const status = paneStatus();
+
+      const subscription = await subscribe(
         sessionId,
         (event) => {
-          if (event.block === pane) {
-            onEvent(event);
+          const update = event.block === pane ? status.update(event) : undefined;
+
+          if (update !== undefined) {
+            onEvent(update);
           }
         },
         onFail,
-      ),
+      );
+
+      const { records } = await orCleanUp(
+        () => programStatus(pane),
+        async () => subscription.close(),
+        "Closing the event stream",
+      );
+
+      status.seed(records);
+
+      return subscription;
+    },
     prompt: submit,
     keys: async (pane, keys, signal) => {
       const sent = keys.map((key) => KEY_ALIASES.get(key) ?? key);

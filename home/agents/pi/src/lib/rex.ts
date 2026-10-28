@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 
-import type { Subscription } from "./agent-watch.ts";
+import type { Subscription, WatchEvent } from "./agent-watch.ts";
 
 import { CommandError, parseOutput, runCommand } from "./command.ts";
 import { readLines } from "./lines.ts";
@@ -109,10 +109,14 @@ const StatusRemoved = Type.Object({ ids: Type.Array(Type.String()), reason: Type
 // does while it suspends, and a reset or eviction drops records of programs that still run.
 const GONE = new Set(["child_exited", "prompt", "foreground"]);
 
-/** What a watch needs from a session's events. Only the root record's state counts. */
+/**
+ * What a watch needs from a session's events. `id` is the record's, and empty for the root record,
+ * which holds the program's own state.
+ */
 export type RexEvent =
   | { kind: "connected"; pid?: number }
-  | { kind: "status"; block: string; status: string }
+  | { kind: "status"; block: string; id: string; status: string }
+  | { kind: "removed"; block: string; ids: string[] }
   | { kind: "exited"; block: string };
 
 export type PaneEvent = Exclude<RexEvent, { kind: "connected" }>;
@@ -137,7 +141,7 @@ function blockEvent({
       throw invalid(name, JSON.stringify(payload));
     }
 
-    return payload.id === "" ? { kind: "status", block, status: payload.record.state } : undefined;
+    return { kind: "status", block, id: payload.id, status: payload.record.state };
   }
 
   if (name !== "program_status_removed") {
@@ -150,7 +154,60 @@ function blockEvent({
 
   return payload.ids.includes("") && GONE.has(payload.reason)
     ? { kind: "exited", block }
-    : undefined;
+    : { kind: "removed", block, ids: payload.ids };
+}
+
+// Rex leaves out the root record's id or sends null, and events give it as "".
+function recordId(record: StatusRecord): string {
+  return record.id ?? "";
+}
+
+// A blocked record with an id, such as the one pi's attention extension reports for an extension's
+// dialog, makes the agent blocked. Otherwise the agent has the root record's state.
+function blockedById(states: Iterable<[string, string]>): boolean {
+  return [...states].some(([id, state]) => id !== "" && state === "blocked");
+}
+
+/** Tracks one pane's records to give the agent's state, as blockedById describes. */
+export function paneStatus() {
+  // Record states by id, with "" for the root.
+  const states = new Map<string, string>();
+  // Ids an event reported, which are newer than a lookup.
+  const reported = new Set<string>();
+
+  return {
+    /** Fills in the records no event has reported yet, from a program_status lookup. */
+    seed(records: StatusRecord[]): void {
+      for (const record of records) {
+        const id = recordId(record);
+
+        if (!reported.has(id)) {
+          states.set(id, record.state);
+        }
+      }
+    },
+
+    /** Returns the agent's state after an event, or undefined while it's unknown. */
+    update(event: PaneEvent): WatchEvent | undefined {
+      if (event.kind === "exited") {
+        return { kind: "exited" };
+      }
+
+      const ids = event.kind === "removed" ? event.ids : [event.id];
+
+      ids.forEach((id) => reported.add(id));
+
+      if (event.kind === "removed") {
+        ids.forEach((id) => states.delete(id));
+      } else {
+        states.set(event.id, event.status);
+      }
+
+      const status = blockedById(states) ? "blocked" : states.get("");
+
+      return status === undefined ? undefined : { kind: "status", status };
+    },
+  };
 }
 
 /** Parses one line of `rex events --json`, or returns undefined for an event a watch ignores. */
@@ -190,9 +247,16 @@ export function parseEvent(line: string): RexEvent | undefined {
   return blockEvent(payload);
 }
 
-/** The root record, which holds the program's own state, or undefined when it reports none. */
+/**
+ * The root record, which holds the program's own state, or undefined when it reports none. Its
+ * state is the agent's, as blockedById describes.
+ */
 export function rootRecord(status: Static<typeof ProgramStatus>): StatusRecord | undefined {
-  return status.records.find((record) => record.id === undefined || record.id === null);
+  const root = status.records.find((record) => recordId(record) === "");
+
+  const states = status.records.map((record): [string, string] => [recordId(record), record.state]);
+
+  return root !== undefined && blockedById(states) ? { ...root, state: "blocked" } : root;
 }
 
 export function firstBlock({ block_ids: [block] }: Static<typeof Created>): string {

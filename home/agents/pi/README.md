@@ -29,7 +29,7 @@ It blocks a request it can't send that way. On non-Enterprise plans, it also blo
 
 ### `attention.ts`
 
-Sends a notification when pi waits for you or finishes, unless you cancelled with Esc. In herdr, it shows pi as blocked while a question is open and notifies only for the active tab.
+Sends a notification when pi waits for you or finishes, unless you cancelled with Esc. In herdr, it shows pi as blocked while a question is open and notifies only for the active tab. In Rex, it also shows pi as blocked while an extension draws its own dialog, such as `ask_user_question` or pi-permission-system's prompt. pi reports its other dialogs itself.
 
 It also tells the agent to ask with `ask_user_question` only for choices it can't make, and to recommend an option when it asks. The agent shows drafts instead of asking whether to apply them. It never ends a turn with a question in chat, because herdr shows that turn as done.
 
@@ -120,7 +120,7 @@ In [Rex](https://www.superlogical.com/rex), pi uses tools instead of the rex CLI
 | `rex_close`  | Closes an agent's or a command's pane.                                                                     |
 | `rex_focus`  | Switches your Rex view to an agent's or a command's pane, when you ask to see it.                          |
 
-An agent is any program that reports its state to Rex with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), as pi, Claude Code, and Codex do. Its name is its pane's label. The tools follow the session's events from `rex events`, so pi gets a message when an agent is done, idle, blocked, or failed, the same way as in herdr, and doesn't poll. `rex_start` runs the agent as its pane's command, so the pane closes when the agent exits. `rex_run` types its command into a shell, so your shell setup, such as direnv, applies. Rex has no worktrees, so agents make them with git. No settings.
+An agent is any program that reports its state to Rex with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), as pi, Claude Code, and Codex do. Its name is its pane's label. The tools follow the session's events from `rex events`, so pi gets a message when an agent is done, idle, blocked, or failed, the same way as in herdr, and doesn't poll. An agent counts as blocked while any of its records is, so pi gets a message when a pi agent waits on a permission prompt. `rex_start` runs the agent as its pane's command, so the pane closes when the agent exits. `rex_run` types its command into a shell, so your shell setup, such as direnv, applies. Rex has no worktrees, so agents make them with git. No settings.
 
 ### `mcp-ancestors.ts`
 
