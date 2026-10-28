@@ -100,11 +100,27 @@ In herdr, pi uses tools instead of the herdr CLI for most of what the herdr skil
 | `herdr_close`           | Closes an agent's or a command's pane.                                                                                           |
 | `herdr_focus`           | Switches your herdr view to an agent, or to a pane's tab, when you ask to see it.                                                |
 
-A prompt returns right away, and pi gets a message when the agent is done, idle, or blocked, so it doesn't poll. If the agent doesn't start working within 5 seconds of a prompt, the message says so. Keys, such as Esc to interrupt, wait 2 seconds and return the agent's state and the last 20 lines of its screen. So does a prompt that starts with `/`, after up to 5 seconds for the agent to start working, because a command such as `/review` or `/new` can open a menu or finish without a turn. If the agent is working, pi also gets a message when it settles.
+A prompt returns right away, and pi gets a message when the agent is done, idle, blocked, or failed, so it doesn't poll. If the agent doesn't start working within 5 seconds of a prompt, the message says so. Keys, such as Esc to interrupt, wait 2 seconds and return the agent's state and the last 20 lines of its screen. So does a prompt that starts with `/`, after up to 5 seconds for the agent to start working, because a command such as `/review` or `/new` can open a menu or finish without a turn. If the agent is working, pi also gets a message when it settles.
 
 Worktrees go in herdr's worktree directory. Each opens in its own workspace, in the space of the repository's main checkout, so it shows up in herdr. pi can start from any directory in the repository, including another worktree, and a new branch starts from the commit there unless `base` says otherwise. If the branch already has a worktree, the tools reuse it. When its workspace is already open, `herdr_start` opens a new tab there rather than taking the first pane, which may be in use. Removing a worktree ends anything running in its workspace. herdr refuses one with uncommitted changes unless pi passes `force`, which it does only when you say to. pi removes a worktree it made once its work is committed and done, or when you ask. It won't remove the main checkout or the worktree it runs in.
 
 A Herdr block above the editor lists the agents pi is waiting on, with each one's state and the time since the prompt. If pi stops watching an agent first, for example because the agent exits, the message says so. No settings.
+
+### `rex.ts`
+
+In [Rex](https://www.superlogical.com/rex), pi uses tools instead of the rex CLI to run agents and commands in panes. pi doesn't get the Rex skill, but Claude Code and Codex still do. pi gets either these tools or herdr's, from the nearest herdr or Rex server in its process ancestry. Panes inherit environment variables such as `HERDR_ENV` from whatever started the multiplexer, so pi can't rely on them. `attention.ts` checks the same way.
+
+| Tool         | What it does                                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------------------- |
+| `rex_start`  | Starts an agent in a new pane next to pi's or a new tab, and can give it a first task. Focus doesn't move. |
+| `rex_watch`  | Prompts an agent or sends it keys. With only an agent, waits on one that's already working.                |
+| `rex_run`    | Runs a command in a new pane or tab you can watch. Can wait for a line of output, such as a ready message. |
+| `rex_read`   | Shows an agent's state and recent output, or any pane's output, without blank lines and divider lines.     |
+| `rex_agents` | Lists the agents in the Rex session, with pi's own pane marked.                                            |
+| `rex_close`  | Closes an agent's or a command's pane.                                                                     |
+| `rex_focus`  | Switches your Rex view to an agent's or a command's pane, when you ask to see it.                          |
+
+An agent is any program that reports its state to Rex with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), as pi, Claude Code, and Codex do. Its name is its pane's label. The tools follow the session's events from `rex events`, so pi gets a message when an agent is done, idle, blocked, or failed, the same way as in herdr, and doesn't poll. `rex_start` runs the agent as its pane's command, so the pane closes when the agent exits. `rex_run` types its command into a shell, so your shell setup, such as direnv, applies. Rex has no worktrees, so agents make them with git. No settings.
 
 ### `mcp-ancestors.ts`
 

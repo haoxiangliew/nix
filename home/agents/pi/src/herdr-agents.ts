@@ -2,30 +2,26 @@
  * Tools that let pi run herdr agents without calling the herdr CLI from bash.
  */
 
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ExtensionUIContext,
-  Theme,
-  ThemeColor,
-} from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
-import type { Socket } from "node:net";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import {
-  DEFAULT_MAX_BYTES,
-  defineTool,
-  formatSize,
-  truncateTail,
-} from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { Type, type Static } from "typebox";
-import { Value } from "typebox/value";
 
-import { runCommand } from "./lib/command.ts";
+import { matchedOutput, text, trimRead } from "./lib/agent-output.ts";
+import {
+  KEYS_SETTLE_MS,
+  STALL_MS,
+  createWatcher,
+  label,
+  requestOf,
+  targetLabel,
+  type Agent,
+  type Subscription,
+  type WatchEvent,
+} from "./lib/agent-watch.ts";
+import { parseOutput, runCommand } from "./lib/command.ts";
 import {
   AgentGet,
   AgentList,
@@ -47,6 +43,8 @@ import {
   type AgentInfo,
   type WorktreeInfo,
 } from "./lib/herdr.ts";
+import { multiplexer } from "./lib/multiplexer.ts";
+import { orCleanUp, splitSide } from "./lib/panes.ts";
 import { tildify, untildify } from "./lib/paths.ts";
 import { errorMessage } from "./lib/settings.ts";
 
@@ -61,17 +59,6 @@ const GIT_TIMEOUT_MS = 10_000;
 // herdr waits this long for a new agent to be ready.
 const START_TIMEOUT_MS = 60_000;
 
-// Matches herdr's own --wait, which gives up on a prompt that shows no activity in this time.
-const STALL_MS = 5000;
-
-// How long keys get to take effect before the tool reads the agent's state.
-const KEYS_SETTLE_MS = 2000;
-
-// How often the wait after a slash command checks whether the agent started working.
-const WORK_CHECK_MS = 100;
-
-const SCREEN_LINES = 20;
-
 // herdr_read leaves out blank lines and divider lines, so it asks herdr for this many times as
 // many lines as it returns.
 const READ_SLACK = 2;
@@ -83,19 +70,7 @@ const READ_TIMEOUT_MS = 30_000;
 // herdr collects history only from an idle agent. `done` is idle, but the user hasn't looked at it yet.
 const READABLE = new Set(["idle", "done"]);
 
-// A split to the right leaves each half at least this many columns, or the split goes down.
-const MIN_SPLIT_COLUMNS = 100;
-
-// A split down leaves each half at least this many rows, or herdr_start refuses to split.
-const MIN_SPLIT_ROWS = 15;
-
-const WIDGET = "herdr-agents";
-
-const SETTLED = new Set(["idle", "done", "blocked"]);
-
-const WILL_MESSAGE = "You'll get a message when it's done, idle, or blocked.";
-
-const socketPath = process.env.HERDR_ENV === "1" ? process.env.HERDR_SOCKET_PATH : undefined;
+const socketPath = multiplexer === "herdr" ? process.env.HERDR_SOCKET_PATH : undefined;
 
 const AgentParam = Type.String({
   description: "Unique live agent name or the pane ID hosting the agent",
@@ -239,121 +214,6 @@ type Target =
   | { kind: "agent"; pane: string; name?: string }
   | { kind: "pane"; pane: string; tab: string };
 
-interface Agent {
-  pane: string;
-  name?: string;
-  status: string;
-}
-
-interface Watch {
-  name?: string;
-  // Waiting to tell pi about the last prompt, keys, or watch call.
-  armed: boolean;
-  // Worked since it was armed, so a settled state means the work finished.
-  active: boolean;
-  status: string;
-  since: number;
-  // Changes each time the watch is armed, so a stall check from an earlier arm leaves a newer one
-  // alone.
-  arm: number;
-  // Counts status events, so a lookup can tell whether an event came in while it ran.
-  events: number;
-  socket: Socket;
-}
-
-// A copy of the watch that a failed call restores.
-type WatchState = Pick<Watch, "name" | "armed" | "active" | "status" | "since" | "arm" | "events">;
-
-function snapshot({ name, armed, active, status, since, arm, events }: Watch): WatchState {
-  return { name, armed, active, status, since, arm, events };
-}
-
-type Request =
-  | { kind: "watch" }
-  | { kind: "prompt"; prompt: string }
-  | { kind: "keys"; keys: string[] };
-
-interface Result {
-  content: { type: "text"; text: string }[];
-  details: undefined;
-}
-
-function text(content: string): Result {
-  return { content: [{ type: "text", text: content }], details: undefined };
-}
-
-function elapsed(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-
-  if (minutes === 0) {
-    return `${seconds}s`;
-  }
-
-  return minutes < 60
-    ? `${minutes}m ${seconds % 60}s`
-    : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
-
-function stateColor(status: string): ThemeColor {
-  if (status === "working") {
-    return "accent";
-  }
-
-  if (status === "blocked") {
-    return "warning";
-  }
-
-  return SETTLED.has(status) ? "success" : "muted";
-}
-
-function widgetLines(rows: [string, Watch][], theme: Theme, width: number): string[] {
-  const now = Date.now();
-  const nameWidth = Math.max(...rows.map(([pane, watch]) => (watch.name ?? pane).length));
-
-  const lines = rows.map(([pane, watch], index) => {
-    const branch = theme.fg("dim", index === rows.length - 1 ? "└─" : "├─");
-    const name = theme.fg("mdCode", (watch.name ?? pane).padEnd(nameWidth));
-    const state = theme.fg(stateColor(watch.status), watch.status);
-    const time = theme.fg("dim", ` · ${elapsed(now - watch.since)}`);
-
-    return `${branch} ${name}  ${state}${time}`;
-  });
-
-  return [theme.fg("accent", "● Herdr"), ...lines].map((line) => truncateToWidth(line, width));
-}
-
-// A just-prompted agent can report idle before it gets the prompt, so a settled state counts only
-// after the agent worked. Blocked needs input, so it counts right away.
-function finished(watch: Watch, status: string): boolean {
-  return watch.armed && (status === "blocked" || (watch.active && SETTLED.has(status)));
-}
-
-function requestOf({ prompt, keys }: Static<typeof WatchParams>): Request {
-  if (prompt !== undefined && keys !== undefined) {
-    throw new Error("Pass either `prompt` or `keys`, not both.");
-  }
-
-  if (keys?.length === 0) {
-    throw new Error("`keys` needs at least one key.");
-  }
-
-  if (keys !== undefined) {
-    return { kind: "keys", keys };
-  }
-
-  return prompt === undefined ? { kind: "watch" } : { kind: "prompt", prompt };
-}
-
-// Agent output has many blank lines and divider lines, so only lines with text count.
-function nonBlank(output: string, limit: number): string {
-  return output
-    .split("\n")
-    .filter((line) => !/^[\s\u2500-\u257f]*$/.test(line))
-    .slice(-limit)
-    .join("\n");
-}
-
 function checkWorktreeRequest({ path, branch, base }: Static<typeof WorktreeParams>): void {
   if (path !== undefined && (branch !== undefined || base !== undefined)) {
     throw new Error("Pass `path` to open an existing worktree, or `branch` and `base`, not both.");
@@ -435,31 +295,6 @@ function describe({ path, branch }: Pick<Checkout, "path" | "branch">): string {
   return `worktree ${tildify(path)}${branch === undefined ? "" : ` on \`${branch}\``}`;
 }
 
-// Keeps the last lines with text. One line of a log can be huge, so the output also gets the byte
-// limit of pi's own bash output. Returns a note when it cuts, then the output.
-function trimRead(read: string, lines: number): string {
-  const output = truncateTail(nonBlank(read, lines), {
-    maxLines: lines,
-    maxBytes: DEFAULT_MAX_BYTES,
-  });
-
-  const note = output.truncated
-    ? ` Its output is cut to the last ${formatSize(DEFAULT_MAX_BYTES)}.`
-    : "";
-
-  return `${note}\n\n${output.content}`;
-}
-
-function label(pane: string, name: string | undefined): string {
-  return name === undefined ? `\`${pane}\`` : `\`${name}\` (\`${pane}\`)`;
-}
-
-function targetLabel(target: Target): string {
-  return target.kind === "agent"
-    ? `herdr agent ${label(target.pane, target.name)}`
-    : `pane \`${target.pane}\``;
-}
-
 function agentLine(agent: AgentInfo, ownPane: string): string {
   const own = agent.pane_id === ownPane ? " (you)" : "";
 
@@ -472,153 +307,52 @@ function agentLine(agent: AgentInfo, ownPane: string): string {
   ].join("  ");
 }
 
+function statusEvent(line: string): WatchEvent {
+  const { agent, agent_status: status } = parseOutput(StatusEvent, line, "herdr event").data;
+
+  // herdr leaves out the agent, or sends null, once it exits.
+  return agent === undefined || agent === null ? { kind: "exited" } : { kind: "status", status };
+}
+
 export default function (pi: ExtensionAPI) {
   if (socketPath === undefined) {
     return;
   }
 
   const path = socketPath;
-  const watches = new Map<string, Watch>();
-  const queues = new Map<string, Promise<unknown>>();
-  let context: ExtensionContext | undefined;
-  let live = false;
-  let shown = false;
-  let tui: TUI | undefined;
-  let ticker: ReturnType<typeof setInterval> | undefined;
 
   function run(args: string[], timeout?: number, signal?: AbortSignal): Promise<string> {
     return herdr(pi, args, timeout, signal);
   }
 
-  function tell(content: string): void {
-    if (live) {
-      pi.sendMessage(
-        { customType: "herdr-agent", content, display: true },
-        { triggerTurn: true, deliverAs: "followUp" },
-      );
-    }
+  async function follow(
+    pane: string,
+    onEvent: (event: WatchEvent) => void,
+    onFail: (error: Error) => void,
+  ): Promise<Subscription> {
+    const socket = await subscribe(path, pane, (line) => onEvent(statusEvent(line)), onFail);
+
+    // A clean close, such as a herdr restart, sends no error.
+    socket.on("close", () => onFail(new Error("herdr closed the connection")));
+
+    return { close: () => socket.destroy() };
   }
 
-  function waiting(): [string, Watch][] {
-    return [...watches].filter(([, watch]) => watch.armed);
-  }
-
-  function hide(ui: ExtensionUIContext): void {
-    clearInterval(ticker);
-    ticker = undefined;
-    tui = undefined;
-
-    if (shown) {
-      shown = false;
-      ui.setWidget(WIDGET, undefined);
-    }
-  }
-
-  // pi stacks widgets in the order they're added and moves a re-added one to the end, so this adds
-  // the widget once and then only repaints it, keeping its place next to other widgets. Its theme
-  // is a live proxy, so it never needs adding again.
-  function refresh(): void {
-    const ui = context?.ui;
-
-    if (ui === undefined) {
-      return;
-    }
-
-    if (waiting().length === 0) {
-      hide(ui);
-
-      return;
-    }
-
-    if (shown) {
-      tui?.requestRender();
-
-      return;
-    }
-
-    shown = true;
-    ui.setWidget(WIDGET, (instance, theme) => {
-      tui = instance;
-
-      return {
-        render: (width: number) => widgetLines(waiting(), theme, width),
-        invalidate: () => undefined,
-      };
-    });
-
-    clearInterval(ticker);
-    ticker = setInterval(() => tui?.requestRender(), 1000);
-    ticker.unref();
-  }
-
-  function unwatch(pane: string): void {
-    watches.get(pane)?.socket.destroy();
-    watches.delete(pane);
-    refresh();
-  }
-
-  // A watch closes once it has nothing to report, so no socket outlives the wait.
-  function settle(pane: string, message: string): void {
-    tell(message);
-    unwatch(pane);
-  }
-
-  // Tells the model when a watch it relies on ends without a result.
-  function stop(pane: string, reason: string): void {
-    const watch = watches.get(pane);
-
-    if (watch?.armed === true) {
-      tell(
-        `Stopped watching herdr agent ${label(pane, watch.name)}: ${reason}. Check on it with herdr_read.`,
-      );
-    }
-
-    unwatch(pane);
-  }
-
-  function onEvent(pane: string, line: string): void {
-    const event: unknown = JSON.parse(line);
-
-    if (!Value.Check(StatusEvent, event)) {
-      throw new Error(`unexpected herdr event: ${line.slice(0, 200)}`);
-    }
-
-    const watch = watches.get(pane);
-    const { agent, agent_status: status } = event.data;
-
-    if (watch === undefined) {
-      return;
-    }
-
-    // herdr leaves out the agent, or sends null, once it exits.
-    if (agent === undefined || agent === null) {
-      stop(pane, "the agent exited");
-
-      return;
-    }
-
-    watch.events += 1;
-    watch.status = status;
-    watch.active ||= status === "working";
-
-    if (!report(pane, watch)) {
-      refresh();
-    }
-  }
-
-  // Returns whether it told pi the agent finished.
-  function report(pane: string, watch: Watch): boolean {
-    if (watches.get(pane) !== watch || !finished(watch, watch.status)) {
-      return false;
-    }
-
-    settle(
-      pane,
-      `Herdr agent ${label(pane, watch.name)} is ${watch.status}. Read its output with herdr_read.`,
-    );
-
-    return true;
-  }
+  const { serial, unwatch, withoutWatch, runRequest, promptPane } = createWatcher(pi, {
+    title: "Herdr",
+    tools: "herdr",
+    agentOf,
+    exited: (error) => error instanceof HerdrError && error.code === "agent_not_found",
+    subscribe: follow,
+    prompt: async (pane, prompt, signal) => {
+      await run(["agent", "prompt", pane, prompt], SEND_TIMEOUT_MS, signal);
+    },
+    keys: async (pane, keys, signal) => {
+      await run(["agent", "send-keys", pane, ...keys], SEND_TIMEOUT_MS, signal);
+    },
+    screen: (pane, signal) =>
+      run(["agent", "read", pane, "--source", "visible"], HERDR_TIMEOUT_MS, signal),
+  });
 
   async function agentOf(target: string, signal?: AbortSignal): Promise<Agent> {
     const parsed = await herdrJson(
@@ -640,357 +374,6 @@ export default function (pi: ExtensionAPI) {
     return { pane, name, status };
   }
 
-  async function open(pane: string): Promise<Watch> {
-    // Events in the same read as the confirmation arrive before the watch exists, so they wait.
-    const early: string[] = [];
-    let ready = false;
-
-    const socket = await subscribe(
-      path,
-      pane,
-      (line) => (ready ? onEvent(pane, line) : early.push(line)),
-      (error) => stop(pane, error.message),
-    );
-
-    const watch: Watch = {
-      armed: false,
-      active: false,
-      status: "unknown",
-      since: 0,
-      arm: 0,
-      events: 0,
-      socket,
-    };
-
-    // A clean close, such as a herdr restart, sends no error. A newer watch of the pane stays.
-    socket.on("close", () => {
-      if (watches.get(pane) === watch) {
-        stop(pane, "herdr closed the connection");
-      }
-    });
-
-    watches.set(pane, watch);
-    ready = true;
-
-    // readLines stops the watch on a bad line. These lines were held back from it, so a bad one
-    // stops the watch here.
-    try {
-      early.forEach((line) => onEvent(pane, line));
-    } catch (error) {
-      stop(pane, errorMessage(error));
-
-      throw error;
-    }
-
-    return watch;
-  }
-
-  // Calls on one pane run one at a time, so a failed send never undoes another call's arm, and
-  // only one call opens the pane's subscription.
-  function serial<T>(pane: string, task: () => Promise<T>): Promise<T> {
-    const result = (queues.get(pane) ?? Promise.resolve()).then(task);
-    // The next call waits for this one to end either way. This call's caller still gets its error.
-    const tail = Promise.allSettled([result]);
-
-    queues.set(pane, tail);
-    void tail.then(() => {
-      if (queues.get(pane) === tail) {
-        queues.delete(pane);
-      }
-    });
-
-    return result;
-  }
-
-  // Closes a watch that nothing waits on.
-  function release(pane: string, watch: Watch): void {
-    if (!watch.armed && watches.get(pane) === watch) {
-      unwatch(pane);
-    }
-  }
-
-  // Puts back the arm from before a failed send. That arm's stall check may have seen this call's
-  // arm and skipped, so it runs again.
-  function restore(pane: string, watch: Watch, before: WatchState): void {
-    const { status, events, active, ...fields } = before;
-
-    // Work this call's lookup or events saw came after the earlier arm, so it counts for that arm.
-    Object.assign(watch, fields, { active: active || watch.active });
-
-    // An event during the send is newer than the status from before.
-    if (watch.events === events) {
-      watch.status = status;
-    }
-
-    release(pane, watch);
-
-    // A finish this call's arm held back is reported now.
-    if (report(pane, watch)) {
-      return;
-    }
-
-    if (watch.armed && !watch.active) {
-      checkStall(pane, watch);
-    }
-
-    refresh();
-  }
-
-  // An agent that never starts working would otherwise leave the model waiting for good.
-  function checkStall(pane: string, watch: Watch): void {
-    const arm = watch.arm;
-
-    setTimeout(() => {
-      if (watch.armed && !watch.active && watch.arm === arm && watches.get(pane) === watch) {
-        settle(
-          pane,
-          `Herdr agent ${label(pane, watch.name)} didn't start working within ${STALL_MS / 1000} seconds, so it may not have the prompt. Check on it with herdr_read.`,
-        );
-      }
-    }, STALL_MS).unref();
-  }
-
-  // Returns the watch's state from before, for a failed send to put back.
-  function armWatch(watch: Watch, agent: Agent, prompted: boolean): WatchState {
-    // The agent can exit, or herdr can close the connection, during the lookup.
-    if (watches.get(agent.pane) !== watch) {
-      throw new Error(
-        `The watch on herdr agent ${label(agent.pane, agent.name)} closed before it was armed. Call herdr_watch again.`,
-      );
-    }
-
-    const before = snapshot(watch);
-
-    Object.assign(watch, {
-      name: agent.name,
-      armed: true,
-      active: agent.status === "working",
-      // herdr sends no event when a prompt reaches a busy agent, so a busy one shows as working.
-      status: prompted && agent.status !== "working" ? "prompted" : agent.status,
-      since: Date.now(),
-      arm: watch.arm + 1,
-    });
-
-    refresh();
-
-    return before;
-  }
-
-  async function sendPrompt(
-    watch: Watch,
-    agent: Agent,
-    prompt: string,
-    before: WatchState,
-    signal: AbortSignal | undefined,
-  ): Promise<void> {
-    try {
-      await run(["agent", "prompt", agent.pane, prompt], SEND_TIMEOUT_MS, signal);
-    } catch (error) {
-      restore(agent.pane, watch, before);
-
-      throw error;
-    }
-  }
-
-  // The second lookup reads the status after the subscription starts. An event that comes in while
-  // it runs is newer than what it read.
-  async function currentAgent(
-    pane: string,
-    watch: Watch,
-    signal: AbortSignal | undefined,
-  ): Promise<Agent> {
-    const seen = watch.events;
-
-    // A failed lookup or a cancel closes the watch only if nothing waits on it.
-    try {
-      const agent = await agentOf(pane, signal);
-
-      signal?.throwIfAborted();
-
-      return watch.events === seen ? agent : { ...agent, status: watch.status };
-    } catch (error) {
-      release(pane, watch);
-
-      throw error;
-    }
-  }
-
-  // Watches the agent if it's working. Returns whether pi waits on it. A watch an earlier call
-  // armed still counts, even before the agent starts working.
-  async function watchAgent(
-    pane: string,
-    signal: AbortSignal | undefined,
-  ): Promise<{ agent: Agent; pending: boolean }> {
-    const watch = watches.get(pane) ?? (await open(pane));
-    const agent = await currentAgent(pane, watch, signal);
-
-    if (agent.status === "working") {
-      armWatch(watch, agent, false);
-    } else {
-      release(pane, watch);
-    }
-
-    return { agent, pending: watch.armed };
-  }
-
-  async function watchPane(pane: string, signal: AbortSignal | undefined): Promise<string> {
-    const { agent, pending } = await watchAgent(pane, signal);
-    const name = label(pane, agent.name);
-
-    const next = `${WILL_MESSAGE} End your turn or keep working.`;
-
-    if (!pending) {
-      return `Herdr agent ${name} is ${agent.status}, so there's nothing to wait for.`;
-    }
-
-    return agent.status === "working"
-      ? `Watching herdr agent ${name}. ${next}`
-      : `Herdr agent ${name} is ${agent.status}, but you're already waiting on it. ${next}`;
-  }
-
-  async function promptPane(
-    pane: string,
-    prompt: string,
-    signal: AbortSignal | undefined,
-  ): Promise<string> {
-    const watch = watches.get(pane) ?? (await open(pane));
-    const agent = await currentAgent(pane, watch, signal);
-    const before = armWatch(watch, agent, true);
-
-    await sendPrompt(watch, agent, prompt, before, signal);
-
-    // A slash command such as /review or /new can open a menu or finish without starting a turn,
-    // so the agent may never work.
-    if (prompt.trimStart().startsWith("/")) {
-      return checkAfter(pane, "the command", () => afterCommand(pane, watch, signal));
-    }
-
-    checkStall(pane, watch);
-
-    return `Prompted herdr agent ${label(pane, agent.name)}. ${WILL_MESSAGE} End your turn or keep working.`;
-  }
-
-  // Waits as long as the stall check would, then reports the agent's state and screen instead of
-  // a stall message. A watch the agent never worked for stops waiting.
-  async function afterCommand(
-    pane: string,
-    watch: Watch,
-    signal: AbortSignal | undefined,
-  ): Promise<string> {
-    const deadline = Date.now() + STALL_MS;
-
-    try {
-      await sleep(KEYS_SETTLE_MS, undefined, { signal });
-
-      while (!watch.active && watches.get(pane) === watch && Date.now() < deadline) {
-        await sleep(WORK_CHECK_MS, undefined, { signal });
-      }
-    } finally {
-      if (!watch.active) {
-        watch.armed = false;
-      }
-    }
-
-    return showAgent(pane, "the command", signal);
-  }
-
-  // Keys usually answer a dialog or interrupt the agent, so this reports the result right away
-  // instead of a message later. Their result replaces the message an earlier watch would send.
-  async function keysPane(
-    pane: string,
-    keys: string[],
-    signal: AbortSignal | undefined,
-  ): Promise<string> {
-    await withoutWatch(pane, () =>
-      run(["agent", "send-keys", pane, ...keys], SEND_TIMEOUT_MS, signal),
-    );
-
-    return checkAfter(pane, "the keys", async () => {
-      await sleep(KEYS_SETTLE_MS, undefined, { signal });
-
-      return showAgent(pane, "the keys", signal);
-    });
-  }
-
-  // What was sent went out, so a failed check says so, or pi may send it again. On failure, this
-  // also closes the paused watch, unless the check armed it again.
-  async function checkAfter(
-    pane: string,
-    what: string,
-    check: () => Promise<string>,
-  ): Promise<string> {
-    try {
-      return await check();
-    } catch (error) {
-      const watch = watches.get(pane);
-
-      if (watch !== undefined) {
-        release(pane, watch);
-      }
-
-      throw new Error(
-        `Sent ${what} to herdr agent \`${pane}\`, but checking on it failed: ${errorMessage(error)}`,
-        { cause: error },
-      );
-    }
-  }
-
-  async function showAgent(
-    pane: string,
-    what: string,
-    signal: AbortSignal | undefined,
-  ): Promise<string> {
-    // Keys such as ctrl+c can quit the agent, which is a result, not a failure.
-    const watched = await watchAgent(pane, signal).catch((cause: unknown) => {
-      if (cause instanceof HerdrError && cause.code === "agent_not_found") {
-        return undefined;
-      }
-
-      throw cause;
-    });
-
-    if (watched === undefined) {
-      return `Sent ${what} to herdr agent \`${pane}\`, and the agent exited.`;
-    }
-
-    const { agent, pending } = watched;
-
-    const screen = await run(
-      ["agent", "read", pane, "--source", "visible"],
-      HERDR_TIMEOUT_MS,
-      signal,
-    );
-
-    const next = pending ? ` ${WILL_MESSAGE}` : "";
-
-    return `Sent ${what} to herdr agent ${label(pane, agent.name)}. It's ${agent.status}.${next} Its screen:\n\n${nonBlank(screen, SCREEN_LINES)}`;
-  }
-
-  // Holds back an armed watch's message while a call acts on the agent, and puts the watch back if
-  // that fails.
-  async function withoutWatch(pane: string, task: () => Promise<string>): Promise<void> {
-    const watch = watches.get(pane);
-
-    if (watch === undefined) {
-      await task();
-
-      return;
-    }
-
-    const before = snapshot(watch);
-
-    watch.armed = false;
-    refresh();
-
-    try {
-      await task();
-    } catch (error) {
-      restore(pane, watch, before);
-
-      throw error;
-    }
-  }
-
   // --current resolves pi's own pane even after it moved, unlike HERDR_PANE_ID.
   async function currentPane(
     signal: AbortSignal | undefined,
@@ -1008,18 +391,6 @@ export default function (pi: ExtensionAPI) {
     return { pane, workspace };
   }
 
-  function runRequest(
-    pane: string,
-    request: Request,
-    signal: AbortSignal | undefined,
-  ): Promise<string> {
-    if (request.kind === "prompt") {
-      return promptPane(pane, request.prompt, signal);
-    }
-
-    return request.kind === "keys" ? keysPane(pane, request.keys, signal) : watchPane(pane, signal);
-  }
-
   async function splitDirection(pane: string, signal: AbortSignal | undefined): Promise<string> {
     const layout = await herdrJson(
       pi,
@@ -1035,17 +406,7 @@ export default function (pi: ExtensionAPI) {
       throw new Error(`herdr's layout doesn't list this pane, ${pane}`);
     }
 
-    if (rect.width / 2 >= MIN_SPLIT_COLUMNS) {
-      return "right";
-    }
-
-    if (rect.height / 2 >= MIN_SPLIT_ROWS) {
-      return "down";
-    }
-
-    throw new Error(
-      `Your pane is ${rect.width}x${rect.height}, too small to split again. Use \`placement: "tab"\`, or close a pane you started with herdr_close.`,
-    );
+    return splitSide(rect.width, rect.height, "herdr");
   }
 
   // Parallel starts split pi's pane one at a time, so each sees the layout the last one left.
@@ -1314,20 +675,12 @@ export default function (pi: ExtensionAPI) {
   }
 
   // A failed call leaves a pane or workspace it opened, which `close` closes before this rethrows.
-  async function orClose<T>(close: string[], task: () => Promise<T>): Promise<T> {
-    try {
-      return await task();
-    } catch (error) {
-      await run(close).catch((cause: unknown) => {
-        throw new AggregateError(
-          [error, cause],
-          `${errorMessage(error)}. Cleaning up with \`herdr ${close.join(" ")}\` failed too: ${errorMessage(cause)}`,
-          { cause: error },
-        );
-      });
+  function orClose<T>(close: string[], task: () => Promise<T>): Promise<T> {
+    const cleanUp = async () => {
+      await run(close);
+    };
 
-      throw error;
-    }
+    return orCleanUp(task, cleanUp, `Cleaning up with \`herdr ${close.join(" ")}\``);
   }
 
   // Returns whether the agent is ready. herdr keeps an agent that's blocked during startup, so its
@@ -1416,34 +769,24 @@ export default function (pi: ExtensionAPI) {
 
     const running = `Running \`${params.command}\` in pane \`${pane}\`, in ${where}.`;
 
-    if (params.wait_for === undefined) {
+    const { wait_for: pattern } = params;
+
+    if (pattern === undefined) {
       return `${running} Read its output with herdr_read, and close it with herdr_close.`;
     }
 
     const seconds = params.timeout_seconds ?? 60;
 
-    // The command already runs, so a failed wait says where, for pi to read or close it.
-    const line = await waitOutput(pane, params.wait_for, seconds, signal).catch(
-      (cause: unknown) => {
-        throw new Error(
-          `${running} Waiting for its output failed: ${errorMessage(cause)}. The command still runs there. Read it with herdr_read, or close it with herdr_close.`,
-          { cause },
-        );
-      },
+    return matchedOutput(running, pattern, "herdr", () =>
+      waitOutput(pane, pattern, seconds, signal),
     );
-
-    // herdr returns the whole matching line, and one line of a log can be huge.
-    const matched = truncateTail(line.trim(), { maxBytes: DEFAULT_MAX_BYTES });
-    const cut = matched.truncated ? ` It's cut to the last ${formatSize(DEFAULT_MAX_BYTES)}.` : "";
-
-    return `${running} Its output matched \`${params.wait_for}\`:${cut}\n\n${matched.content}`;
   }
 
   const startTool = defineTool({
     name: "herdr_start",
     label: "Herdr Start",
     description:
-      "Start a coding agent in a new herdr pane next to yours, in a new tab, or in a git worktree, and optionally give it its first task. With a prompt, you get a message when the agent is done, idle, or blocked. A prompt that starts with `/` instead returns the agent's state and screen, like herdr_watch. The user's focus stays where it is.",
+      "Start a coding agent in a new herdr pane next to yours, in a new tab, or in a git worktree, and optionally give it its first task. With a prompt, you get a message when the agent is done, idle, blocked, or failed. A prompt that starts with `/` instead returns the agent's state and screen, like herdr_watch. The user's focus stays where it is.",
     promptSnippet:
       "Start a herdr agent in a new pane, tab, or worktree, with an optional first task",
     promptGuidelines: [
@@ -1529,7 +872,7 @@ export default function (pi: ExtensionAPI) {
   const watchTool = defineTool({
     name: "herdr_watch",
     label: "Herdr Watch",
-    description: `Prompt a herdr agent or send it keys. A prompt returns right away, and you get a message when the agent is done, idle, or blocked. Keys wait ${KEYS_SETTLE_MS / 1000} seconds, then return the agent's state and screen. So does a prompt that starts with \`/\`, after up to ${STALL_MS / 1000} seconds for the agent to start working. With only \`agent\`, wait on an agent that's already working.`,
+    description: `Prompt a herdr agent or send it keys. A prompt returns right away, and you get a message when the agent is done, idle, blocked, or failed. Keys wait ${KEYS_SETTLE_MS / 1000} seconds, then return the agent's state and screen. So does a prompt that starts with \`/\`, after up to ${STALL_MS / 1000} seconds for the agent to start working. With only \`agent\`, wait on an agent that's already working.`,
     promptSnippet: "Prompt a herdr agent or send it keys, and get a message when it settles",
     promptGuidelines: [
       "After you prompt a herdr agent, end your turn or keep working until its message arrives. Don't poll it with herdr_read, bash, or `sleep`. Keys and slash commands return the agent's state and screen, so don't check on it after them.",
@@ -1639,7 +982,7 @@ export default function (pi: ExtensionAPI) {
       });
 
       return text(
-        `Closed ${targetLabel(target)}${target.kind === "agent" ? " and its pane" : ""}.`,
+        `Closed ${targetLabel("herdr", target)}${target.kind === "agent" ? " and its pane" : ""}.`,
       );
     },
   });
@@ -1677,7 +1020,7 @@ export default function (pi: ExtensionAPI) {
 
       await run(args, HERDR_TIMEOUT_MS, signal);
 
-      return text(`Focused ${targetLabel(target)}.`);
+      return text(`Focused ${targetLabel("herdr", target)}.`);
     },
   });
 
@@ -1690,15 +1033,4 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(closeTool);
   pi.registerTool(runTool);
   pi.registerTool(focusTool);
-
-  pi.on("session_start", async (_event, ctx) => {
-    context = ctx;
-    live = true;
-  });
-
-  pi.on("session_shutdown", async () => {
-    live = false;
-    [...watches.keys()].forEach(unwatch);
-    context = undefined;
-  });
 }

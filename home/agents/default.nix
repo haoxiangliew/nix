@@ -11,7 +11,7 @@ let
   pkgsOf =
     packages: name: path:
     lib.listToAttrs (
-      map (p: lib.nameValuePair name (path p)) (lib.filter (p: (p.pname or "") == name) packages)
+      map (p: lib.nameValuePair name (path p)) (lib.filter (p: lib.getName p == name) packages)
     );
 
   # pi runs herdr agents with its own tools, from pi/src/herdr-agents.ts, instead of the herdr skill.
@@ -35,7 +35,23 @@ let
     }
   ];
 
-  integrations = pkgsOf config.home.packages "herdr" lib.id;
+  integrations =
+    pkgsOf config.home.packages "herdr" lib.id // pkgsOf config.home.packages "rex" lib.id;
+
+  # Rex.app ships its CLI inside the server bundle it updates. Rex adds that directory to PATH, but
+  # nix-darwin's set-environment replaces PATH when fish starts.
+  rex = pkgs.writeShellScriptBin "rex" ''
+    exec "''${REX_BIN_DIR:-$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS}/rex" "$@"
+  '';
+
+  # Rex.app may not be installed, so a failed Rex setup warns instead of failing activation.
+  installIntegration = {
+    herdr = exe: target: "run ${exe} integration install ${target}";
+    rex = exe: target: ''
+      run ${exe} --autostart=false skill setup --agent ${target} --session-naming \
+        || warnEcho "Couldn't set up Rex for ${target}"
+    '';
+  };
 
   # Versions and hashes come from bun.lock, so `bun update` bumps runtime packages too.
   npmPackage =
@@ -91,7 +107,7 @@ let
 
   talkPrompt = "Help the user without changing any files. You can read files and run commands, but don't run commands that create, edit, or delete files. Suggest changes instead of making them.";
 
-  herdrAgents = {
+  integrationAgents = {
     claude-code = {
       target = "claude";
       after = [ "mergeClaudeCodeSettings" ];
@@ -117,13 +133,16 @@ in
 
   options.programs =
     lib.recursiveUpdate
-      (lib.genAttrs (lib.attrNames herdrAgents) (
+      (lib.genAttrs (lib.attrNames integrationAgents) (
         lib.const {
-          integrations.herdr = lib.mkOption {
-            type = lib.types.nullOr lib.types.package;
-            default = null;
-            description = "Herdr package whose agent integration home-manager installs during activation.";
-          };
+          integrations = lib.genAttrs (lib.attrNames installIntegration) (
+            name:
+            lib.mkOption {
+              type = lib.types.nullOr lib.types.package;
+              default = null;
+              description = "${name} package whose agent integration home-manager installs during activation.";
+            }
+          );
         }
       ))
       {
@@ -157,9 +176,10 @@ in
           # https://pi.dev/docs/latest/environment-variables
           PI_CACHE_RETENTION = "long";
         };
-        packages = with pkgs.llm-agents; [
-          herdr
-        ];
+        packages = [
+          pkgs.llm-agents.herdr
+        ]
+        ++ lib.optional pkgs.stdenv.isDarwin rex;
       }
       (mutableConfig.mutableJson {
         name = "mergeClaudeCodeSettings";
@@ -202,6 +222,7 @@ in
                   "bg_task_spawn"
                   "bg_task_watch"
                   "herdr_run"
+                  "rex_run"
                 ]
                 (
                   lib.const {
@@ -298,21 +319,23 @@ in
             };
       }
       {
-        activation = lib.mkMerge (
-          lib.mapAttrsToList (
-            name: agent:
+        activation = lib.concatMapAttrs (
+          name: agent:
+          let
+            cfg = config.programs.${name};
+          in
+          lib.concatMapAttrs (
+            integration: install:
             let
-              cfg = config.programs.${name};
+              package = cfg.integrations.${integration};
             in
-            {
-              "installHerdrIntegration-${name}" = lib.mkIf (cfg.enable && cfg.integrations.herdr != null) (
-                lib.hm.dag.entryAfter ([ "linkGeneration" ] ++ agent.after) ''
-                  run ${lib.getExe cfg.integrations.herdr} integration install ${agent.target}
-                ''
-              );
+            lib.optionalAttrs (cfg.enable && package != null) {
+              "install${lib.toSentenceCase integration}Integration-${name}" = lib.hm.dag.entryAfter (
+                [ "linkGeneration" ] ++ agent.after
+              ) (install (lib.getExe package) agent.target);
             }
-          ) herdrAgents
-        );
+          ) installIntegration
+        ) integrationAgents;
       }
     ];
 
@@ -405,6 +428,7 @@ in
           theme = "light/dracula-pro";
           transport = "websocket";
           terminal.showTerminalProgress = true;
+          showHardwareCursor = true;
           markdown.mermaid = "off";
           enableInstallTelemetry = false;
           # use bun as npm. pi's update check runs `npm view`, so this runs `bun info` instead
@@ -430,6 +454,9 @@ in
           talk.prompt = talkPrompt;
           mcpAncestors.roots = [ "~/Developer" ];
           rewind.silentCheckpoints = true;
+          # hides the Rex skill that Codex's integration puts in ~/.agents/skills, which pi reads by
+          # default. pi runs Rex agents with its own tools, from pi/src/rex.ts.
+          skills = [ "-${config.home.homeDirectory}/.agents/skills/rex" ];
           packages = [
             "npm:pi-web-access"
             "npm:@gotgenes/pi-subagents"
@@ -471,6 +498,7 @@ in
           "skill-mention.ts" = ./pi/src/skill-mention.ts;
           "attention.ts" = ./pi/src/attention.ts;
           "herdr-agents.ts" = ./pi/src/herdr-agents.ts;
+          "rex.ts" = ./pi/src/rex.ts;
           "auto-mode.ts" = ./pi/src/auto-mode.ts;
           "compaction.ts" = ./pi/src/compaction.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
@@ -487,7 +515,7 @@ in
             }
           }/review.ts";
         };
-        inherit integrations;
+        integrations = removeAttrs integrations [ "rex" ];
         skills = piSkills;
       };
     };

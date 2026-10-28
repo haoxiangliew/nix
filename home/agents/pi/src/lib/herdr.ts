@@ -8,8 +8,8 @@ import { createConnection, type Socket } from "node:net";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 
-import { CommandError, runCommand } from "./command.ts";
-import { errorMessage } from "./settings.ts";
+import { CommandError, parseOutput, runCommand } from "./command.ts";
+import { readLines } from "./lines.ts";
 
 export const HERDR_TIMEOUT_MS = 2000;
 
@@ -166,39 +166,8 @@ export async function herdrJson<T extends TSchema>(
   signal?: AbortSignal,
 ): Promise<Static<T>> {
   const stdout = await herdr(pi, args, timeout, signal);
-  const parsed: unknown = JSON.parse(stdout);
 
-  if (!Value.Check(schema, parsed)) {
-    throw new Error(
-      `unexpected output from herdr ${args.slice(0, 2).join(" ")}: ${stdout.slice(0, 200)}`,
-    );
-  }
-
-  return parsed;
-}
-
-// herdr's socket is a boundary, so an error in a line goes to onError instead of escaping the
-// listener and crashing pi.
-function readLines(
-  socket: Socket,
-  onLine: (line: string) => void,
-  onError: (error: Error) => void,
-): void {
-  let buffer = "";
-
-  socket.on("data", (chunk) => {
-    buffer += chunk.toString();
-
-    const lines = buffer.split("\n");
-
-    buffer = lines.pop() ?? "";
-
-    try {
-      lines.filter((line) => line.trim() !== "").forEach(onLine);
-    } catch (error) {
-      onError(new Error(errorMessage(error)));
-    }
-  });
+  return parseOutput(schema, stdout, `herdr ${args.slice(0, 2).join(" ")}`);
 }
 
 /** Resolves once herdr confirms the subscription, so no status change is missed after that. */

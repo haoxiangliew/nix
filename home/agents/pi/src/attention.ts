@@ -8,6 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { Type, type Static } from "typebox";
 
+import { multiplexer } from "./lib/multiplexer.ts";
 import { loadOrReport } from "./lib/settings.ts";
 
 const Config = Type.Object(
@@ -27,7 +28,7 @@ const ASK_TOOL = "ask_user_question";
 
 const ASK_RULE = `Use ${ASK_TOOL} only for a choice the user hasn't made and you can't make yourself. Explain the options in your message and say which one you recommend before you ask. Show drafts and diffs in your message and end your turn, instead of asking whether to apply them. Don't end your turn with a question in chat.`;
 
-const paneId = process.env.HERDR_ENV === "1" ? process.env.HERDR_PANE_ID : undefined;
+const paneId = multiplexer === "herdr" ? process.env.HERDR_PANE_ID : undefined;
 
 interface PaneInfo {
   result?: { pane?: { tab_id?: string; workspace_id?: string } };
