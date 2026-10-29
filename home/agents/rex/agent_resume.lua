@@ -31,6 +31,10 @@ local SETTINGS = SELF:match("^(.*)/[^/]+$") .. "/agent_resume.json"
 -- How long a restarted server's panes get to come back.
 local RESTORE_SECONDS = 60
 
+-- How long a pane gets, from when it came back, for its shell to finish starting, which includes a
+-- direnv that builds a Nix shell.
+local READY_SECONDS = 600
+
 -- How long a pane's processes must settle before the script checks whether its agent quit.
 local SETTLE_SECONDS = 2
 
@@ -221,6 +225,35 @@ local function idle_shell(result)
   return true
 end
 
+-- Whether the pane's shell is reading a command line, so a typed line goes to it. A shell that runs
+-- a prompt hook, such as direnv's, still reports itself as the foreground process, and the hook's
+-- programs can read the terminal and swallow the line. The line editors of fish, zsh, and bash turn
+-- bracketed paste on only while they read a line, so a shell without it never counts as ready.
+local function ready_shell(session_id, block_id, result)
+  if not idle_shell(result) then
+    return false
+  end
+
+  local where = { session_id = session_id, block_id = block_id }
+  local modes, err = rex.block.call(TERMINAL, "modes", where)
+
+  if modes == nil then
+    if gone(err) then
+      return false
+    end
+
+    fail(("Looking up the terminal modes of pane %s failed: %s"):format(block_id, tostring(err)))
+  end
+
+  for _, mode in ipairs(modes.modes or {}) do
+    if mode.name == "bracketed_paste" then
+      return mode.set == true
+    end
+  end
+
+  fail(("Rex reported no bracketed_paste mode for pane %s."):format(block_id))
+end
+
 -- A script hears every session with --all, but can call one only once attached to it. Returns
 -- false when the session is gone.
 local function attach(session_id)
@@ -377,7 +410,7 @@ local function type_line(session_id, block_id, line)
   return true
 end
 
--- Resumes one pane's agent once the pane is back at its shell. Returns true when the pane needs
+-- Resumes one pane's agent once the pane's shell is ready. Returns true when the pane needs
 -- nothing more: it has no record, its agent runs, or this server resumed it already. `resumed`
 -- marks a record this server resumed, so a script that replaces this one doesn't type it again.
 -- It's written before the command is typed, so it never overwrites the record the agent writes
@@ -390,7 +423,7 @@ local function resume_pane(block_id, session_id, instance_id)
     return true
   end
 
-  if not (result and idle_shell(result)) then
+  if not (result and ready_shell(session_id, block_id, result)) then
     return false
   end
 
@@ -416,6 +449,24 @@ local function resume_pane(block_id, session_id, instance_id)
   return true
 end
 
+-- Whether any pane still has time: RESTORE_SECONDS from the restart to come back, then
+-- READY_SECONDS from its return for its shell. back_at holds when each pane came back.
+local function waits(waiting, live, back_at, started)
+  local now = os.time()
+
+  for block_id in pairs(waiting) do
+    if live[block_id] then
+      if now - back_at[block_id] < READY_SECONDS then
+        return true
+      end
+    elseif now - started < RESTORE_SECONDS then
+      return true
+    end
+  end
+
+  return false
+end
+
 -- Waits for each recorded pane to come back, and resumes its agent.
 local function resume(instance_id)
   local waiting = {}
@@ -425,27 +476,37 @@ local function resume(instance_id)
     waiting[block_id] = true
   end
 
-  local deadline = os.time() + RESTORE_SECONDS
-  local live = {}
+  local started = os.time()
+  local live, back_at = {}, {}
 
-  while next(waiting) ~= nil and os.time() < deadline do
+  while next(waiting) ~= nil do
     live = panes()
 
+    local now = os.time()
+
     for block_id in pairs(waiting) do
+      if live[block_id] and back_at[block_id] == nil then
+        back_at[block_id] = now
+      end
+
       if resume_pane(block_id, live[block_id], instance_id) then
         waiting[block_id] = nil
       end
     end
 
-    if next(waiting) ~= nil then
-      rex.sleep(1)
+    if not waits(waiting, live, back_at, started) then
+      break
     end
+
+    rex.sleep(1)
   end
 
   -- Panes that didn't come back are gone.
   for block_id in pairs(waiting) do
     if live[block_id] == nil then
       remove_record(block_id)
+    else
+      rex.log("warn", ("Didn't resume %s: its shell didn't start reading a command in time."):format(block_id))
     end
   end
 end
