@@ -305,9 +305,23 @@ local function call(method, args)
   return result
 end
 
--- Rex ends a failed call's message with its code, such as `(status=404 code=session_not_found)`.
+-- In a script, Rex ends a failed call's message with its code, such as
+-- `(status=404 code=session_not_found)`. An action from the configuration file gets only the
+-- message, with no code. There, only the two messages that say a session or pane is gone count:
+-- `session session:… not found` and `block not found: block:…`. Any other error has no code.
 local function error_code(err)
-  return tostring(err):match("code=([%w_]+)%)")
+  local message = tostring(err)
+  local code = message:match("code=([%w_]+)%)")
+
+  if code ~= nil then
+    return code
+  elseif message:match("^session session:%S+ not found$") then
+    return "session_not_found"
+  elseif message:match("^block not found: block:%S+$") then
+    return "not_found"
+  end
+
+  return nil
 end
 
 -- Whether a failed call's error says its pane or session is gone, as when it closed meanwhile.
