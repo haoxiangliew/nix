@@ -42,7 +42,7 @@ type Config = Static<typeof Config>;
 
 // For each session provider, the menu suggests the first of these models that has credentials.
 const SUGGESTED_MODELS = new Map<string, string[]>([
-  ["anthropic", ["openai/gpt-6.1-sol", "openai-codex/gpt-6.1-sol"]],
+  ["anthropic", ["openai/gpt-6-astra", "openai-codex/gpt-6-astra"]],
   ["openai", ["anthropic/claude-opus-5-5"]],
   ["openai-codex", ["anthropic/claude-opus-5-5"]],
 ]);
