@@ -30,13 +30,60 @@ const ASK_RULE = `Use ${ASK_TOOL} only for a choice the user hasn't made and you
 
 const paneId = multiplexer === "herdr" ? process.env.HERDR_PANE_ID : undefined;
 
-// pi reports its state to Rex with OSC 7501 and shows its own dialogs as blocked, but a dialog from
-// ctx.ui.custom(), such as a permission prompt or ask_user_question, leaves it working. A separate
-// record with the id `dialog` reports that dialog as blocked and leaves pi's own record alone.
-// PI_PROGRAM_STATUS=0 turns pi's reports off.
-const reportsStatus = multiplexer === "rex" && process.env.PI_PROGRAM_STATUS !== "0";
+// pi reports its state to Rex with OSC 7501, but shows a ctx.ui.custom() dialog as working. While
+// one is open, this reports pi as blocked, and again after each of pi's own reports. When it closes, this
+// writes pi's latest report again, since pi only reports changes. It reports only after pi has, so
+// pi's support check and PI_PROGRAM_STATUS still apply.
+const reportsStatus = multiplexer === "rex";
 
-const DIALOG_RECORD = "dialog";
+// How pi's reports on its own record start. They have no `id`.
+const REPORT_PREFIX = "\u001B]7501;state=";
+
+// pi's latest report, which is written again when the dialog closes.
+let piReport: string | undefined;
+
+let blockedReport: string | undefined;
+
+// Writes without the watch, so this extension's reports aren't taken for pi's.
+let writeRaw: ((chunk: string) => boolean) | undefined;
+
+let unwatch: (() => void) | undefined;
+
+function noteReport(chunk: string | Uint8Array): void {
+  if (chunk instanceof Uint8Array || !chunk.startsWith(REPORT_PREFIX) || chunk.includes(":id=")) {
+    return;
+  }
+
+  piReport = chunk;
+
+  if (blockedReport !== undefined && !chunk.startsWith(`${REPORT_PREFIX}clear`)) {
+    writeRaw?.(blockedReport);
+  }
+}
+
+function watchReports(): void {
+  const { stdout } = process;
+  const write = stdout.write.bind(stdout);
+
+  // SAFETY: the wrapper passes its arguments to stdout's own write unchanged and returns its
+  // result, so it takes whatever either of write's overloads takes.
+  const watching = ((...args: Parameters<typeof write>) => {
+    const written = write(...args);
+
+    noteReport(args[0]);
+
+    return written;
+  }) as typeof stdout.write;
+
+  stdout.write = watching;
+  writeRaw = (chunk) => write(chunk);
+
+  unwatch = () => {
+    if (stdout.write === watching) {
+      stdout.write = write;
+    }
+  };
+}
 
 interface PaneInfo {
   result?: { pane?: { tab_id?: string; workspace_id?: string } };
@@ -56,18 +103,22 @@ function firstLine(text: string | undefined): string | undefined {
   return line ? line.slice(0, 100) : undefined;
 }
 
-// Without a label, removes the record.
-function reportDialog(label?: string): void {
-  if (!reportsStatus) {
+function reportBlocked(label: string): void {
+  if (piReport === undefined || writeRaw === undefined) {
     return;
   }
 
-  const pairs =
-    label === undefined
-      ? ["state=clear", `id=${DIALOG_RECORD}`]
-      : ["state=blocked", `id=${DIALOG_RECORD}`, `msg=${Buffer.from(label).toString("base64")}`];
+  blockedReport = `\u001B]7501;state=blocked:app=pi:msg=${Buffer.from(label).toString("base64")}\u001B\\`;
+  writeRaw(blockedReport);
+}
 
-  process.stdout.write(`\u001B]7501;${pairs.join(":")}\u001B\\`);
+function reportClosed(): void {
+  if (blockedReport === undefined || piReport === undefined || writeRaw === undefined) {
+    return;
+  }
+
+  blockedReport = undefined;
+  writeRaw(piReport);
 }
 
 async function herdrJson<T>(pi: ExtensionAPI, args: string[]): Promise<T | undefined> {
@@ -145,10 +196,26 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     config = loadOrReport(ctx, "The attention extension", "attention", Config);
+
+    if (reportsStatus && watched(ctx) && unwatch === undefined) {
+      watchReports();
+    }
   });
 
-  pi.on("session_shutdown", async () => {
+  // Subagents start and end their own sessions without a UI, and share this module with the session
+  // that owns the terminal, so only that session watches pi's reports.
+  pi.on("session_shutdown", async (_event, ctx) => {
     live = false;
+
+    if (!watched(ctx)) {
+      return;
+    }
+
+    unwatch?.();
+    unwatch = undefined;
+    writeRaw = undefined;
+    piReport = undefined;
+    blockedReport = undefined;
   });
 
   pi.on("agent_start", async () => {
@@ -175,7 +242,7 @@ export default function (pi: ExtensionAPI) {
     pi.events.emit("herdr:blocked", { active: true, label });
 
     if (event.kind === "custom") {
-      reportDialog(label);
+      reportBlocked(label);
     }
 
     notifyLater(pi, config, () => live && prompt === label, label);
@@ -190,7 +257,7 @@ export default function (pi: ExtensionAPI) {
     pi.events.emit("herdr:blocked", { active: false });
 
     if (event.kind === "custom") {
-      reportDialog();
+      reportClosed();
     }
   });
 

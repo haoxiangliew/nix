@@ -22,8 +22,9 @@ const REX = process.env.REX_BIN_DIR === undefined ? "rex" : join(process.env.REX
 // Rex exits with this when a target, such as a block, doesn't exist.
 const NOT_FOUND_EXIT = 3;
 
-// Rex commands that deliver input to a terminal.
-const SENDS = new Set(["send", "send-key", "api"]);
+// Rex commands that deliver input to a terminal. `rex api call` delivers it only with this method.
+const SENDS = new Set(["send", "send-key"]);
+const SEND_METHOD = "block.event";
 
 type Exec = Pick<ExtensionAPI, "exec">;
 
@@ -44,9 +45,73 @@ const Block = Type.Object({
   window_id: Type.Optional(Type.String()),
 });
 
-export type BlockInfo = Static<typeof Block>;
+// Every block in a session, including detached ones, which a session's view leaves out. Rex sends
+// null or leaves out an empty list.
+export const BlockList = Type.Object({
+  blocks: Type.Optional(Type.Union([Type.Array(Block), Type.Null()])),
+});
 
-export const BlockList = Type.Object({ blocks: Type.Array(Block) });
+export const SessionList = Type.Object({
+  sessions: Type.Array(
+    Type.Object({ session_id: Type.String(), label: Type.Optional(Type.String()) }),
+  ),
+});
+
+// One session's tabs and their panes. Floating panes are in later layers. Rex sends null or leaves
+// out an empty list, as for a session with no tabs.
+export const SessionView = Type.Object({
+  active_window_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  windows: Type.Optional(
+    Type.Union([
+      Type.Array(
+        Type.Object({
+          window_id: Type.String(),
+          label: Type.Optional(Type.String()),
+          focused_block_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          layers: Type.Optional(
+            Type.Union([
+              Type.Array(
+                Type.Object({
+                  blocks: Type.Optional(Type.Union([Type.Array(Block), Type.Null()])),
+                }),
+              ),
+              Type.Null(),
+            ]),
+          ),
+        }),
+      ),
+      Type.Null(),
+    ]),
+  ),
+});
+
+export type SessionWindow = NonNullable<Static<typeof SessionView>["windows"]>[number];
+
+// What worktree.lua's actions return.
+export const WorktreeOpened = Type.Object({
+  path: Type.String(),
+  branch: Type.Optional(Type.String()),
+  created: Type.Boolean(),
+  session_id: Type.String(),
+  window_id: Type.String(),
+  // A new pane, when the call asked for a command or opened a new tab.
+  block_id: Type.Optional(Type.String()),
+  tab: Type.Union([Type.Literal("new"), Type.Literal("existing")]),
+});
+
+export const WorktreeRemoved = Type.Object({
+  path: Type.String(),
+  branch: Type.Optional(Type.String()),
+  closed_tabs: Type.Number(),
+});
+
+// worktree.lua's state file, which maps each worktree tab to its worktree.
+export const WorktreeState = Type.Object({
+  windows: Type.Record(
+    Type.String(),
+    Type.Object({ path: Type.String(), branch: Type.Optional(Type.String()) }),
+  ),
+});
 
 // Rex leaves out `id` for the root record, which holds the program's own state.
 const StatusRecord = Type.Object({
@@ -77,7 +142,12 @@ export const Modes = Type.Object({
 
 // Rex leaves out the foreground process, or sends null, when it can't tell.
 export const Process = Type.Object({
-  foreground: Type.Optional(Type.Union([Type.Object({ pid: Type.Number() }), Type.Null()])),
+  foreground: Type.Optional(
+    Type.Union([
+      Type.Object({ pid: Type.Number(), cwd: Type.Optional(Type.String()) }),
+      Type.Null(),
+    ]),
+  ),
 });
 
 const SessionEvent = Type.Object({
@@ -162,8 +232,8 @@ function recordId(record: StatusRecord): string {
   return record.id ?? "";
 }
 
-// A blocked record with an id, such as the one pi's attention extension reports for an extension's
-// dialog, makes the agent blocked. Otherwise the agent has the root record's state.
+// A blocked record with an id makes the agent blocked. Otherwise the agent has the root record's
+// state.
 function blockedById(states: Iterable<[string, string]>): boolean {
   return [...states].some(([id, state]) => id !== "" && state === "blocked");
 }
@@ -284,7 +354,7 @@ export async function rex(
     }
 
     const sent =
-      error.killed && SENDS.has(args[0] ?? "")
+      error.killed && (SENDS.has(args[0] ?? "") || (args[0] === "api" && args[2] === SEND_METHOD))
         ? ". That doesn't prove it wasn't delivered, so read the terminal before sending again"
         : "";
 

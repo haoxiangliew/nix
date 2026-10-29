@@ -47,6 +47,14 @@ import { multiplexer } from "./lib/multiplexer.ts";
 import { orCleanUp, splitSide } from "./lib/panes.ts";
 import { tildify, untildify } from "./lib/paths.ts";
 import { errorMessage } from "./lib/settings.ts";
+import {
+  BaseParam,
+  PathParam,
+  RemoveParams,
+  RepoCwdParam,
+  checkWorktreePlacement,
+  describeWorktree,
+} from "./lib/worktree.ts";
 
 // A prompt is pasted, so a long one takes longer than a lookup.
 const SEND_TIMEOUT_MS = 15_000;
@@ -94,38 +102,11 @@ const WorktreeFields = {
         "Branch to check out. herdr creates it from `base` if it doesn't exist, and names one if you leave it out.",
     }),
   ),
-  base: Type.Optional(
-    Type.String({
-      description:
-        "Ref a new branch starts from, such as `origin/main`. Default the checkout's HEAD.",
-    }),
-  ),
-  path: Type.Optional(
-    Type.String({
-      description: "An existing worktree to open, instead of `branch` and `base`.",
-    }),
-  ),
+  base: BaseParam,
+  path: PathParam,
 };
 
-const CwdParam = Type.Optional(
-  Type.String({
-    description:
-      "Any directory in the repository, including another worktree. Default your own directory.",
-  }),
-);
-
-const WorktreeParams = Type.Object({ ...WorktreeFields, cwd: CwdParam });
-
-const RemoveParams = Type.Object({
-  branch: Type.Optional(Type.String({ description: "Branch of the worktree to remove" })),
-  path: Type.Optional(Type.String({ description: "Path of the worktree to remove" })),
-  cwd: CwdParam,
-  force: Type.Optional(
-    Type.Boolean({
-      description: "Discard the worktree's uncommitted changes. Only when the user says to.",
-    }),
-  ),
-});
+const WorktreeParams = Type.Object({ ...WorktreeFields, cwd: RepoCwdParam });
 
 const StartParams = Type.Object({
   name: Type.String({
@@ -289,10 +270,6 @@ async function removable(
 
 function flag(name: string, value: string | undefined): string[] {
   return value === undefined ? [] : [name, value];
-}
-
-function describe({ path, branch }: Pick<Checkout, "path" | "branch">): string {
-  return `worktree ${tildify(path)}${branch === undefined ? "" : ` on \`${branch}\``}`;
 }
 
 function agentLine(agent: AgentInfo, ownPane: string): string {
@@ -623,7 +600,7 @@ export default function (pi: ExtensionAPI) {
         ? ""
         : ` Its branch \`${worktree.branch}\` is kept.`;
 
-    return `Removed ${describe({ path: worktree.path })} and closed its herdr workspace ${target.workspace}, which ended anything running there.${kept}`;
+    return `Removed ${describeWorktree({ path: worktree.path })} and closed its herdr workspace ${target.workspace}, which ended anything running there.${kept}`;
   }
 
   async function worktreePane(
@@ -636,7 +613,7 @@ export default function (pi: ExtensionAPI) {
     const pane =
       checkout.pane ?? (await createTab(checkout.workspace, checkout.path, params.name, signal));
 
-    return { pane, where: `the ${describe(checkout)}` };
+    return { pane, where: `the ${describeWorktree(checkout)}` };
   }
 
   // Focus stays with the user.
@@ -649,9 +626,7 @@ export default function (pi: ExtensionAPI) {
       return worktreePane(params, cwd, signal);
     }
 
-    if (params.branch !== undefined || params.base !== undefined || params.path !== undefined) {
-      throw new Error('`branch`, `base`, and `path` need `placement: "worktree"`.');
-    }
+    checkWorktreePlacement(params);
 
     if (params.placement === "tab") {
       const { workspace } = await currentPane(signal);
@@ -843,7 +818,7 @@ export default function (pi: ExtensionAPI) {
       const how = checkout.reused ? "Opened the existing" : "Created";
 
       return text(
-        `${how} ${describe(checkout)}, in herdr workspace ${checkout.workspace}. Work there with absolute paths, or \`cd\` into it in bash. To hand it to an agent, use herdr_start with \`placement: "worktree"\` and this \`path\`, not the subagent tool.`,
+        `${how} ${describeWorktree(checkout)}, in herdr workspace ${checkout.workspace}. Work there with absolute paths, or \`cd\` into it in bash. To hand it to an agent, use herdr_start with \`placement: "worktree"\` and this \`path\`, not the subagent tool.`,
       );
     },
   });

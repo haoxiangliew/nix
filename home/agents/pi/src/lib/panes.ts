@@ -10,8 +10,15 @@ const MIN_SPLIT_COLUMNS = 100;
 // A split down leaves each half at least this many rows, or the pane is too small to split.
 const MIN_SPLIT_ROWS = 15;
 
-/** Picks where to split pi's pane, or throws when it's too small. */
-export function splitSide(columns: number, rows: number, tools: string): "right" | "down" {
+/**
+ * Picks where to split a pane, pi's own unless `pane` names another, or throws when it's too small.
+ */
+export function splitSide(
+  columns: number,
+  rows: number,
+  tools: string,
+  pane = "Your pane",
+): "right" | "down" {
   if (columns / 2 >= MIN_SPLIT_COLUMNS) {
     return "right";
   }
@@ -21,7 +28,7 @@ export function splitSide(columns: number, rows: number, tools: string): "right"
   }
 
   throw new Error(
-    `Your pane is ${columns}x${rows}, too small to split again. Use \`placement: "tab"\`, or close a pane you started with ${tools}_close.`,
+    `${pane} is ${columns}x${rows}, too small to split again. Use \`placement: "tab"\`, or close a pane you started with ${tools}_close.`,
   );
 }
 

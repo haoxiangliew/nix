@@ -278,6 +278,7 @@ in
                 "/var/folders/*" = "allow";
                 "/private/var/folders/*" = "allow";
                 "*/.herdr/worktrees/*" = "allow";
+                "*/.rex/worktrees/*" = "allow";
                 "/nix/store/*" = "allow";
               };
               external_directory_read."*" = "allow";
@@ -318,6 +319,14 @@ in
               ] (lib.const { enabled = false; });
             };
       }
+      # Rex reads init.lua only when told to, so a new generation reloads it. The server may not be
+      # running, so a failed reload only warns.
+      (lib.mkIf pkgs.stdenv.isDarwin {
+        activation.reloadRexConfig = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+          run ${lib.getExe rex} --autostart=false config reload \
+            || warnEcho "Couldn't reload Rex's configuration"
+        '';
+      })
       {
         activation = lib.concatMapAttrs (
           name: agent:
@@ -338,6 +347,19 @@ in
         ) integrationAgents;
       }
     ];
+
+    xdg.configFile."rex" = lib.mkIf pkgs.stdenv.isDarwin {
+      source = ./rex;
+      recursive = true;
+    };
+    # worktree.json holds worktree.lua's settings.
+    xdg.configFile."rex/worktree.json" = lib.mkIf pkgs.stdenv.isDarwin {
+      source = (pkgs.formats.json { }).generate "rex-worktree.json" {
+        directory = "~/Developer/.rex/worktrees";
+        # the Rex server's PATH has only the system's git
+        git = lib.getExe config.programs.git.package;
+      };
+    };
 
     xdg.configFile."herdr/config.toml".source = (pkgs.formats.toml { }).generate "herdr-config.toml" {
       onboarding = false;
