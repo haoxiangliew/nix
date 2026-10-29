@@ -31,6 +31,7 @@ import {
   BlockList,
   Created,
   Modes,
+  NewSession,
   Process,
   ProgramStatus,
   Pwd,
@@ -136,7 +137,8 @@ const WatchParams = Type.Object({
 
 const SessionParam = Type.Optional(
   Type.String({
-    description: "Rex session to open in, by label or ID. Default yours.",
+    description:
+      "Rex session to open in, by label or ID. Default yours. A label no session has creates that session, with the new pane alone in its first tab.",
   }),
 );
 
@@ -202,6 +204,8 @@ const StartParams = Type.Object({
 
 const WorktreeParams = Type.Object({ ...WorktreeFields, cwd: RepoCwdParam, session: SessionParam });
 
+type WorktreeRequest = Static<typeof WorktreeParams> & { label?: string; command?: string[] };
+
 const TargetParam = Type.String({
   description:
     "Agent name, `session/name` for one in another Rex session, or the block ID of any pane, such as one rex_run opened",
@@ -256,6 +260,8 @@ interface Pane {
 interface Placed {
   pane: string;
   where: string;
+  // A session this process made, which a failed start kills when it's left empty.
+  made?: string;
 }
 
 /** Where a new pane goes: a session, and for a split, the pane it splits. */
@@ -385,6 +391,30 @@ async function worktreeTabs(): Promise<Map<string, { path: string; branch?: stri
   return new Map(Object.entries(parseOutput(WorktreeState, json, tildify(WORKTREE_STATE)).windows));
 }
 
+// Undefined when Rex reports the pane or session gone.
+async function unlessGone<T>(task: Promise<T>): Promise<T | undefined> {
+  return task.catch((cause: unknown) => {
+    if (cause instanceof RexError && cause.notFound) {
+      return undefined;
+    }
+
+    throw cause;
+  });
+}
+
+// The label for a new session, when no session has it. An ID or a tab must name one that exists.
+function newSessionLabel(sessionLabel: string, tab?: string): string {
+  if (sessionLabel.startsWith("session:")) {
+    throw new Error(`No Rex session is \`${sessionLabel}\`.`);
+  }
+
+  if (tab !== undefined) {
+    throw new Error(`No Rex session is \`${sessionLabel}\`, so it has no tab \`${tab}\`.`);
+  }
+
+  return sessionLabel;
+}
+
 // Detached panes are in no tab.
 function tabHeading(pane: Pane, worktrees: Map<string, { path: string; branch?: string }>): string {
   if (pane.window_id === undefined) {
@@ -410,6 +440,12 @@ export default function (pi: ExtensionAPI) {
 
   // Names of agents whose worktree is still being made, which checkName treats as taken.
   const reserved = new Set<string>();
+
+  // How many calls are opening a pane in each session, by ID. dropSession doesn't kill such a session.
+  const opening = new Map<string, number>();
+
+  // Sessions this process made. A failed start in one kills it when nothing is left there.
+  const madeHere = new Set<string>();
 
   function inSession(pane: string): string[] {
     return ["-s", sessionOf.get(pane) ?? sessionId];
@@ -443,20 +479,20 @@ export default function (pi: ExtensionAPI) {
     const listings = await inBatches(ordered, async (one) => {
       const args = ["block", "ls", "-s", one.session_id, "--json"];
 
-      try {
-        const [listed, shown] = await Promise.all([
+      const found = await unlessGone(
+        Promise.all([
           rexJson(pi, BlockList, args, REX_TIMEOUT_MS, signal),
           tabs ? view(one.session_id, signal) : undefined,
-        ]);
+        ]),
+      );
 
-        return { one, blocks: listed.blocks ?? [], windows: shown?.windows ?? [] };
-      } catch (cause) {
-        if (cause instanceof RexError && cause.notFound) {
-          return undefined;
-        }
-
-        throw cause;
+      if (found === undefined) {
+        return undefined;
       }
+
+      const [listed, shown] = found;
+
+      return { one, blocks: listed.blocks ?? [], windows: shown?.windows ?? [] };
     });
 
     return listings.flatMap((listing) => (listing === undefined ? [] : sessionPanes(listing)));
@@ -643,20 +679,19 @@ export default function (pi: ExtensionAPI) {
     return splitSide(columns, rows, "rex", pane) === "right" ? "right" : "below";
   }
 
-  // A session by label or ID, or pi's own.
-  async function sessionNamed(
-    wanted: string | undefined,
+  // A session by label or ID, or undefined if there's none.
+  async function findSession(
+    target: string,
     signal: AbortSignal | undefined,
-  ): Promise<{ id: string; named: string }> {
+  ): Promise<{ id: string; named: string } | undefined> {
     const all = await sessions(signal);
-    const target = wanted ?? sessionId;
     const byId = all.find((one) => one.session_id === target);
 
     const [found, ...others] =
       byId === undefined ? all.filter((one) => one.label === target) : [byId];
 
     if (found === undefined) {
-      throw new Error(`No Rex session is \`${target}\`.`);
+      return undefined;
     }
 
     if (others.length > 0) {
@@ -688,16 +723,48 @@ export default function (pi: ExtensionAPI) {
     return { anchor, tabName };
   }
 
-  // Where a new pane goes: pi's session or `session`, and for a split, the pane to split.
-  async function locationOf(
-    params: { session?: string; tab?: string; placement?: string },
+  // Where a new pane goes in pi's session, and for a split, the pane to split.
+  async function ownLocation(
+    params: { tab?: string },
+    placement: "split" | "tab" | undefined,
     signal: AbortSignal | undefined,
   ): Promise<Location> {
-    if (params.session === undefined && params.tab === undefined) {
+    if (params.tab === undefined) {
       return { session: sessionId, anchor: own, elsewhere: "" };
     }
 
-    const { id, named } = await sessionNamed(params.session, signal);
+    const found = await findSession(sessionId, signal);
+
+    if (found === undefined) {
+      throw new Error(`pi's own Rex session ${sessionId} is gone.`);
+    }
+
+    return placeIn(found, { ...params, placement }, signal);
+  }
+
+  // A session with no panes, as when its last agent exited, has nothing to split, so the pane opens
+  // a tab there.
+  async function placementIn(
+    id: string,
+    tab: string | undefined,
+    placement: "split" | "tab" | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<"split" | "tab" | undefined> {
+    if (placement === "tab" || tab !== undefined || id === sessionId) {
+      return placement;
+    }
+
+    const args = ["block", "ls", "-s", id, "--json"];
+    const { blocks } = await rexJson(pi, BlockList, args, REX_TIMEOUT_MS, signal);
+
+    return (blocks ?? []).length === 0 ? "tab" : placement;
+  }
+
+  async function placeIn(
+    { id, named }: { id: string; named: string },
+    params: { tab?: string; placement?: string },
+    signal: AbortSignal | undefined,
+  ): Promise<Location> {
     const ofSession = id === sessionId ? "" : ` of ${named}`;
 
     if (params.placement === "tab") {
@@ -774,19 +841,158 @@ export default function (pi: ExtensionAPI) {
     return pane;
   }
 
-  // Rex doesn't keep labels unique, so parallel calls check and take a name one at a time.
-  function openNamed(
-    name: string,
+  // A new session whose first tab, named after the pane, holds only the new pane. Callers hold the
+  // session's lock, so no other call has a pane there yet.
+  async function createSession(
+    name: string | undefined,
+    sessionLabel: string,
+    cwd: string,
+    command: string[],
+    signal: AbortSignal | undefined,
+  ): Promise<{ session: string; pane: string }> {
+    const window = name === undefined ? [] : ["--window", name];
+    const argv = command.length === 0 ? [] : ["--", ...command];
+    const args = ["new", sessionLabel, ...window, "-c", cwd, "--json", ...argv];
+    const created = await rexJson(pi, NewSession, args, REX_TIMEOUT_MS, signal);
+    const [first] = created.initial_windows;
+
+    if (first === undefined) {
+      throw new Error(`Rex created session \`${sessionLabel}\` without a tab.`);
+    }
+
+    const pane = firstBlock(first);
+
+    sessionOf.set(pane, created.session_id);
+    madeHere.add(created.session_id);
+
+    if (name !== undefined) {
+      const scope = ["-s", created.session_id];
+
+      await orRemove(pane, created.session_id, () =>
+        run(["block", "rename", ...scope, pane, name], REX_TIMEOUT_MS, signal),
+      );
+    }
+
+    return { session: created.session_id, pane };
+  }
+
+  // Counts a call that opens a pane in a session, until it ends. Returns the function that ends
+  // the count. It waits for a dropSession check in the session to finish, so a pane can't open
+  // between that check and the kill.
+  async function holdOpen(id: string): Promise<() => void> {
+    await serial(`drop ${id}`, async () => {
+      opening.set(id, (opening.get(id) ?? 0) + 1);
+    });
+
+    return () => {
+      const left = (opening.get(id) ?? 0) - 1;
+
+      if (left > 0) {
+        opening.set(id, left);
+      } else {
+        opening.delete(id);
+      }
+    };
+  }
+
+  // Closes the call's pane, if it has one, in a session this process made. Then it kills the session
+  // if no pane is left and no call in this process is opening one there. The count covers only calls
+  // in this process that name the session. A pane that another process, or a worktree call without
+  // `session`, is opening can still lose its session.
+  async function dropSession(id: string, pane: string | undefined): Promise<void> {
+    if (pane !== undefined) {
+      await closePane(pane);
+    }
+
+    await serial(`drop ${id}`, async () => {
+      const args = ["block", "ls", "-s", id, "--json"];
+      const listed = await unlessGone(rexJson(pi, BlockList, args));
+
+      if (listed !== undefined && (listed.blocks ?? []).length === 0 && !opening.has(id)) {
+        await unlessGone(run(["kill", id]));
+      }
+    });
+  }
+
+  // Closes a pane if the task fails, and its session too if this process made it.
+  function orRemove<T>(pane: string, made: string | undefined, task: () => Promise<T>): Promise<T> {
+    return made === undefined
+      ? orClose(pane, task)
+      : orCleanUp(task, () => dropSession(made, pane), `Closing session ${made}`);
+  }
+
+  // Opens a pane where `session` and `tab` say. A call that names a session holds the session's
+  // lock while it finds or makes the session and opens the pane, so parallel calls make it once.
+  async function placePane(
+    name: string | undefined,
     placement: "split" | "tab" | undefined,
-    where: Location,
+    params: { session?: string; tab?: string },
     cwd: string,
     command: string[],
     signal: AbortSignal | undefined,
   ): Promise<Placed> {
+    const wanted = params.session;
+
+    if (wanted === undefined) {
+      const where = await ownLocation(params, placement, signal);
+
+      return withName(name, () => openPane(name, placement, where, cwd, command, signal), signal);
+    }
+
+    return serial(`session ${wanted}`, async () => {
+      const held = await heldSession(wanted, signal);
+
+      if (held !== undefined) {
+        const { found, release } = held;
+
+        try {
+          const into = await placementIn(found.id, params.tab, placement, signal);
+          const where = await placeIn(found, { ...params, placement: into }, signal);
+
+          const placed = await withName(
+            name,
+            () => openPane(name, into, where, cwd, command, signal),
+            signal,
+          );
+
+          return { ...placed, made: madeHere.has(found.id) ? found.id : undefined };
+        } finally {
+          release();
+        }
+      }
+
+      const sessionLabel = newSessionLabel(wanted, params.tab);
+
+      return withName(
+        name,
+        async () => {
+          const created = await createSession(name, sessionLabel, cwd, command, signal);
+
+          return {
+            pane: created.pane,
+            where: `the new session \`${sessionLabel}\``,
+            made: created.session,
+          };
+        },
+        signal,
+      );
+    });
+  }
+
+  // Rex doesn't keep labels unique, so parallel calls check and take a name one at a time.
+  function withName(
+    name: string | undefined,
+    open: () => Promise<Placed>,
+    signal: AbortSignal | undefined,
+  ): Promise<Placed> {
+    if (name === undefined) {
+      return open();
+    }
+
     return serial("names", async () => {
       await checkName(name, signal);
 
-      return openPane(name, placement, where, cwd, command, signal);
+      return open();
     });
   }
 
@@ -833,15 +1039,11 @@ export default function (pi: ExtensionAPI) {
   // A failed call leaves a pane it opened, which this closes before it rethrows. The pane may have
   // closed already, when its program exited.
   function orClose<T>(pane: string, task: () => Promise<T>): Promise<T> {
-    const cleanUp = async () => {
-      await run(["block", "close", ...inSession(pane), pane]).catch((cause: unknown) => {
-        if (!(cause instanceof RexError && cause.notFound)) {
-          throw cause;
-        }
-      });
-    };
+    return orCleanUp(task, () => closePane(pane), `Closing pane ${pane}`);
+  }
 
-    return orCleanUp(task, cleanUp, `Closing pane ${pane}`);
+  async function closePane(pane: string): Promise<void> {
+    await unlessGone(run(["block", "close", ...inSession(pane), pane]));
   }
 
   // Runs one of worktree.lua's actions as pi's pane, so it knows which tab and directory pi is in.
@@ -876,19 +1078,109 @@ export default function (pi: ExtensionAPI) {
     return parseOutput(schema, stdout, action);
   }
 
+  // The session's lock covers only finding or making the session, so parallel calls make it once.
+  // worktree_open can take minutes, so it runs outside the lock, counted by holdOpen.
   async function openWorktree(
-    request: Static<typeof WorktreeParams> & { label?: string; command?: string[] },
+    request: WorktreeRequest,
+    cwd: string,
+    signal: AbortSignal | undefined,
+  ): Promise<{ opened: Static<typeof WorktreeOpened>; made?: string }> {
+    const wanted = request.session;
+
+    if (wanted === undefined) {
+      return { opened: await worktreeOpen(request, undefined, cwd, signal) };
+    }
+
+    const { id, shell, release } = await serial(`session ${wanted}`, () =>
+      worktreeSession(wanted, cwd, signal),
+    );
+
+    const open = async () => {
+      try {
+        return await worktreeOpen(request, id, cwd, signal);
+      } finally {
+        release();
+      }
+    };
+
+    if (!madeHere.has(id)) {
+      return { opened: await open() };
+    }
+
+    const drop = () => dropSession(id, shell);
+    const opened = await orCleanUp(open, drop, `Closing session ${id}`);
+
+    // This closes the new session's shell, and kills the session if that leaves it empty, as when
+    // the worktree's tab is open in another session.
+    if (shell !== undefined) {
+      await (opened.block_id === undefined ? drop() : orClose(opened.block_id, drop));
+    }
+
+    return { opened, made: opened.session_id === id ? id : undefined };
+  }
+
+  // worktree.lua opens tabs only in an existing session, so a new session starts with a shell,
+  // which openWorktree closes once the worktree's tab opens. The count starts here, under the lock,
+  // so dropSession can't kill the session before worktree_open starts.
+  async function worktreeSession(
+    wanted: string,
+    cwd: string,
+    signal: AbortSignal | undefined,
+  ): Promise<{ id: string; shell?: string; release: () => void }> {
+    const held = await heldSession(wanted, signal);
+
+    if (held !== undefined) {
+      return { id: held.found.id, release: held.release };
+    }
+
+    const created = await createSession(undefined, newSessionLabel(wanted), cwd, [], signal);
+
+    return { id: created.session, shell: created.pane, release: await holdOpen(created.session) };
+  }
+
+  // A session by label or ID, counted by holdOpen, or undefined if there's none. dropSession can kill
+  // the session while holdOpen waits, so this looks it up again after.
+  async function heldSession(
+    wanted: string,
+    signal: AbortSignal | undefined,
+  ): Promise<{ found: { id: string; named: string }; release: () => void } | undefined> {
+    const found = await findSession(wanted, signal);
+
+    if (found === undefined) {
+      return undefined;
+    }
+
+    const release = await holdOpen(found.id);
+
+    const again = await orCleanUp(
+      () => findSession(wanted, signal),
+      async () => release(),
+      `Releasing session ${found.id}`,
+    );
+
+    if (again?.id === found.id) {
+      return { found, release };
+    }
+
+    release();
+
+    return undefined;
+  }
+
+  async function worktreeOpen(
+    request: WorktreeRequest,
+    inSessionId: string | undefined,
     cwd: string,
     signal: AbortSignal | undefined,
   ): Promise<Static<typeof WorktreeOpened>> {
-    const { branch, base, path, session: where, label: name, command } = request;
+    const { branch, base, path, label: name, command } = request;
 
     const args = {
       branch,
       base,
       path: path === undefined ? undefined : resolve(cwd, untildify(path)),
       cwd,
-      session: where,
+      session: inSessionId,
       label: name,
       command,
       focus: false,
@@ -994,15 +1286,17 @@ export default function (pi: ExtensionAPI) {
   ): Promise<string> {
     const pattern = params.wait_for === undefined ? undefined : new RegExp(params.wait_for);
 
-    const { label: name, placement } = params;
-    const location = await locationOf(params, signal);
-
-    const { pane, where } = await (name === undefined
-      ? openPane(undefined, placement, location, cwd, [], signal)
-      : openNamed(name, placement, location, cwd, [], signal));
+    const { pane, where, made } = await placePane(
+      params.label,
+      params.placement,
+      params,
+      cwd,
+      [],
+      signal,
+    );
 
     // The shell runs it like a typed command, so the user's shell setup, such as direnv, applies.
-    const marker = await orClose(pane, async () => {
+    const marker = await orRemove(pane, made, async () => {
       await shellReady(pane, signal);
 
       const prompt = await capture(pane, signal);
@@ -1050,7 +1344,8 @@ export default function (pi: ExtensionAPI) {
       throw new Error('`tab` names a tab to split, so it needs `placement: "split"`.');
     }
 
-    const opened = await openWorktree({ ...params, label: params.name, command }, cwd, signal);
+    const request = { ...params, label: params.name, command };
+    const { opened, made } = await openWorktree(request, cwd, signal);
     const pane = opened.block_id;
 
     if (pane === undefined) {
@@ -1058,10 +1353,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     const tab = opened.tab === "new" ? "a new tab" : "its open tab";
-    const made = opened.created ? "the new" : "the";
-    const elsewhere = await orClose(pane, () => sessionNote(opened.session_id, signal));
+    const fresh = opened.created ? "the new" : "the";
+    const elsewhere = await orRemove(pane, made, () => sessionNote(opened.session_id, signal));
 
-    return { pane, where: `${tab}${elsewhere} for ${made} ${describeWorktree(opened)}` };
+    return { pane, where: `${tab}${elsewhere} for ${fresh} ${describeWorktree(opened)}`, made };
   }
 
   async function inWorktree(
@@ -1097,20 +1392,13 @@ export default function (pi: ExtensionAPI) {
 
     // `git worktree add` can take minutes, so the name is reserved instead of holding the lock that
     // other starts wait on.
-    const { pane, where } =
+    const { pane, where, made } =
       placement === "worktree"
         ? await inWorktree(params, command, cwd, signal)
-        : await openNamed(
-            params.name,
-            placement,
-            await locationOf(params, signal),
-            cwd,
-            command,
-            signal,
-          );
+        : await placePane(params.name, placement, params, cwd, command, signal);
 
     const started = `Started ${kind} agent ${label(pane, params.name)} in ${where}.`;
-    const state = await orClose(pane, () => firstState(pane, signal));
+    const state = await orRemove(pane, made, () => firstState(pane, signal));
 
     return { pane, started, state };
   }
@@ -1119,12 +1407,13 @@ export default function (pi: ExtensionAPI) {
     name: "rex_start",
     label: "Rex Start",
     description:
-      "Start a coding agent in a new Rex pane next to yours, in a new tab, in another session, or in a git worktree's tab, and optionally give it its first task. With a prompt, you get a message when the agent is done, idle, blocked, or failed. A prompt that starts with `/` instead returns the agent's state and screen, like rex_watch. The user's focus stays where it is. The pane closes when the agent exits.",
+      "Start a coding agent in a new Rex pane next to yours, in a new tab, in another or a new session, or in a git worktree's tab, and optionally give it its first task. With a prompt, you get a message when the agent is done, idle, blocked, or failed. A prompt that starts with `/` instead returns the agent's state and screen, like rex_watch. The user's focus stays where it is. The pane closes when the agent exits.",
     promptSnippet:
       "Start an agent in a new Rex pane, tab, or worktree, with an optional first task",
     promptGuidelines: [
       "Use the rex_* tools to run agents and commands in Rex panes instead of the rex CLI.",
       'Start Rex agents with rex_start, with a short unique name and the first task as `prompt`. Use `placement: "tab"` only when the user asks for a tab, `session` or `tab` only when the user names one, and `placement: "worktree"` when the agent should work on its own branch.',
+      "To open a pane in a new Rex session, pass its label as `session` to rex_start, rex_run, or rex_worktree.",
       'Give work in a git worktree to a Rex agent, not the subagent tool. Start it with rex_start and `placement: "worktree"`, with `branch` for a new or existing worktree or `path` for an existing one. Give work in one checkout to subagents unless the user asks for a Rex agent.',
     ],
     parameters: StartParams,
@@ -1170,7 +1459,7 @@ export default function (pi: ExtensionAPI) {
     parameters: WorktreeParams,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const cwd = resolve(ctx.cwd, untildify(params.cwd ?? "."));
-      const opened = await openWorktree(params, cwd, signal);
+      const { opened } = await openWorktree(params, cwd, signal);
       const how = opened.created ? "Created" : "Opened the existing";
       const tab = opened.tab === "new" ? "a new Rex tab" : "its open Rex tab";
       const elsewhere = await sessionNote(opened.session_id, signal);

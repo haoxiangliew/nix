@@ -110,21 +110,23 @@ A Herdr block above the editor lists the agents pi is waiting on, with each one'
 
 In [Rex](https://www.superlogical.com/rex), pi uses tools instead of the rex CLI to run agents and commands in panes. pi doesn't get the Rex skill, but Claude Code and Codex still do. pi gets either these tools or herdr's, from the nearest herdr or Rex server in its process ancestry. Panes inherit environment variables such as `HERDR_ENV` from whatever started the multiplexer, so pi can't rely on them. `attention.ts` checks the same way.
 
-| Tool                  | What it does                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `rex_start`           | Starts an agent in a new pane next to pi's, a new tab, another session, or a git worktree's tab, and can give it a first task. |
-| `rex_worktree`        | Creates a git worktree in its own tab, or opens an existing one by branch or path, for pi's own work such as reviewing a PR.   |
-| `rex_worktree_remove` | Removes a worktree and closes its tabs. Its branch is kept.                                                                    |
-| `rex_watch`           | Prompts an agent or sends it keys. With only an agent, waits on one that's already working.                                    |
-| `rex_run`             | Runs a command in a new pane or tab you can watch, in any session. Can wait for a line of output, such as a ready message.     |
-| `rex_read`            | Shows an agent's state and recent output, or any pane's output, without blank lines and divider lines.                         |
-| `rex_agents`          | Lists the agents in every Rex session, under their session and tab, with pi's own pane and worktree tabs marked.               |
-| `rex_close`           | Closes an agent's or a command's pane.                                                                                         |
-| `rex_focus`           | Switches your Rex view to an agent's or a command's pane, when you ask to see it.                                              |
+| Tool                  | What it does                                                                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rex_start`           | Starts an agent in a new pane next to pi's, a new tab, another session or a new one, or a git worktree's tab, and can give it a first task. |
+| `rex_worktree`        | Creates a git worktree in its own tab, or opens an existing one by branch or path, for pi's own work such as reviewing a PR.                |
+| `rex_worktree_remove` | Removes a worktree and closes its tabs. Its branch is kept.                                                                                 |
+| `rex_watch`           | Prompts an agent or sends it keys. With only an agent, waits on one that's already working.                                                 |
+| `rex_run`             | Runs a command in a new pane or tab you can watch, in any session. Can wait for a line of output, such as a ready message.                  |
+| `rex_read`            | Shows an agent's state and recent output, or any pane's output, without blank lines and divider lines.                                      |
+| `rex_agents`          | Lists the agents in every Rex session, under their session and tab, with pi's own pane and worktree tabs marked.                            |
+| `rex_close`           | Closes an agent's or a command's pane.                                                                                                      |
+| `rex_focus`           | Switches your Rex view to an agent's or a command's pane, when you ask to see it.                                                           |
 
 An agent is any program that reports its state to Rex with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), as pi, Claude Code, and Codex do. Its name is its pane's label. The tools follow the session's events from `rex events`, so pi gets a message when an agent is done, idle, blocked, or failed, the same way as in herdr, and doesn't poll. An agent counts as blocked while any of its records is, so pi gets a message when a pi agent waits on a permission prompt. `rex_start` runs the agent as its pane's command, so the pane closes when the agent exits. `rex_run` types its command into a shell, so your shell setup, such as direnv, applies.
 
-The tools reach every session. A bare name means a pane in pi's own session if one has it, then one in any session. `session/name` picks the session, and a block ID always works. `rex_start` and `rex_run` take `session` to open in another session, and `tab` to split the focused pane of a tab other than pi's. A split in another session always goes right, because a session no app shows reports its panes as 80x24. `rex_focus` switches the app to another session only with Remote Control on in the app's settings under Rex Server. Otherwise it focuses the pane and fails with an error that says so.
+The tools reach every session. A bare name means a pane in pi's own session if one has it, then one in any session. `session/name` picks the session, and a block ID always works. `rex_start`, `rex_run`, and `rex_worktree` take `session` to open in another session, and the first two take `tab` to split the focused pane of a tab other than pi's. A split in another session always goes right, because a session no app shows reports its panes as 80x24. `rex_focus` switches the app to another session only with Remote Control on in the app's settings under Rex Server. Otherwise it focuses the pane and fails with an error that says so.
+
+A `session` label that no session has creates that session. The new pane is alone in the session's first tab. The tab takes the pane's name, if it has one. For a worktree, the session starts with a shell that closes once the worktree's tab opens. If the worktree's tab is already open in another session, pi uses that tab and kills the new session. If the pane fails to start, pi kills the session it made too, unless another pane is there. A split into a session with no panes, such as one whose last agent exited, opens a tab there instead.
 
 Rex has no worktrees of its own, so [`home/agents/rex/worktree.lua`](../rex/worktree.lua) adds them, and the tools run it with `rex do`. A worktree tab is a tab it opened for a worktree, labelled `⎇ branch`. Rex keeps nothing on a tab, so it records each one in `~/.local/state/rex/worktrees.json`, under a lock so parallel calls don't lose entries. New worktrees go in `<directory>/<repository>/<branch>`, where `directory` comes from `~/.config/rex/worktree.json`. `home/agents/default.nix` sets it to `~/Developer/.rex/worktrees`, next to herdr's.
 

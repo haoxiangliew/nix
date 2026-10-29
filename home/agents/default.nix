@@ -65,12 +65,13 @@ let
       );
       entry = lock.packages.${name};
       version = lib.removePrefix "${name}@" (builtins.elemAt entry 0);
+      # A scoped package's tarball and store path use the name without its scope.
       tarball = pkgs.fetchurl {
-        url = "https://registry.npmjs.org/${name}/-/${name}-${version}.tgz";
+        url = "https://registry.npmjs.org/${name}/-/${baseNameOf name}-${version}.tgz";
         hash = builtins.elemAt entry 3;
       };
     in
-    pkgs.runCommand "${name}-${version}" { } ''
+    pkgs.runCommand "${baseNameOf name}-${version}" { } ''
       mkdir $out
       tar -xzf ${tarball} -C $out --strip-components=1
     '';
@@ -104,6 +105,15 @@ let
       "signal-exit"
     ]}
   '';
+
+  # pi-subagents with Explore on the Haiku family instead of Haiku 4.5, and fuzzy model names that
+  # pick the newest version on a tie. Its imports are all ones pi provides, so it needs no
+  # node_modules.
+  subagents = pkgs.applyPatches {
+    name = "pi-subagents";
+    src = npmPackage "@gotgenes/pi-subagents";
+    patches = [ ./pi/patches/pi-subagents.patch ];
+  };
 
   talkPrompt = "Help the user without changing any files. You can read files and run commands, but don't run commands that create, edit, or delete files. Suggest changes instead of making them.";
 
@@ -481,7 +491,7 @@ in
           skills = [ "-${config.home.homeDirectory}/.agents/skills/rex" ];
           packages = [
             "npm:pi-web-access"
-            "npm:@gotgenes/pi-subagents"
+            "${subagents}"
             "${backgroundTasks}"
             "npm:@gotgenes/pi-permission-system"
             "npm:pi-pigment"

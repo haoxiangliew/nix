@@ -131,6 +131,12 @@ export const Created = Type.Object({
   block_ids: Type.Array(Type.String(), { minItems: 1 }),
 });
 
+// What `rex new --json` prints: the session and its first tab, with its one pane.
+export const NewSession = Type.Object({
+  session_id: Type.String(),
+  initial_windows: Type.Array(Created, { minItems: 1 }),
+});
+
 export const Size = Type.Object({ columns: Type.Number(), rows: Type.Number() });
 
 // A file:// URL when the shell reports it with OSC 7, and left out until something reports one.

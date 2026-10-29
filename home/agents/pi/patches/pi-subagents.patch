@@ -1,0 +1,82 @@
+diff --git a/src/config/default-agents.ts b/src/config/default-agents.ts
+--- a/src/config/default-agents.ts
++++ b/src/config/default-agents.ts
+@@ -33,7 +33,8 @@
+       description: "Fast codebase exploration agent (read-only)",
+       toolGuideline: "- Use Explore for codebase searches and code understanding.",
+       toolNames: READ_ONLY_TOOLS,
+-      model: "anthropic/claude-haiku-4-5-20251001",
++      // The family, not one version, so fuzzy matching picks the newest Haiku.
++      model: "anthropic/claude-haiku",
+       systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
+ You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
+ Your role is EXCLUSIVELY to search and analyze existing code. You do NOT have access to file editing tools.
+diff --git a/src/session/model-resolver.ts b/src/session/model-resolver.ts
+--- a/src/session/model-resolver.ts
++++ b/src/session/model-resolver.ts
+@@ -95,6 +95,9 @@
+  * Score each candidate model — prefer exact id match > id contains > name
+  * contains > provider+id contains — and return the best match at or above
+  * the acceptance threshold (20), or undefined if nothing scores high enough.
++ * Version numbers and date stamps in an id don't lower its score. Ties go to
++ * the newest version, then the shorter id. So "haiku" picks the newest Haiku,
++ * and an alias beats its dated snapshot.
+  */
+ function findBestFuzzyMatch(all: Model<any>[], query: string): Model<any> | undefined {
+   let bestMatch: Model<any> | undefined;
+@@ -109,7 +112,7 @@
+     if (id === query || full === query) {
+       score = 100; // exact
+     } else if (id.includes(query) || full.includes(query)) {
+-      score = 60 + (query.length / id.length) * 30; // substring, prefer tighter matches
++      score = 60 + Math.min(1, query.length / Math.max(1, unversioned(id).length)) * 30; // substring, prefer tighter matches
+     } else if (name.includes(query)) {
+       score = 40 + (query.length / name.length) * 20;
+     } else if (query.split(/[\s\-/]+/).every(part => id.includes(part) || name.includes(part) || m.provider.toLowerCase().includes(part))) {
+@@ -116,11 +119,45 @@
+       score = 20; // all parts present somewhere
+     }
+ 
+-    if (score > bestScore) {
++    if (beats(score, m, bestScore, bestMatch)) {
+       bestScore = score;
+       bestMatch = m;
+     }
+   }
+ 
+   return bestScore >= 20 ? bestMatch : undefined;
+ }
++
++/** Whether a model with `score` beats the best match so far: a higher score, or the same score and a newer version. */
++function beats(score: number, m: Model<any>, bestScore: number, bestMatch: Model<any> | undefined): boolean {
++  if (score !== bestScore) {
++    return score > bestScore;
++  }
++
++  return bestMatch !== undefined && isNewer(m.id, bestMatch.id);
++}
++
++/** The id without its version numbers and date stamp: "claude-haiku" for "claude-haiku-4-5-20251001". */
++function unversioned(id: string): string {
++  return id.replace(/[-.]?\d+/g, "");
++}
++
++/** The version numbers in an id, without its date stamp: [4, 5] for "claude-haiku-4-5-20251001". */
++function versionOf(id: string): number[] {
++  return (id.match(/\d+/g) ?? []).filter(part => part.length < 8).map(Number);
++}
++
++/** Whether id `a` has a newer version than `b`, or the same version and a shorter id. */
++function isNewer(a: string, b: string): boolean {
++  const [va, vb] = [versionOf(a), versionOf(b)];
++
++  for (let i = 0; i < Math.max(va.length, vb.length); i++) {
++    const [x, y] = [va[i] ?? -1, vb[i] ?? -1];
++
++    if (x !== y) {
++      return x > y;
++    }
++  }
++
++  return a.length < b.length;
++}
