@@ -44,6 +44,25 @@ let
     exec "''${REX_BIN_DIR:-$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS}/rex" "$@"
   '';
 
+  rexSessionHook = pkgs.writeShellApplication {
+    name = "rex-session-hook";
+    runtimeInputs = [ pkgs.jq ];
+    text = builtins.readFile ./rex-session-hook.sh;
+  };
+
+  rexSessionHooks = agent: {
+    SessionStart = lib.optionals pkgs.stdenv.isDarwin [
+      {
+        hooks = [
+          {
+            type = "command";
+            command = "${lib.getExe rexSessionHook} ${agent}";
+          }
+        ];
+      }
+    ];
+  };
+
   # Rex.app may not be installed, so a failed Rex setup warns instead of failing activation.
   installIntegration = {
     herdr = exe: target: "run ${exe} integration install ${target}";
@@ -124,7 +143,10 @@ let
     };
     codex = {
       target = "codex";
-      after = [ "mergeCodexSettings" ];
+      after = [
+        "mergeCodexSettings"
+        "mergeCodexHooks"
+      ];
     };
     pi-coding-agent = {
       target = "pi";
@@ -198,6 +220,13 @@ in
       (mutableConfig.mutableToml {
         name = "mergeCodexSettings";
         file = ".codex/config.toml";
+      })
+      {
+        file.".codex/hooks.json".text = builtins.toJSON { hooks = rexSessionHooks "codex"; };
+      }
+      (mutableConfig.mutableJson {
+        name = "mergeCodexHooks";
+        file = ".codex/hooks.json";
       })
       (mutableConfig.mutableJson {
         name = "mergePiSettings";
@@ -362,6 +391,13 @@ in
       source = ./rex;
       recursive = true;
     };
+    # agent_resume.json holds agent_resume.lua's settings.
+    xdg.configFile."rex/agent_resume.json" = lib.mkIf pkgs.stdenv.isDarwin {
+      source = (pkgs.formats.json { }).generate "rex-agent-resume.json" {
+        # the Rex server's PATH has no rex
+        rex = lib.getExe rex;
+      };
+    };
     # worktree.json holds worktree.lua's settings.
     xdg.configFile."rex/worktree.json" = lib.mkIf pkgs.stdenv.isDarwin {
       source = (pkgs.formats.json { }).generate "rex-worktree.json" {
@@ -427,6 +463,7 @@ in
             pr = "";
             sessionUrl = false;
           };
+          hooks = rexSessionHooks "claude";
         };
         inherit skills integrations;
       };
@@ -531,6 +568,7 @@ in
           "attention.ts" = ./pi/src/attention.ts;
           "herdr-agents.ts" = ./pi/src/herdr-agents.ts;
           "rex.ts" = ./pi/src/rex.ts;
+          "rex-resume.ts" = ./pi/src/rex-resume.ts;
           "auto-mode.ts" = ./pi/src/auto-mode.ts;
           "compaction.ts" = ./pi/src/compaction.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;

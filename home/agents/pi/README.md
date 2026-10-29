@@ -146,6 +146,14 @@ The same file gives Rex's command palette a Worktrees category, which Claude Cod
 
 Actions in the configuration get 30 seconds, so a big repository's `git worktree add` can time out from the palette. The picker and the tools run the file as a script, which Rex doesn't time out.
 
+### `rex-resume.ts`
+
+Tells Rex which session pi runs in its pane, so [`home/agents/rex/agent_resume.lua`](../rex/agent_resume.lua) can resume it with `pi --session <file>` after the Rex server restarts. Rex brings panes back as new shells. It can't see which session a program had, so each session start writes `{agent, session, file, cwd, pid}` to `~/.local/state/rex/agents/<block>`. Claude Code and Codex write the same record from a SessionStart hook, [`home/agents/rex-session-hook.sh`](../rex-session-hook.sh), and resume with `claude --resume <id>` and `codex resume <id>`.
+
+`agent_resume.lua` does the rest. `init.lua` starts it as a script that follows every session. It deletes a record once the agent has exited and its pane is back at its shell's prompt, which means you quit the agent. An agent suspended with Ctrl+Z keeps its record. It also deletes the records of closed panes. When the server shuts down, the shell dies with the agent, so the record stays. When the script finds a new server instance, it types each record's command into its pane once the pane is back at a shell. The command joins `cd` and the agent with `&&`, so Nushell panes aren't resumed. A session with no messages yet starts fresh. If a resumed agent hasn't started a minute later, the script deletes its record.
+
+Subagents, print runs such as `claude -p` or `codex exec`, and agents running inside another agent's processes don't write a record. An agent that another agent starts in a pane of its own, as `rex_start` does, owns that pane and does. `rex-resume.ts` has no settings.
+
 ### `mcp-ancestors.ts`
 
 Loads MCP servers from the `.mcp.json` in each folder from a configured root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. It expands `${VAR}` and `${VAR:-default}` in them. Untrusted projects load none.

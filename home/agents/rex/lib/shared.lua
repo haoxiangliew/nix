@@ -321,8 +321,9 @@ end
 -- it acts on. An action from the configuration file acts for its client, which needs none of this.
 local attached = {}
 
+-- Only scripts have rex.after, and a script run with --all and no session has no rex.session_id.
 local function attach(session_id)
-  if rex.session_id == nil or session_id == rex.session_id or attached[session_id] then
+  if rex.after == nil or session_id == rex.session_id or attached[session_id] then
     return true
   end
 
@@ -402,6 +403,18 @@ local function window_of_block(view, block_id)
   return nil
 end
 
+-- A pane's processes, or nil once the pane or its session is gone.
+local function processes(session_id, block_id)
+  local where = { session_id = session_id, block_id = block_id }
+  local result, err = rex.block.call(TERMINAL, "process", where)
+
+  if result == nil and not gone(err) then
+    fail(("Looking up the processes in pane %s failed: %s"):format(block_id, tostring(err)))
+  end
+
+  return result
+end
+
 -- Where a pane's terminal is, or nil when Rex doesn't know. The second value is true when the pane
 -- or its session is gone.
 local function block_cwd(session_id, block_id)
@@ -410,14 +423,10 @@ local function block_cwd(session_id, block_id)
   end
 
   local where = { session_id = session_id, block_id = block_id }
-  local process, err = rex.block.call(TERMINAL, "process", where)
+  local process = processes(session_id, block_id)
 
   if process == nil then
-    if gone(err) then
-      return nil, true
-    end
-
-    fail(("Looking up the processes in pane %s failed: %s"):format(block_id, tostring(err)))
+    return nil, true
   end
 
   if process.foreground ~= nil and process.foreground.cwd ~= nil then
@@ -499,7 +508,10 @@ return {
   slug = slug,
   write_json = write_json,
   with_lock = with_lock,
+  own_pid = own_pid,
   call = call,
+  gone = gone,
+  processes = processes,
   attach = attach,
   in_session = in_session,
   viewer = viewer,
