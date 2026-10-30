@@ -40,8 +40,9 @@ local SELF = shared.source_path("worktree.lua")
 
 local SETTINGS = SELF:match("^(.*)/[^/]+$") .. "/worktree.json"
 
--- What a tab's label starts with.
-local MARK = "⎇ "
+-- A tab's label starts with Nerd Fonts' nf-oct-git_branch glyph, U+F418. Rex's Lua 5.1 has no
+-- \u{} escapes, so the string spells out its UTF-8 bytes.
+local MARK = "\239\144\152 "
 
 -- worktree.json, read once per action. Each action starts without it, so a changed file applies to
 -- the next action without a reload.
