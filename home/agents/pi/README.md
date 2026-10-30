@@ -136,13 +136,12 @@ Removing a worktree closes its tabs, which ends anything running there. It refus
 
 The same file gives Rex's command palette a Worktrees category, which Claude Code and Codex can also run with `rex do`:
 
-| Action                    | What it does                                                                                                               |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `worktree_pick`           | **Worktrees…** opens fzf over the focused pane's repository. Enter opens one, a new name makes it, and ctrl-x removes one. |
-| `worktree_remove_current` | **Remove This Tab's Worktree** removes the active tab's worktree and closes the tab.                                       |
-| `worktree_open`           | Opens a worktree by `branch` or `path`, making it first if needed. Takes `session`, `command`, `label`, and `focus`.       |
-| `worktree_remove`         | Removes a worktree by `branch` or `path`, with `force` to discard changes.                                                 |
-| `worktree_list`           | Lists the repository's worktrees and the tabs they're open in.                                                             |
+| Action                    | What it does                                                                                                                                                                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `worktree_open`           | **Worktrees…** opens fzf over the focused pane's repository. Enter opens one, a new name makes it, and ctrl-x removes one. With `branch` or `path`, it opens that worktree and makes it first if needed. It also takes `session`, `command`, `label`, and `focus`. |
+| `worktree_remove_current` | **Remove This Tab's Worktree** removes the active tab's worktree and closes the tab.                                                                                                                                                                               |
+| `worktree_remove`         | Removes a worktree by `branch` or `path`, with `force` to discard changes.                                                                                                                                                                                         |
+| `worktree_list`           | Lists the repository's worktrees and the tabs they're open in.                                                                                                                                                                                                     |
 
 Actions in the configuration get 30 seconds, so a big repository's `git worktree add` can time out from the palette. The picker and the tools run the file as a script, which Rex doesn't time out.
 

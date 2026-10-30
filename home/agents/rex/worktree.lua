@@ -411,7 +411,50 @@ end
 
 -- Actions
 
+-- fzf over the repository's worktrees, in a floating pane. Enter opens one, a query that matches
+-- none makes a branch of that name, and ctrl-x removes one.
+local PICKER = [[
+self=$1
+cd "$2" || exit 1
+command -v fzf >/dev/null || { echo "fzf isn't installed."; read -r _; exit 1; }
+list=$(git worktree list --porcelain | awk '
+  /^worktree / { path = substr($0, 10); branch = "(detached)" }
+  /^branch / { branch = substr($0, 8); sub("^refs/heads/", "", branch) }
+  /^$/ && path != "" { print branch "\t" path; path = "" }
+  END { if (path != "") print branch "\t" path }')
+out=$(printf '%s\n' "$list" | fzf --print-query --expect=ctrl-x --delimiter='\t' \
+  --prompt='worktree> ' --header='enter: open · new name + enter: create · ctrl-x: remove')
+# Esc or ctrl-c
+[ $? -ge 128 ] && exit 0
+query=$(printf '%s\n' "$out" | sed -n 1p)
+key=$(printf '%s\n' "$out" | sed -n 2p)
+path=$(printf '%s\n' "$out" | sed -n 3p | cut -f2-)
+if [ -n "$path" ] && [ "$key" = ctrl-x ]; then
+  set -- rex do "$self" --action worktree_remove path="$path" keep_caller=false
+elif [ -n "$path" ]; then
+  set -- rex do "$self" --action worktree_open path="$path" focus=true
+elif [ -n "$query" ]; then
+  set -- rex do "$self" --action worktree_open branch="$query" cwd="$PWD" focus=true
+else
+  exit 0
+fi
+echo "$*"
+"$@" >/dev/null || { printf 'Press enter to close.'; read -r _; }
+]]
+
+local function pick(ctx, args)
+  local cwd = base_cwd(args, ctx)
+
+  shared.float_script(ctx, "worktrees", cwd, PICKER, { SELF, cwd })
+end
+
 local function open(ctx, args)
+  -- The command palette passes no arguments, so it gets the picker. Only scripts have rex.after, so
+  -- a script, such as an agent's call, still has to name the worktree.
+  if args.branch == nil and args.path == nil and rex.after == nil then
+    return pick(ctx, args)
+  end
+
   -- Resolve the session and worktree first, so a bad argument fails before git creates anything.
   local from_session = context(ctx)
   local session_id = resolve_session(args.session, from_session)
@@ -648,43 +691,6 @@ local function current(ctx)
   return entry
 end
 
--- fzf over the repository's worktrees, in a floating pane. Enter opens one, a query that matches
--- none makes a branch of that name, and ctrl-x removes one.
-local PICKER = [[
-self=$1
-cd "$2" || exit 1
-command -v fzf >/dev/null || { echo "fzf isn't installed."; read -r _; exit 1; }
-list=$(git worktree list --porcelain | awk '
-  /^worktree / { path = substr($0, 10); branch = "(detached)" }
-  /^branch / { branch = substr($0, 8); sub("^refs/heads/", "", branch) }
-  /^$/ && path != "" { print branch "\t" path; path = "" }
-  END { if (path != "") print branch "\t" path }')
-out=$(printf '%s\n' "$list" | fzf --print-query --expect=ctrl-x --delimiter='\t' \
-  --prompt='worktree> ' --header='enter: open · new name + enter: create · ctrl-x: remove')
-# Esc or ctrl-c
-[ $? -ge 128 ] && exit 0
-query=$(printf '%s\n' "$out" | sed -n 1p)
-key=$(printf '%s\n' "$out" | sed -n 2p)
-path=$(printf '%s\n' "$out" | sed -n 3p | cut -f2-)
-if [ -n "$path" ] && [ "$key" = ctrl-x ]; then
-  set -- rex do "$self" --action worktree_remove path="$path" keep_caller=false
-elif [ -n "$path" ]; then
-  set -- rex do "$self" --action worktree_open path="$path" focus=true
-elif [ -n "$query" ]; then
-  set -- rex do "$self" --action worktree_open branch="$query" cwd="$PWD" focus=true
-else
-  exit 0
-fi
-echo "$*"
-"$@" >/dev/null || { printf 'Press enter to close.'; read -r _; }
-]]
-
-local function pick(ctx, args)
-  local cwd = base_cwd(args, ctx)
-
-  shared.float_script(ctx, "worktrees", cwd, PICKER, { SELF, cwd })
-end
-
 -- An action's run function, with worktree.json read afresh.
 local function fresh(run)
   return function(ctx, args)
@@ -696,9 +702,9 @@ end
 
 rex.action({
   name = "worktree_open",
-  title = "Open Worktree",
+  title = "Worktrees…",
   category = "Worktrees",
-  description = "Open a git worktree in a tab, making the worktree first when the branch has none.",
+  description = "Pick a worktree of this pane's repository to open, create, or remove. With a branch or path, open that worktree in a tab, making it first when the branch has none.",
   keywords = "git branch checkout",
   args = {
     branch = "string?",
@@ -736,16 +742,6 @@ rex.action({
   description = "List a repository's git worktrees and the tabs they're open in.",
   args = { cwd = "string?" },
   run = fresh(list_worktrees),
-})
-
-rex.action({
-  name = "worktree_pick",
-  title = "Worktrees…",
-  category = "Worktrees",
-  description = "Pick a worktree of this pane's repository to open, create, or remove.",
-  keywords = "git branch checkout",
-  args = { cwd = "string?" },
-  run = fresh(pick),
 })
 
 rex.action({
