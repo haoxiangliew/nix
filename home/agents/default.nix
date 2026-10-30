@@ -358,12 +358,30 @@ in
               ] (lib.const { enabled = false; });
             };
       }
-      # Rex reads init.lua only when told to, so a new generation reloads it. The server may not be
-      # running, so a failed reload only warns.
+      # Reload init.lua without starting Rex. A stopped server is normal; other failures still warn.
       (lib.mkIf pkgs.stdenv.isDarwin {
         activation.reloadRexConfig = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
-          run ${lib.getExe rex} --autostart=false config reload \
-            || warnEcho "Couldn't reload Rex's configuration"
+          reloadRexConfig() {
+            local output status=0
+            output=$(run ${lib.getExe rex} --autostart=false config reload 2>&1) || status=$?
+
+            # Rex uses exit 4 for this case. Match the diagnostic too, not all connection failures.
+            if [[ $status -eq 4 &&
+              $output == "Error: no Rex server is running at "*", and autostart is disabled" &&
+              $output != *$'\n'* ]]; then
+              return 0
+            fi
+
+            if [[ -n $output ]]; then
+              if [[ $status -eq 0 ]]; then
+                printf '%s\n' "$output"
+              else
+                printf '%s\n' "$output" >&2
+              fi
+            fi
+            return "$status"
+          }
+          reloadRexConfig || warnEcho "Couldn't reload Rex's configuration"
         '';
       })
       {

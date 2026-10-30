@@ -556,7 +556,18 @@ function functionBridges(
       variable.init &&
       match(
         variable.init,
-        "$builder($options.fingerprint, $options.agentContext, $options.previousRequestId, $options.promptId, $options.turnOrigin, $options.turnPosition, { attributionProject: $project() })",
+        `$builder(
+          $options.fingerprint,
+          $options.agentContext,
+          $options.previousRequestId,
+          $options.promptId,
+          $options.turnOrigin,
+          $options.turnPosition,
+          {
+            attributionProject: $project(),
+            responseBeforeCompaction: $options.responseBeforeCompaction
+          }
+        )`,
         bindings,
       );
 
