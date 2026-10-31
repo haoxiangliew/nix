@@ -22,12 +22,12 @@ import type {
   AuthorizerLog,
   AuthorizerVerdict,
   PermissionQuery,
-  PermissionsService,
   PromptPermissionDetails,
   PromptRequestFacts,
 } from "@gotgenes/pi-permission-system";
 
 import { contentText, retryAssistantCall } from "@earendil-works/pi-ai";
+import { getPermissionsService } from "@gotgenes/pi-permission-system";
 import { resolve } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
@@ -37,8 +37,6 @@ import { errorMessage, loadOrReport } from "./lib/settings.ts";
 const NAME = "auto-mode";
 
 const CHARS_PER_TOKEN = 3.5;
-
-const SERVICES = Symbol.for("@gotgenes/pi-permission-system:session-services");
 
 const Config = Type.Object(
   {
@@ -661,15 +659,6 @@ async function complete(
   return reply;
 }
 
-function services(): Map<string, PermissionsService> | undefined {
-  // SAFETY: pi-permission-system's documented Symbol.for() registry maps session ids to services.
-  // Pi installs the package outside this file's module path, so this file can't import it.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  return Object.getOwnPropertyDescriptor(globalThis, SERVICES)?.value as
-    | Map<string, PermissionsService>
-    | undefined;
-}
-
 export default function (pi: ExtensionAPI) {
   let context: ExtensionContext | undefined;
   let config: Config | undefined;
@@ -1028,14 +1017,15 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    dispose = services()
-      ?.get(data.sessionId)
-      ?.registerAuthorizer(NAME, (details, query, log) => {
+    dispose = getPermissionsService(data.sessionId)?.registerAuthorizer(
+      NAME,
+      (details, query, log) => {
         const reviewed = queue.then(() => handleAsk(details, query, log));
 
         queue = reviewed.catch(() => undefined);
 
         return reviewed;
-      });
+      },
+    );
   });
 }

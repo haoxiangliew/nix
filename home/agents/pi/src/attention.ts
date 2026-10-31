@@ -7,6 +7,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
 
 import { multiplexer } from "./lib/multiplexer.ts";
 import { loadOrReport } from "./lib/settings.ts";
@@ -65,15 +66,25 @@ function watchReports(): void {
   const { stdout } = process;
   const write = stdout.write.bind(stdout);
 
-  // SAFETY: the wrapper passes its arguments to stdout's own write unchanged and returns its
-  // result, so it takes whatever either of write's overloads takes.
-  const watching = ((...args: Parameters<typeof write>) => {
-    const written = write(...args);
+  type Done = (error?: Error | null) => void;
 
-    noteReport(args[0]);
+  // The wrapper repeats write's overloads and sends each call to the matching one.
+  function watching(chunk: string | Uint8Array, done?: Done): boolean;
+  function watching(chunk: string | Uint8Array, encoding?: BufferEncoding, done?: Done): boolean;
+  function watching(
+    chunk: string | Uint8Array,
+    encoding?: BufferEncoding | Done,
+    done?: Done,
+  ): boolean {
+    const written =
+      encoding === undefined || Value.Check(Type.String(), encoding)
+        ? write(chunk, encoding, done)
+        : write(chunk, encoding);
+
+    noteReport(chunk);
 
     return written;
-  }) as typeof stdout.write;
+  }
 
   stdout.write = watching;
   writeRaw = (chunk) => write(chunk);

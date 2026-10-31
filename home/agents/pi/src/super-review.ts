@@ -10,6 +10,7 @@ import type { SubagentsService } from "@gotgenes/pi-subagents";
 
 import { DynamicBorder, getSelectListTheme, keyText } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
+import { getSubagentsService } from "@gotgenes/pi-subagents";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
@@ -52,8 +53,6 @@ const REVIEW_PROMPT_EVENT = "review:prompt";
 
 // freshSession is true if the user picked "Empty branch" in pi-review's "Start review in:" dialog.
 const ReviewPrompt = Type.Object({ prompt: Type.String(), freshSession: Type.Boolean() });
-
-const SERVICE = Symbol.for("@gotgenes/pi-subagents:service");
 
 const NO_ADVERSARY = "No adversary";
 
@@ -346,12 +345,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     loadConfig(ctx);
     // Child sessions replace the shared service. Keep this session's service before they start.
-    // SAFETY: pi-subagents publishes its service under this Symbol.for() key.
-    // Pi installs the package outside this file's module path, so this file can't import it.
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    service = Object.getOwnPropertyDescriptor(globalThis, SERVICE)?.value as
-      | SubagentsService
-      | undefined;
+    service = getSubagentsService();
   });
 
   pi.events.on(REVIEW_PROMPT_EVENT, (data) => {

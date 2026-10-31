@@ -72,17 +72,18 @@ let
     '';
   };
 
+  # bun.lock has trailing commas, which builtins.fromJSON rejects
+  bunLock = builtins.fromJSON (
+    lib.concatMapStrings (part: if builtins.isList part then builtins.head part else part) (
+      builtins.split ",([[:space:]]*[]}])" (builtins.readFile ./pi/bun.lock)
+    )
+  );
+
   # Versions and hashes come from bun.lock, so `bun update` bumps runtime packages too.
   npmPackage =
     name:
     let
-      # bun.lock has trailing commas, which builtins.fromJSON rejects
-      lock = builtins.fromJSON (
-        lib.concatMapStrings (part: if builtins.isList part then builtins.head part else part) (
-          builtins.split ",([[:space:]]*[]}])" (builtins.readFile ./pi/bun.lock)
-        )
-      );
-      entry = lock.packages.${name};
+      entry = bunLock.packages.${name};
       version = lib.removePrefix "${name}@" (builtins.elemAt entry 0);
       # A scoped package's tarball and store path use the name without its scope.
       tarball = pkgs.fetchurl {
@@ -94,6 +95,43 @@ let
       mkdir $out
       tar -xzf ${tarball} -C $out --strip-components=1
     '';
+
+  # A package's dependencies in bun.lock, without peer dependencies, which pi provides.
+  lockDependencies =
+    name: builtins.attrNames ((builtins.elemAt bunLock.packages.${name} 2).dependencies or { });
+
+  # A flat node_modules folder with the packages and everything they depend on, at bun.lock's
+  # versions. `overrides` maps a package name to another source, such as a patched build. `shallow`
+  # lists packages to copy without their dependencies.
+  nodeModules =
+    {
+      packages,
+      overrides ? { },
+      shallow ? [ ],
+    }:
+    let
+      closure = builtins.genericClosure {
+        startSet = map (key: { inherit key; }) packages;
+        operator =
+          { key }:
+          map (
+            dependency:
+            if bunLock.packages ? "${key}/${dependency}" then
+              throw "${key} needs its own version of ${dependency}, which a flat node_modules can't hold"
+            else
+              { key = dependency; }
+          ) (if lib.elem key shallow then [ ] else lockDependencies key);
+      };
+    in
+    pkgs.linkFarm "node_modules" (
+      map (
+        { key }:
+        {
+          name = key;
+          path = overrides.${key} or (npmPackage key);
+        }
+      ) closure
+    );
 
   # Keep real paths together so imports still find node_modules after following HM symlinks.
   piExtensions = pkgs.runCommand "pi-extensions" { } ''
@@ -116,13 +154,9 @@ let
       }
     } $out
     chmod -R u+w $out
-    mkdir $out/node_modules
-    ${lib.concatMapStringsSep "\n" (name: "cp -r ${npmPackage name} $out/node_modules/${name}") [
-      "proper-lockfile"
-      "graceful-fs"
-      "retry"
-      "signal-exit"
-    ]}
+    cp -rL ${
+      nodeModules { packages = lockDependencies "pi-better-background-tasks"; }
+    } $out/node_modules
   '';
 
   # pi-subagents with Explore on the Haiku family instead of Haiku 4.5, and fuzzy model names that
@@ -592,9 +626,17 @@ in
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
           "mermaid.ts" = ./pi/src/mermaid.ts;
           "super-review.ts" = ./pi/src/super-review.ts;
-          "node_modules/acorn" = npmPackage "acorn";
-          "node_modules/iced-x86" = npmPackage "iced-x86";
-          "node_modules/lovely-mermaid" = npmPackage "lovely-mermaid";
+          # Extensions import package.json's dependencies at runtime.
+          "node_modules" = nodeModules {
+            packages = lib.attrNames (lib.importJSON ./pi/package.json).dependencies;
+            overrides."@gotgenes/pi-subagents" = subagents;
+            # Extensions import only these packages' service getters, which load none of their
+            # dependencies.
+            shallow = [
+              "@gotgenes/pi-permission-system"
+              "@gotgenes/pi-subagents"
+            ];
+          };
           "review.ts" = "${
             pkgs.applyPatches {
               name = "pi-review";

@@ -108,18 +108,13 @@ function expand(value: string, defaultsOnly: boolean): string {
   });
 }
 
-function expandRecord(
-  record: Record<string, string> | undefined,
-): Record<string, string> | undefined {
-  return (
-    record &&
-    // A value starting with ! is a shell command, which expands its own variables.
-    Object.fromEntries(
-      Object.entries(record).map(([key, value]) => [
-        key,
-        value.startsWith("!") ? value : expand(value, true),
-      ]),
-    )
+function expandRecord(record: Record<string, string>): Record<string, string> {
+  // A value starting with ! is a shell command, which expands its own variables.
+  return Object.fromEntries(
+    Object.entries(record).map(([key, value]) => [
+      key,
+      value.startsWith("!") ? value : expand(value, true),
+    ]),
   );
 }
 
@@ -128,25 +123,39 @@ function resolveCwd(dir: string, cwd: string): string {
   return isAbsolute(cwd) || cwd.startsWith("~") ? cwd : resolve(dir, cwd);
 }
 
-function expandFull(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : expand(value, false);
-}
+// Pi picks between url and command, so keep both when both are set. Pi tells stdio and HTTP servers
+// apart by which keys exist, so leave unset fields out.
+function expandEntry(dir: string, entry: Entry): McpServerConfig {
+  const { url, command, args, cwd, env, headers, ...rest } = entry;
+  const fields: Omit<Entry, "url" | "command"> = rest;
 
-function expandEntry(dir: string, entry: Entry): Entry {
-  const cwd = expandFull(entry.cwd);
+  if (args !== undefined) {
+    fields.args = args.map((arg) => expand(arg, false));
+  }
 
-  const expanded = {
-    ...entry,
-    url: expandFull(entry.url),
-    command: expandFull(entry.command),
-    args: entry.args?.map((arg) => expand(arg, false)),
-    cwd: cwd === undefined ? undefined : resolveCwd(dir, cwd),
-    env: expandRecord(entry.env),
-    headers: expandRecord(entry.headers),
-  };
+  if (cwd !== undefined) {
+    fields.cwd = resolveCwd(dir, expand(cwd, false));
+  }
 
-  // Pi tells stdio and HTTP servers apart by which keys exist, so unset fields must be absent.
-  return Object.fromEntries(Object.entries(expanded).filter(([, value]) => value !== undefined));
+  if (env !== undefined) {
+    fields.env = expandRecord(env);
+  }
+
+  if (headers !== undefined) {
+    fields.headers = expandRecord(headers);
+  }
+
+  const stdio = command === undefined ? undefined : { ...fields, command: expand(command, false) };
+
+  if (url !== undefined) {
+    return { ...(stdio ?? fields), url: expand(url, false) };
+  }
+
+  if (stdio === undefined) {
+    throw new Error("expected a url or a command");
+  }
+
+  return stdio;
 }
 
 function addFile(servers: Servers, dir: string, report: Report): void {
@@ -164,9 +173,7 @@ function addFile(servers: Servers, dir: string, report: Report): void {
 
   for (const [name, entry] of Object.entries(parsed.mcpServers)) {
     try {
-      // SAFETY: registerMcpServer validates the entry and throws if it isn't a server config.
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-      servers.set(name, expandEntry(dir, entry) as McpServerConfig);
+      servers.set(name, expandEntry(dir, entry));
     } catch (cause) {
       report(`Skipped MCP server ${name} in ${path}. ${errorMessage(cause)}`);
     }
