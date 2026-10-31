@@ -74,12 +74,13 @@ index d388d41..5e86633 100644
    return pendingFailureAttention(readFailureState(failurePath(id)), Date.now(), { terminal: true });
  }
 diff --git a/src/index.ts b/src/index.ts
-index 047621e..16524ee 100644
+index 39aca0b..b9e85af 100644
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -1,13 +1,15 @@
+@@ -1,14 +1,16 @@
  import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 -import { disposeBackgroundWorkNavigator } from "./shared-navigator.ts";
+ import { initializeNavigatorPanels } from "./shared-navigator-panels.ts";
  import { registerBackgroundTasksGoalProvider } from "./goal-provider.js";
 -import { clearBackgroundTasksNavigatorSession, ensureBackgroundTasksNavigator, ensureBackgroundTasksNavigatorProvider } from "./navigator-provider.js";
 -import { resumeScheduledWork, suspendScheduledWork } from "./runtime.js";
@@ -93,10 +94,10 @@ index 047621e..16524ee 100644
 +  const runtime = createBackgroundTaskRuntime();
 +  const navigator = createBackgroundTasksNavigator(runtime);
 +  const { ensureBackgroundTasksNavigatorProvider, ensureBackgroundTasksNavigator, clearBackgroundTasksNavigatorSession } = navigator;
+   initializeNavigatorPanels(pi);
    pi.on("before_agent_start", (event) => ({ systemPrompt: appendExecutionPolicy(event.systemPrompt) }));
    registerBackgroundTasksGoalProvider(pi);
-   ensureBackgroundTasksNavigatorProvider(pi);
-@@ -16,19 +18,17 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
+@@ -18,19 +20,17 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
    observeForegroundSandboxPolicy(pi);
    // Registered before registerTools(pi), so this runs before running tasks are resumed.
    pi.on("session_start", async (_event, ctx) => {
@@ -215,12 +216,12 @@ index 61ac21e..b3dc928 100644
    if (meta.status === "running") return false;
    const endedAt = meta.endedAt;
 diff --git a/src/runtime.ts b/src/runtime.ts
-index 7a81d48..71c8f22 100644
+index c67395c..40f3251 100644
 --- a/src/runtime.ts
 +++ b/src/runtime.ts
 @@ -9,7 +9,7 @@ import type { RemoteRunner, ResolvedSshRemoteTask } from "./remote-task-preset.j
  import { ensureTaskDir, logPathFor, nextTaskId, readMeta, sandboxProfilePathFor, writeMeta } from "./registry.js";
- import { confineCommandSpec, resolveForegroundSandboxPlan, sandboxProvenance } from "./sandbox.js";
+ import { assertBackgroundExecutionAllowed, backgroundExecutionLimits, confineCommandSpec, isCommandTimeoutSeconds, resolveForegroundSandboxPlan, sandboxProvenance } from "./sandbox.js";
  import { takeRecoverySnapshot } from "./shared-sandbox-core.js";
 -import { failurePath, readTaskIntent, recordExitFailure, recordFailure, recoverDeclaredOperation, recoverFailure, resumeFailureAttention, scheduleFailureAttention, stopFailureAttention, suspendFailureAttention, terminalFailureAttention } from "./failures.js";
 +import { failurePath, readTaskIntent, recordExitFailure, recordFailure, recoverDeclaredOperation, recoverFailure, createFailureAttention, defaultAttention, terminalFailureAttention } from "./failures.js";
@@ -330,7 +331,7 @@ index 7a81d48..71c8f22 100644
    scheduledWorkSuspended = true;
    for (const timer of watcherTimers.values()) clearTimeout(timer);
    for (const timer of remoteSessionTimers.values()) clearTimeout(timer);
-@@ -148,53 +188,16 @@ export function suspendScheduledWork(): void {
+@@ -148,50 +188,13 @@ export function suspendScheduledWork(): void {
  }
  
  /** Allow scheduling again; called at session_start before running tasks are resumed. */
@@ -379,6 +380,11 @@ index 7a81d48..71c8f22 100644
 -  remoteRunner?: RemoteRunner;
 -}
 -
+ /**
+  * Persist the launch-time per-command cap with the task metadata. Reload and
+  * resume go through `readMeta`, so the value travels as ordinary JSON and the
+@@ -220,7 +223,7 @@ function invalidPersistedCommandCap(meta: BackgroundTaskMeta): string | undefine
+ 
  type WatchPollRunner = (timeoutMs?: number) => Promise<CommandResult>;
  
 -export function spawnTask(
@@ -386,7 +392,7 @@ index 7a81d48..71c8f22 100644
    pi: ExtensionAPI,
    params: SpawnTaskParams,
    defaultCwd: string,
-@@ -483,7 +486,7 @@ function failRemoteTask(
+@@ -515,7 +518,7 @@ function failRemoteTask(
    finalize(meta, { status: "failed", reason }, pi, getActiveSession);
  }
  
@@ -395,7 +401,7 @@ index 7a81d48..71c8f22 100644
    pi: ExtensionAPI,
    params: WatchTaskParams,
    defaultCwd: string,
-@@ -575,7 +578,7 @@ function resolveWatchTimeoutSeconds(timeoutSeconds: number | undefined): number
+@@ -609,7 +612,7 @@ function resolveWatchTimeoutSeconds(timeoutSeconds: number | undefined): number
    return timeoutSeconds;
  }
  
@@ -404,7 +410,7 @@ index 7a81d48..71c8f22 100644
    pi: ExtensionAPI,
    meta: BackgroundTaskMeta,
    getActiveSession?: ActiveSessionProvider,
-@@ -729,7 +732,7 @@ function resolvePersistedRemoteTask(
+@@ -770,7 +773,7 @@ function resolvePersistedRemoteTask(
    }, remoteRunner);
  }
  
@@ -413,7 +419,7 @@ index 7a81d48..71c8f22 100644
    pi: ExtensionAPI,
    id: string,
    getActiveSession?: ActiveSessionProvider,
-@@ -1334,4 +1337,11 @@ function extractLastState(result: { stdout: string }): unknown {
+@@ -1428,4 +1431,11 @@ function extractLastState(result: { stdout: string }): unknown {
    } catch {
      return result.stdout.slice(0, 4000);
    }
@@ -429,10 +435,10 @@ index 7a81d48..71c8f22 100644
 +export const { awaitFirstWatchCheck, suspendScheduledWork, resumeScheduledWork, spawnTask, startWatchTask, resumeRunningTask, stopTask } = defaultRuntime;
 \ No newline at end of file
 diff --git a/src/shared-navigator.ts b/src/shared-navigator.ts
-index 226da4d..e41291f 100644
+index bed07c6..e75579c 100644
 --- a/src/shared-navigator.ts
 +++ b/src/shared-navigator.ts
-@@ -81,8 +81,10 @@ type HostDeps = {
+@@ -82,8 +82,10 @@ type HostDeps = {
  
  type NavigatorState = {
    providers: Map<string, BackgroundWorkProvider>;
@@ -443,7 +449,7 @@ index 226da4d..e41291f 100644
    deps?: HostDeps;
    lastHint?: string | null;
    lastMainListLines?: string[];
-@@ -136,6 +138,8 @@ function state(): NavigatorState {
+@@ -137,6 +139,8 @@ function state(): NavigatorState {
  
  export function registerBackgroundWorkProvider(provider: BackgroundWorkProvider): () => void {
    const s = state();
@@ -452,7 +458,7 @@ index 226da4d..e41291f 100644
    const previousUnsub = s.unsubscribers.get(provider.id);
    if (previousUnsub) {
      try { previousUnsub(); } catch { /* ignore */ }
-@@ -151,7 +155,10 @@ export function registerBackgroundWorkProvider(provider: BackgroundWorkProvider)
+@@ -152,7 +156,10 @@ export function registerBackgroundWorkProvider(provider: BackgroundWorkProvider)
      s.unsubscribers.delete(provider.id);
    }
    refreshBackgroundWorkNavigator();
@@ -464,7 +470,7 @@ index 226da4d..e41291f 100644
  }
  
  export function unregisterBackgroundWorkProvider(id: string): void {
-@@ -162,6 +169,7 @@ export function unregisterBackgroundWorkProvider(id: string): void {
+@@ -163,6 +170,7 @@ export function unregisterBackgroundWorkProvider(id: string): void {
    }
    s.unsubscribers.delete(id);
    s.providers.delete(id);
@@ -472,7 +478,7 @@ index 226da4d..e41291f 100644
    refreshBackgroundWorkNavigator();
  }
  
-@@ -190,10 +198,11 @@ export function applyCloseConfirmFooter(ui: { setStatus(key: string, value: stri
+@@ -188,10 +196,11 @@ export function applyCloseConfirmFooter(ui: { setStatus(key: string, value: stri
    return hint ?? null;
  }
  
@@ -485,7 +491,7 @@ index 226da4d..e41291f 100644
    s.deps = {
      ...deps,
      createTranscriptComponent: deps.createTranscriptComponent ?? s.deps?.createTranscriptComponent,
-@@ -209,14 +218,18 @@ export function ensureBackgroundWorkNavigator(ctx: ExtensionContext, deps: HostD
+@@ -207,14 +216,18 @@ export function ensureBackgroundWorkNavigator(ctx: ExtensionContext, deps: HostD
    refreshMainListWidget();
  }
  
@@ -503,10 +509,10 @@ index 226da4d..e41291f 100644
    s.uiCtx = undefined;
 +  s.uiOwner = undefined;
    if (activeCtx && isNavigatorUiAvailable(activeCtx)) {
-     const ui = activeCtx.ui;
-     try { applyNavigatorFooter(ui as any, 0); } catch { /* ignore */ }
+     try { setNavigatorPanel(activeCtx, MAIN_LIST_WIDGET_KEY, undefined); } catch { /* ignore */ }
+   }
 diff --git a/src/tools.ts b/src/tools.ts
-index ec6ee50..1d158a1 100644
+index 65e2489..4827d38 100644
 --- a/src/tools.ts
 +++ b/src/tools.ts
 @@ -16,7 +16,7 @@ import {
