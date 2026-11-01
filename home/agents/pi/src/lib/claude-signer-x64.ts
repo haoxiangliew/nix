@@ -31,8 +31,8 @@ type BlockKind = "signer" | "helper" | "update" | "digest";
 // SHA-256 of each block's non-NOP instructions, normalized by InstructionSchema.
 const schemas = {
   signer: {
-    instructions: 227,
-    digest: "485367127d6a0fcc326d9256b88a1271abe3a5a0f97ee4ef7808d4a26d848b20",
+    instructions: 234,
+    digest: "9f7e837fc0db81c7bfaef997a6960d23254a0fe97b7bcb69c3311ac3bbb3a56b",
   },
   helper: {
     instructions: 251,
@@ -528,7 +528,6 @@ class InstructionSchema {
     private readonly code: readonly Instruction[],
     private readonly variables: ReadonlySet<number>,
     private readonly window: Instruction | undefined,
-    private readonly exit?: number,
   ) {
     let index = 0;
 
@@ -576,11 +575,8 @@ class InstructionSchema {
       return ["branch", ["internal", internal]];
     }
 
-    // A target inside the decoded range must start a decoded instruction or be the signer's
-    // shared exit.
-    requireSupported(
-      address === this.exit || address < this.code[0]!.address || address >= this.code.at(-1)!.next,
-    );
+    // A target inside the decoded range must start a decoded instruction.
+    requireSupported(address < this.code[0]!.address || address >= this.code.at(-1)!.next);
 
     return ["branch", ["external", this.alias(address)]];
   }
@@ -626,13 +622,7 @@ function checkSchema(
   window?: Instruction,
 ): void {
   const schema = schemas[kind];
-
-  const exit =
-    kind === "signer"
-      ? code.find((instruction) => instruction.flow === FlowControl.ConditionalBranch)?.next
-      : undefined;
-
-  const normalized = new InstructionSchema(image, code, variables, window, exit).normalize();
+  const normalized = new InstructionSchema(image, code, variables, window).normalize();
   const digest = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 
   if (normalized.length !== schema.instructions || digest !== schema.digest) {
@@ -741,8 +731,7 @@ function byteStore(
   );
 }
 
-// The path uses low-byte registers for repeated characters. Decode only the
-// path construction and its length guard, not the unrelated code after it.
+// The path uses immediate byte stores. Decode only its construction and length guard.
 function isSignerStart(image: X64Elf, address: number, seed: Seed): boolean {
   const prefix = decodeX64(
     image.code(address, seed.address - address),
@@ -775,11 +764,13 @@ function signerStarts(image: X64Elf, seed: Seed): number[] {
   const bytes = image.code(lower, seed.address - lower);
   const starts: number[] = [];
 
-  // MOV AL, '/' begins the path construction.
+  // MOV byte [RBP+disp32], '/' starts the path construction. This only filters
+  // candidates. isSignerStart checks every byte.
   for (let index = 0; index < bytes.length; index += 1) {
     if (
-      bytes[index] === 0xb0 &&
-      bytes[index + 1] === requestPath[0] &&
+      bytes[index] === 0xc6 &&
+      bytes[index + 1] === 0x85 &&
+      bytes[index + 6] === requestPath[0] &&
       isSignerStart(image, lower + index, seed)
     ) {
       starts.push(lower + index);
@@ -806,9 +797,8 @@ function findSeed(image: X64Elf): { seed: Seed; start: number } {
   return candidates[0]!;
 }
 
-// The path guard jumps over unrelated code into the signer. The signer's cold
-// block ends with a JMP to the guard's fallthrough. Decode only reachable
-// instructions up to that JMP. The signer schema checks every branch target.
+// The path guard jumps past the inline signer to where the signer ends. Decode only
+// reachable instructions up to that target. The signer schema checks every branch target.
 function signerBlock(image: X64Elf, seed: Seed, address: number): Instruction[] {
   const head = requireCode(
     decodeX64(
@@ -819,34 +809,20 @@ function signerBlock(image: X64Elf, seed: Seed, address: number): Instruction[] 
   );
 
   const guard = head.at(-1)!;
-  const entry = guard.operands[0];
+  const exit = guard.operands[0];
   requireSupported(
-    entry?.kind === "branch" && entry.address > guard.next && entry.address < seed.address,
+    exit?.kind === "branch" &&
+      exit.address > seed.address &&
+      exit.address > guard.next &&
+      exit.address - address <= limits.signerBytes,
   );
-  const end = signerEnd(image, seed, guard.next);
-  const body = reachableCode(image, entry.address, end);
+  const end = exit.address;
+  const body = reachableCode(image, guard.next, end);
   requireSupported(
     body.at(-1)?.next === end && body.some((instruction) => instruction.address === seed.address),
   );
 
   return [...head, ...body];
-}
-
-function signerEnd(image: X64Elf, seed: Seed, exit: number): number {
-  const bytes = image.code(seed.address, limits.signerBytes);
-  const ends: number[] = [];
-
-  // Find the JMP rel32 to the shared exit. `reachableCode` and the signer schema
-  // check that it is a real instruction.
-  for (let index = 0; index + 5 <= bytes.length; index += 1) {
-    if (bytes[index] === 0xe9 && seed.address + index + 5 + bytes.readInt32LE(index + 1) === exit) {
-      ends.push(seed.address + index + 5);
-    }
-  }
-
-  requireSupported(ends.length === 1);
-
-  return ends[0]!;
 }
 
 function reachableCode(image: X64Elf, entry: number, end: number): Instruction[] {
@@ -885,7 +861,7 @@ function reachableCode(image: X64Elf, entry: number, end: number): Instruction[]
           FlowControl.ConditionalBranch,
         ].includes(instruction.flow),
       );
-      requireSupported(instruction.next < end);
+      requireSupported(instruction.next <= end);
       pending.push(instruction.next);
     }
   }
