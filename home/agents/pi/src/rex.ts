@@ -1451,21 +1451,22 @@ export default function (pi: ExtensionAPI) {
     name: "rex_worktree",
     label: "Rex Worktree",
     description:
-      'Create a git worktree, or open an existing one by `path` or `branch`, in its own Rex tab. A new worktree goes in the directory ~/.config/rex/worktree.json sets. Returns its path, so you can work in it yourself. To have an agent work in a worktree, use rex_start with `placement: "worktree"` instead of the subagent tool.',
-    promptSnippet: "Create or open a git worktree in a Rex tab",
+      'Create a git worktree, or open an existing one by `path` or `branch`, in its own Rex tab. It starts no agent, so a new tab has only a shell. Your own tools stay in your directory. A new worktree goes in the directory ~/.config/rex/worktree.json sets. For changes on a branch, use rex_start with `placement: "worktree"` instead, which starts an agent in the worktree\'s tab.',
+    promptSnippet: "Open a git worktree in a Rex tab to read it yourself",
     promptGuidelines: [
       "Make, open, and remove git worktrees with rex_worktree, rex_start, and rex_worktree_remove instead of `git worktree add` or `git worktree remove`, so each gets a Rex tab. This includes checkouts for reviewing a PR.",
+      "Don't edit a worktree you opened with rex_worktree. Your tools stay in your own checkout, so relative paths change your checkout, not the worktree. Use rex_worktree only to read a branch, such as a PR's, with absolute paths.",
     ],
     parameters: WorktreeParams,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const cwd = resolve(ctx.cwd, untildify(params.cwd ?? "."));
       const { opened } = await openWorktree(params, cwd, signal);
       const how = opened.created ? "Created" : "Opened the existing";
-      const tab = opened.tab === "new" ? "a new Rex tab" : "its open Rex tab";
+      const tab = opened.tab === "new" ? "a new Rex tab with only a shell" : "its open Rex tab";
       const elsewhere = await sessionNote(opened.session_id, signal);
 
       return text(
-        `${how} ${describeWorktree(opened)}, in ${tab} ${opened.window_id}${elsewhere}. Work there with absolute paths, or \`cd\` into it in bash. To hand it to an agent, use rex_start with \`placement: "worktree"\` and this \`path\`, not the subagent tool.`,
+        `${how} ${describeWorktree(opened)}, in ${tab} ${opened.window_id}${elsewhere}. Your tools still run in ${tildify(ctx.cwd)}, so relative paths and bash change that checkout, not the worktree. To make changes there, start an agent with rex_start, \`placement: "worktree"\`, this \`path\`, and the task as \`prompt\`. To read it yourself, use absolute paths under ${tildify(opened.path)}.`,
       );
     },
   });

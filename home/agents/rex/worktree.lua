@@ -705,7 +705,7 @@ rex.action({
   name = "worktree_open",
   title = "Worktrees…",
   category = "Worktrees",
-  description = "Pick a worktree of this pane's repository to open, create, or remove. With a branch or path, open that worktree in a tab, making it first when the branch has none.",
+  description = "Pick a worktree of this pane's repository to open, create, or remove. With a branch or path, open that worktree in a tab, making it first when the branch has none. worktree_remove and worktree_list run only with `rex do ~/.config/rex/worktree.lua --action NAME`.",
   keywords = "git branch checkout",
   args = {
     branch = "string?",
@@ -720,30 +720,34 @@ rex.action({
   run = fresh(open),
 })
 
-rex.action({
-  name = "worktree_remove",
-  title = "Remove Worktree",
-  category = "Worktrees",
-  description = "Remove a git worktree and close its tabs. Its branch is kept.",
-  keywords = "git branch delete",
-  args = {
-    branch = "string?",
-    path = "string?",
-    cwd = "string?",
-    force = "boolean?",
-    keep_caller = "boolean?",
-  },
-  run = fresh(remove),
-})
+-- These add nothing to the picker in the command palette, and Rex can't hide an action there, so
+-- only scripts define them.
+if rex.after ~= nil then
+  rex.action({
+    name = "worktree_remove",
+    title = "Remove Worktree",
+    category = "Worktrees",
+    description = "Remove a git worktree and close its tabs. Its branch is kept.",
+    keywords = "git branch delete",
+    args = {
+      branch = "string?",
+      path = "string?",
+      cwd = "string?",
+      force = "boolean?",
+      keep_caller = "boolean?",
+    },
+    run = fresh(remove),
+  })
 
-rex.action({
-  name = "worktree_list",
-  title = "List Worktrees",
-  category = "Worktrees",
-  description = "List a repository's git worktrees and the tabs they're open in.",
-  args = { cwd = "string?" },
-  run = fresh(list_worktrees),
-})
+  rex.action({
+    name = "worktree_list",
+    title = "List Worktrees",
+    category = "Worktrees",
+    description = "List a repository's git worktrees and the tabs they're open in.",
+    args = { cwd = "string?" },
+    run = fresh(list_worktrees),
+  })
+end
 
 rex.action({
   name = "worktree_remove_current",

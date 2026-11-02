@@ -113,7 +113,7 @@ In [Rex](https://www.superlogical.com/rex), pi uses tools instead of the rex CLI
 | Tool                  | What it does                                                                                                                                |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rex_start`           | Starts an agent in a new pane next to pi's, a new tab, another session or a new one, or a git worktree's tab, and can give it a first task. |
-| `rex_worktree`        | Creates a git worktree in its own tab, or opens an existing one by branch or path, for pi's own work such as reviewing a PR.                |
+| `rex_worktree`        | Creates or opens a git worktree in its own tab, so pi can read a branch, such as a PR's. pi changes a worktree with `rex_start`.            |
 | `rex_worktree_remove` | Removes a worktree and closes its tabs. Its branch is kept.                                                                                 |
 | `rex_watch`           | Prompts an agent or sends it keys. With only an agent, waits on one that's already working.                                                 |
 | `rex_run`             | Runs a command in a new pane or tab you can watch, in any session. Can wait for a line of output, such as a ready message.                  |
@@ -134,7 +134,7 @@ pi can start from any directory in the repository, including another worktree, a
 
 Removing a worktree closes its tabs, which ends anything running there. It refuses one with uncommitted changes unless pi passes `force`, which it does only when you say to. pi removes a worktree it made once its work is committed and done, or when you ask. It won't remove the main checkout, or the worktree or tab it runs in.
 
-The same file gives Rex's command palette a Worktrees category, which Claude Code and Codex can also run with `rex do`:
+The same file adds a Worktrees category to Rex's command palette. Claude Code and Codex run its actions with `rex do`. `worktree_remove` and `worktree_list` aren't in the palette, so run them with `rex do ~/.config/rex/worktree.lua --action NAME`:
 
 | Action                    | What it does                                                                                                                                                                                                                                                       |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
