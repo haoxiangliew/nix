@@ -3,7 +3,7 @@
 {
   home = {
     packages = with pkgs; [
-      nerd-fonts.jetbrains-mono
+      unstable.ioskeley-mono.nf
       nerd-fonts.symbols-only
       font-awesome
       material-design-icons
@@ -12,7 +12,7 @@
 
   fonts.fontconfig = {
     enable = true;
-    defaultFonts.monospace = [ "JetBrainsMono Nerd Font" ];
+    defaultFonts.monospace = [ "IoskeleyMono Nerd Font Mono" ];
   };
 
   news.display = "silent";
@@ -77,7 +77,7 @@
     ghostty = {
       enable = true;
       settings = {
-        font-family = "JetBrainsMono Nerd Font";
+        font-family = "IoskeleyMono Nerd Font Mono";
 
         font-thicken = true;
 
