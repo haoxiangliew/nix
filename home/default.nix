@@ -3,6 +3,7 @@
 {
   home = {
     packages = with pkgs; [
+      unstable.ioskeley-mono.standard
       unstable.ioskeley-mono.term
       nerd-fonts.symbols-only
       font-awesome
@@ -13,7 +14,7 @@
   fonts.fontconfig = {
     enable = true;
     defaultFonts.monospace = [
-      "Ioskeley Mono Term"
+      "Ioskeley Mono"
       "Symbols Nerd Font Mono"
     ];
   };
