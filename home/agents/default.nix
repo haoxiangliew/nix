@@ -380,8 +380,13 @@ in
           (pkgs.formats.json { }).generate "web-search.json"
             {
               provider = "openai";
-              webSearch.allowedProviders = [ "openai" ];
-              openaiSearchModel = "gpt-6.1-sol";
+              webSearch.allowedProviders = [
+                "openai"
+                "xai"
+              ];
+              openaiSearchModel = "gpt-6-astra";
+              xaiSearchTools = [ "x_search" ];
+              xaiSearchTimeoutMs = 180000;
               youtube.enabled = false;
               video.enabled = false;
               commands = lib.genAttrs [
