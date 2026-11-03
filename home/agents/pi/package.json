@@ -17,14 +17,14 @@
     "lovely-mermaid": "0.3.3"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.4.0",
-    "@earendil-works/pi-coding-agent": "1.4.0",
-    "@earendil-works/pi-tui": "1.4.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-tui": "1.5.0",
     "@types/bun": "1.4.4",
     "oxfmt": "0.75.0",
     "oxlint": "1.90.0",
     "oxlint-tsgolint": "7.0.2005",
-    "pi-better-background-tasks": "0.13.0",
+    "pi-better-background-tasks": "0.13.1",
     "taze": "21.3.0",
     "typebox": "1.4.3"
   }

@@ -488,6 +488,7 @@ async function piBranchSummary(
   event: SessionBeforeTreeEvent,
   ctx: ExtensionContext,
   model: Model<Api>,
+  thinkingLevel: ThinkingLevel,
 ) {
   const { preparation, signal } = event;
   const settings = piSettings(ctx);
@@ -500,6 +501,7 @@ async function piBranchSummary(
     customInstructions: preparation.customInstructions,
     replaceInstructions: preparation.replaceInstructions,
     reserveTokens: settings.getBranchSummarySettings().reserveTokens,
+    thinkingLevel,
     retry: settings.getRetrySettings(),
     streamFn: (requestModel, context, options) =>
       ctx.modelRegistry.streamSimple(requestModel, context, options),
@@ -692,7 +694,7 @@ export default function compaction(pi: ExtensionAPI) {
         "warning",
       );
 
-      return piBranchSummary(event, ctx, model);
+      return piBranchSummary(event, ctx, model, pi.getThinkingLevel());
     }
 
     const files = fileLists(prepareBranchEntries(asPiSummaries(entriesToSummarize)).fileOps);

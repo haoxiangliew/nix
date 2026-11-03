@@ -216,10 +216,10 @@ index 61ac21e..b3dc928 100644
    if (meta.status === "running") return false;
    const endedAt = meta.endedAt;
 diff --git a/src/runtime.ts b/src/runtime.ts
-index c67395c..40f3251 100644
+index 86afc52..fc0d67b 100644
 --- a/src/runtime.ts
 +++ b/src/runtime.ts
-@@ -9,7 +9,7 @@ import type { RemoteRunner, ResolvedSshRemoteTask } from "./remote-task-preset.j
+@@ -10,7 +10,7 @@ import type { RemoteRunner, ResolvedSshRemoteTask } from "./remote-task-preset.j
  import { ensureTaskDir, logPathFor, nextTaskId, readMeta, sandboxProfilePathFor, writeMeta } from "./registry.js";
  import { assertBackgroundExecutionAllowed, backgroundExecutionLimits, confineCommandSpec, isCommandTimeoutSeconds, resolveForegroundSandboxPlan, sandboxProvenance } from "./sandbox.js";
  import { takeRecoverySnapshot } from "./shared-sandbox-core.js";
@@ -228,10 +228,12 @@ index c67395c..40f3251 100644
  import { markFailureAttentionDelivered } from "./shared-failure-observations.js";
  import { getCallbackBatcher } from "./shared-callback-batcher.js";
  import { formatCallbackFacts } from "./output.js";
-@@ -27,6 +27,61 @@ import type {
+@@ -29,6 +29,81 @@ import type {
  import { observeTaskStallAttention } from "./stall-attention.js";
  import { isTerminalStatus } from "./types.js";
  
++type WatchPollRunner = (timeoutMs?: number) => Promise<CommandResult>;
++
 +export type ActiveSessionProvider = () => BackgroundTaskCallbackOrigin | undefined;
 +
 +/** Structured intent (#325), declared by the launching agent and shared by spawns and watchers. */
@@ -247,6 +249,12 @@ index c67395c..40f3251 100644
 +  callback?: boolean;
 +  timeout_seconds?: number;
 +  max_log_bytes?: number;
++  /**
++   * Opt-in step gate (#619): run the command under bash errexit, so the first
++   * unhandled failing step ends the task with that step's exit code and a later
++   * command cannot mask it.
++   */
++  require_successful_steps?: boolean;
 +  ssh?: SshConnectionParams;
 +  remote?: RemoteTaskParams;
 +}
@@ -259,6 +267,12 @@ index c67395c..40f3251 100644
 +  max_log_bytes?: number;
 +  success_when: Condition;
 +  failure_when?: Condition;
++  /**
++   * Rejected (#619): a watch check is one polled command whose own exit code is the
++   * outcome, so the step gate cannot apply. Accepted in the shared schema only where
++   * the same wrapper also spawns.
++   */
++  require_successful_steps?: boolean;
 +  /** Consecutive blind checks before the watch is flagged (#359). Default 3; 0 turns it off. */
 +  blind_checks?: number;
 +  ssh?: SshConnectionParams;
@@ -267,6 +281,12 @@ index c67395c..40f3251 100644
 +
 +export interface TaskRuntimeDependencies {
 +  remoteRunner?: RemoteRunner;
++  /**
++   * Embedding/test seam for a local watch's poll command. Production polls run
++   * the persisted command through `runCommandOnce`; a remote watch keeps using
++   * its SSH runner instead.
++   */
++  watchPollRunner?: WatchPollRunner;
 +}
 +
 +export const DEFAULT_WATCH_TIMEOUT_SECONDS = 15 * 60;
@@ -290,7 +310,7 @@ index c67395c..40f3251 100644
  const watcherTimers = new Map<string, ReturnType<typeof setTimeout>>();
  const remoteSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
  const processTimeoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
-@@ -47,22 +102,7 @@ const HANDOFF_LOST_GRACE_MS = 5_000;
+@@ -49,22 +124,7 @@ const HANDOFF_LOST_GRACE_MS = 5_000;
  let scheduledWorkSuspended = false;
  const REMOTE_SESSION_POLL_MS = 100;
  
@@ -313,7 +333,7 @@ index c67395c..40f3251 100644
  
  /** In-flight first checks of watches launched by this instance, keyed by task id. */
  const firstCheckWaiters = new Map<string, { promise: Promise<FirstWatchCheck | "suspended" | undefined>; resolve: (check: FirstWatchCheck | "suspended" | undefined) => void }>();
-@@ -72,7 +112,7 @@ const firstCheckWaiters = new Map<string, { promise: Promise<FirstWatchCheck | "
+@@ -74,7 +134,7 @@ const firstCheckWaiters = new Map<string, { promise: Promise<FirstWatchCheck | "
   * outcome when the wait ends first, and undefined when this instance did not launch the watch
   * or the watch ended without a check.
   */
@@ -322,7 +342,7 @@ index c67395c..40f3251 100644
    const waiter = firstCheckWaiters.get(id);
    if (!waiter) return undefined;
    const started = Date.now();
-@@ -130,7 +170,7 @@ function settleFirstCheck(id: string, check: FirstWatchCheck | "suspended" | und
+@@ -132,7 +192,7 @@ function settleFirstCheck(id: string, check: FirstWatchCheck | "suspended" | und
   * is recorded as terminal and its callback is delivered when its session resumes;
   * after Pi quits, a resumed task whose process is gone is marked lost instead.
   */
@@ -331,7 +351,7 @@ index c67395c..40f3251 100644
    scheduledWorkSuspended = true;
    for (const timer of watcherTimers.values()) clearTimeout(timer);
    for (const timer of remoteSessionTimers.values()) clearTimeout(timer);
-@@ -148,50 +188,13 @@ export function suspendScheduledWork(): void {
+@@ -150,68 +210,13 @@ export function suspendScheduledWork(): void {
  }
  
  /** Allow scheduling again; called at session_start before running tasks are resumed. */
@@ -358,6 +378,12 @@ index c67395c..40f3251 100644
 -  callback?: boolean;
 -  timeout_seconds?: number;
 -  max_log_bytes?: number;
+-  /**
+-   * Opt-in step gate (#619): run the command under bash errexit, so the first
+-   * unhandled failing step ends the task with that step's exit code and a later
+-   * command cannot mask it.
+-   */
+-  require_successful_steps?: boolean;
 -  ssh?: SshConnectionParams;
 -  remote?: RemoteTaskParams;
 -}
@@ -370,6 +396,12 @@ index c67395c..40f3251 100644
 -  max_log_bytes?: number;
 -  success_when: Condition;
 -  failure_when?: Condition;
+-  /**
+-   * Rejected (#619): a watch check is one polled command whose own exit code is the
+-   * outcome, so the step gate cannot apply. Accepted in the shared schema only where
+-   * the same wrapper also spawns.
+-   */
+-  require_successful_steps?: boolean;
 -  /** Consecutive blind checks before the watch is flagged (#359). Default 3; 0 turns it off. */
 -  blind_checks?: number;
 -  ssh?: SshConnectionParams;
@@ -378,21 +410,29 @@ index c67395c..40f3251 100644
 -
 -export interface TaskRuntimeDependencies {
 -  remoteRunner?: RemoteRunner;
+-  /**
+-   * Embedding/test seam for a local watch's poll command. Production polls run
+-   * the persisted command through `runCommandOnce`; a remote watch keeps using
+-   * its SSH runner instead.
+-   */
+-  watchPollRunner?: WatchPollRunner;
 -}
 -
  /**
   * Persist the launch-time per-command cap with the task metadata. Reload and
   * resume go through `readMeta`, so the value travels as ordinary JSON and the
-@@ -220,7 +223,7 @@ function invalidPersistedCommandCap(meta: BackgroundTaskMeta): string | undefine
+@@ -278,9 +283,7 @@ function invalidPersistedCommandCap(meta: BackgroundTaskMeta): string | undefine
+   return `Persisted command time limit ${JSON.stringify(meta.commandTimeoutSeconds)} is invalid; the task was not resumed with an unlimited command.`;
+ }
  
- type WatchPollRunner = (timeoutMs?: number) => Promise<CommandResult>;
- 
+-type WatchPollRunner = (timeoutMs?: number) => Promise<CommandResult>;
+-
 -export function spawnTask(
 +function spawnTask(
    pi: ExtensionAPI,
    params: SpawnTaskParams,
    defaultCwd: string,
-@@ -515,7 +518,7 @@ function failRemoteTask(
+@@ -591,7 +594,7 @@ function failRemoteTask(
    finalize(meta, { status: "failed", reason }, pi, getActiveSession);
  }
  
@@ -401,7 +441,7 @@ index c67395c..40f3251 100644
    pi: ExtensionAPI,
    params: WatchTaskParams,
    defaultCwd: string,
-@@ -609,7 +612,7 @@ function resolveWatchTimeoutSeconds(timeoutSeconds: number | undefined): number
+@@ -688,7 +691,7 @@ function resolveWatchTimeoutSeconds(timeoutSeconds: number | undefined): number
    return timeoutSeconds;
  }
  
@@ -410,7 +450,7 @@ index c67395c..40f3251 100644
    pi: ExtensionAPI,
    meta: BackgroundTaskMeta,
    getActiveSession?: ActiveSessionProvider,
-@@ -770,7 +773,7 @@ function resolvePersistedRemoteTask(
+@@ -849,7 +852,7 @@ function resolvePersistedRemoteTask(
    }, remoteRunner);
  }
  
@@ -419,13 +459,10 @@ index c67395c..40f3251 100644
    pi: ExtensionAPI,
    id: string,
    getActiveSession?: ActiveSessionProvider,
-@@ -1428,4 +1431,11 @@ function extractLastState(result: { stdout: string }): unknown {
-   } catch {
-     return result.stdout.slice(0, 4000);
+@@ -1598,3 +1601,10 @@ function observeWatchOutcome(meta: BackgroundTaskMeta, result: CommandResult): v
    }
--}
-\ No newline at end of file
-+}
+   if (prior !== fingerprint) meta.lastProgressAt = meta.lastCheckedAt ?? Date.now();
+ }
 +return { awaitFirstWatchCheck, suspendScheduledWork, resumeScheduledWork, spawnTask, startWatchTask, resumeRunningTask, stopTask };
 +}
 +
@@ -512,7 +549,7 @@ index bed07c6..e75579c 100644
      try { setNavigatorPanel(activeCtx, MAIN_LIST_WIDGET_KEY, undefined); } catch { /* ignore */ }
    }
 diff --git a/src/tools.ts b/src/tools.ts
-index 65e2489..4827d38 100644
+index aa76181..803c498 100644
 --- a/src/tools.ts
 +++ b/src/tools.ts
 @@ -16,7 +16,7 @@ import {
@@ -533,7 +570,7 @@ index 65e2489..4827d38 100644
  const JsonPathSchema = Type.String({
    pattern: "^\\$",
    description: "Root-prefixed JSON path, e.g. $.status, $.terminalFailure, or $.steps[0].status. Bare keys and wildcards are unsupported.",
-@@ -193,7 +195,8 @@ const BACKGROUND_ORCHESTRATION_GUIDELINES = [
+@@ -204,7 +206,8 @@ const BACKGROUND_ORCHESTRATION_GUIDELINES = [
    "Do not treat launch as completion of the parent milestone; relevant background work must be terminal, inspected, and integrated before verification or completion.",
  ];
  
@@ -543,7 +580,7 @@ index 65e2489..4827d38 100644
    let activeSession: BackgroundTaskCallbackOrigin | undefined;
    const getActiveSession = () => activeSession;
    const schemas = new Map<string, object>();
-@@ -245,7 +248,7 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -256,7 +259,7 @@ export function registerTools(pi: ExtensionAPI): void {
      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
        const launched = reportLaunch(() => spawnTask(pi, params, ctx.cwd, activeSession, getActiveSession));
@@ -552,7 +589,7 @@ index 65e2489..4827d38 100644
        return text(launched);
      },
    });
-@@ -258,8 +261,8 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -269,8 +272,8 @@ export function registerTools(pi: ExtensionAPI): void {
      parameters: WatchParams,
      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
@@ -563,7 +600,7 @@ index 65e2489..4827d38 100644
        return text(launched);
      },
    });
-@@ -307,8 +310,8 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -318,8 +321,8 @@ export function registerTools(pi: ExtensionAPI): void {
      parameters: IdParams,
      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
@@ -574,7 +611,7 @@ index 65e2489..4827d38 100644
        return text(result);
      },
    });
-@@ -324,7 +327,7 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -335,7 +338,7 @@ export function registerTools(pi: ExtensionAPI): void {
      },
      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
@@ -583,7 +620,7 @@ index 65e2489..4827d38 100644
      },
    });
  
-@@ -338,7 +341,7 @@ export function registerTools(pi: ExtensionAPI): void {
+@@ -349,7 +352,7 @@ export function registerTools(pi: ExtensionAPI): void {
      },
      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
        activeSession = getCallbackOrigin(ctx);
@@ -592,7 +629,7 @@ index 65e2489..4827d38 100644
      },
    });
  }
-@@ -407,12 +410,14 @@ async function actionText(
+@@ -418,12 +421,14 @@ async function actionText(
    ctx: ExtensionContext,
    callbackOrigin: BackgroundTaskCallbackOrigin,
    getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
@@ -609,7 +646,7 @@ index 65e2489..4827d38 100644
  }
  
  async function runAction(
-@@ -421,14 +426,18 @@ async function runAction(
+@@ -432,14 +437,18 @@ async function runAction(
    ctx: ExtensionContext,
    callbackOrigin: BackgroundTaskCallbackOrigin,
    getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
@@ -630,7 +667,7 @@ index 65e2489..4827d38 100644
      case "list":
        return formatList(listOptions(params, callbackOrigin));
      case "status":
-@@ -439,7 +448,7 @@ async function runAction(
+@@ -450,7 +459,7 @@ async function runAction(
        return formatLog(String(params.id), logOptions(params, callbackOrigin));
      case "stop":
        if (!params.id) return "Invalid parameters: stop requires id.";
@@ -639,7 +676,7 @@ index 65e2489..4827d38 100644
      case "clear":
        return withNavigatorRefresh(ctx, formatClear(params, statusOptions(params, callbackOrigin)));
      default:
-@@ -474,7 +483,9 @@ export async function launchWatch(
+@@ -485,7 +494,9 @@ export async function launchWatch(
    getActiveSession: () => BackgroundTaskCallbackOrigin | undefined,
    waitMs = FIRST_WATCH_CHECK_WAIT_MS,
    signal?: AbortSignal,
@@ -649,7 +686,7 @@ index 65e2489..4827d38 100644
    let meta: BackgroundTaskMeta;
    try {
      meta = startWatchTask(pi, params, cwd, callbackOrigin, getActiveSession);
-@@ -489,11 +500,6 @@ export async function launchWatch(
+@@ -500,11 +511,6 @@ export async function launchWatch(
    return formatLaunch(latest);
  }
  
@@ -661,7 +698,7 @@ index 65e2489..4827d38 100644
  /** Origins whose session identity could not be read (the host threw). */
  const unavailableSessionOrigins = new WeakSet<BackgroundTaskCallbackOrigin>();
  
-@@ -625,7 +631,9 @@ async function formatStop(
+@@ -636,7 +642,9 @@ async function formatStop(
    _ctx: ExtensionContext,
    getActiveSession?: () => BackgroundTaskCallbackOrigin | undefined,
    options: OutputOptions = {},
