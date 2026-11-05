@@ -156,22 +156,57 @@ function calls(words: readonly number[], address: number): number[] {
   );
 }
 
-function vectors(image: Arm64MachO, words: readonly number[], address: number): bigint[][] {
-  const result: bigint[][] = [];
+function branchEntries(words: readonly number[]): Set<number> {
+  const entries = new Set<number>();
 
   words.forEach((word, index) => {
-    const load = words[index + 1] ?? 0;
-
-    if (!isAdrp(word) || masked(load, 0xffc00000) !== 0x3dc00000) {
-      return;
+    if (masked(word, 0x7c000000) === 0x14000000) {
+      entries.add(index + signed(word & 0x03ffffff, 26));
+    } else if (masked(word, 0xff000010) === 0x54000000 || masked(word, 0x7e000000) === 0x34000000) {
+      entries.add(index + signed((word >>> 5) & 0x7ffff, 19));
+    } else if (masked(word, 0x7e000000) === 0x36000000) {
+      entries.add(index + signed((word >>> 5) & 0x3fff, 14));
     }
-
-    requireSupported((word & 31) === ((load >>> 5) & 31));
-    const data = image.slice(pageAddress(address + index * 4, word) + immediate(load) * 16, 16);
-    result.push([data.readBigInt64LE(0), data.readBigInt64LE(8)]);
   });
 
-  return result;
+  return entries;
+}
+
+// Maps vector loads to the ADRP instructions that supply their base addresses.
+function vectorPages(words: readonly number[]): Map<number, number> {
+  const entries = branchEntries(words);
+  const registers = new Map<number, number>();
+  const pages = new Map<number, number>();
+
+  words.forEach((word, index) => {
+    if (entries.has(index)) {
+      registers.clear();
+    }
+
+    if (isAdrp(word) && (word & 31) !== 31) {
+      registers.set(word & 31, index);
+    } else if (masked(word, 0xffc00000) === 0x3dc00000) {
+      const page = registers.get((word >>> 5) & 31);
+
+      if (page !== undefined) {
+        pages.set(index, page);
+      }
+    } else if (word !== 0xd503201f && masked(word, 0xff20fc00) !== 0x6e204400) {
+      // NOP and vector USHL preserve the page registers; everything else invalidates them.
+      registers.clear();
+    }
+  });
+
+  return pages;
+}
+
+function vectors(image: Arm64MachO, words: readonly number[], address: number): bigint[][] {
+  return [...vectorPages(words)].map(([index, page]) => {
+    const location = pageAddress(address + page * 4, words[page]!) + immediate(words[index]!) * 16;
+    const data = image.slice(location, 16);
+
+    return [data.readBigInt64LE(0), data.readBigInt64LE(8)];
+  });
 }
 
 interface Value {
@@ -340,9 +375,16 @@ function checkSchema(words: readonly number[], kind: BlockKind): void {
   const schema = schemas[kind];
   requireSupported(words.length === schema.words);
   const normalized = Buffer.alloc(words.length * 4);
+  const pages = vectorPages(words);
 
   words.forEach((word, index) => {
-    let value = addressSchema(word, words[index - 1] ?? 0);
+    const previous = words[pages.get(index) ?? index - 1] ?? 0;
+    let value = addressSchema(word, previous);
+
+    // A reused page and a fresh ADRP are equivalent when the resolved vectors match.
+    if (word === 0xd503201f && pages.has(index + 1)) {
+      value = (0x90000000 | ((words[index + 1]! >>> 5) & 31)) >>> 0;
+    }
 
     if (kind === "signer") {
       const valueSchema = signerSchema(word, words[index + 1] ?? 0);

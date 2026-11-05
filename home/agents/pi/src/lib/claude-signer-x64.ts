@@ -807,9 +807,9 @@ function findSeed(image: X64Elf): { seed: Seed; start: number } {
   return candidates[0]!;
 }
 
-// The path guard jumps over unrelated code into the signer. The signer's cold block ends
-// with a JMP to the guard's fallthrough. Decode only reachable instructions up to that JMP.
-// The signer schema checks every branch target.
+// The path guard jumps over unrelated code into the signer. Decode reachable instructions
+// until the signer jumps to exit, the instruction after the guard. The schema checks every
+// branch target.
 function signerBlock(image: X64Elf, seed: Seed, address: number): Instruction[] {
   const head = requireCode(
     decodeX64(
@@ -824,74 +824,71 @@ function signerBlock(image: X64Elf, seed: Seed, address: number): Instruction[] 
   requireSupported(
     entry?.kind === "branch" && entry.address > guard.next && entry.address < seed.address,
   );
-  const end = signerEnd(image, seed, guard.next);
-  const body = reachableCode(image, entry.address, end);
-  requireSupported(
-    body.at(-1)?.next === end && body.some((instruction) => instruction.address === seed.address),
-  );
+  const body = reachableCode(image, entry.address, guard.next, seed);
 
   return [...head, ...body];
 }
 
-function signerEnd(image: X64Elf, seed: Seed, exit: number): number {
-  const bytes = image.code(seed.address, limits.signerBytes);
-  const ends: number[] = [];
+function successors(instruction: Instruction): number[] {
+  if ([FlowControl.ConditionalBranch, FlowControl.UnconditionalBranch].includes(instruction.flow)) {
+    const target = instruction.operands[0];
+    requireSupported(target?.kind === "branch");
 
-  // Find the JMP rel32 to the shared exit. reachableCode and the signer schema check
-  // that it is a real instruction, not a matching sequence inside another instruction.
-  for (let index = 0; index + 5 <= bytes.length; index += 1) {
-    if (bytes[index] === 0xe9 && seed.address + index + 5 + bytes.readInt32LE(index + 1) === exit) {
-      ends.push(seed.address + index + 5);
-    }
+    return instruction.flow === FlowControl.UnconditionalBranch
+      ? [target.address]
+      : [target.address, instruction.next];
   }
 
-  requireSupported(ends.length === 1);
+  requireSupported(
+    [FlowControl.Next, FlowControl.Call, FlowControl.IndirectCall].includes(instruction.flow),
+  );
 
-  return ends[0]!;
+  return [instruction.next];
 }
 
-function reachableCode(image: X64Elf, entry: number, end: number): Instruction[] {
-  const pending = [entry];
+// Decodes in address order and stops after the first JMP to exit past the seed.
+// The schema checks branch targets past that JMP, but they aren't decoded.
+function reachableCode(image: X64Elf, entry: number, exit: number, seed: Seed): Instruction[] {
+  const bound = Math.min(
+    seed.address + limits.signerBytes,
+    image.text.address + image.text.fileSize,
+  );
+
+  const pending = new Set([entry]);
   const decoded = new Map<number, Instruction>();
+  let end: number | undefined;
 
-  while (pending.length > 0) {
-    const current = pending.pop()!;
+  while (pending.size > 0) {
+    const current = Math.min(...pending);
+    pending.delete(current);
 
-    if (decoded.has(current) || current < entry || current >= end) {
+    if (current < entry || current >= (end ?? bound) || decoded.has(current)) {
       continue;
     }
 
     const [instruction] = requireCode(
-      decodeX64(image.code(current, Math.min(15, end - current)), current, () => true),
+      decodeX64(image.code(current, Math.min(15, bound - current)), current, () => true),
     );
 
     requireSupported(instruction !== undefined);
+    requireSupported(decoded.size < 1024);
     decoded.set(current, instruction);
-    requireSupported(decoded.size <= 1024);
+    const next = successors(instruction);
+    next.forEach((address) => pending.add(address));
 
     if (
-      [FlowControl.ConditionalBranch, FlowControl.UnconditionalBranch].includes(instruction.flow)
+      instruction.flow === FlowControl.UnconditionalBranch &&
+      next[0] === exit &&
+      current > seed.address
     ) {
-      const target = instruction.operands[0];
-      requireSupported(target?.kind === "branch");
-      pending.push(target.address);
-    }
-
-    if (instruction.flow !== FlowControl.UnconditionalBranch) {
-      requireSupported(
-        [
-          FlowControl.Next,
-          FlowControl.Call,
-          FlowControl.IndirectCall,
-          FlowControl.ConditionalBranch,
-        ].includes(instruction.flow),
-      );
-      requireSupported(instruction.next < end);
-      pending.push(instruction.next);
+      end = instruction.next;
     }
   }
 
   const body = [...decoded.values()].toSorted((left, right) => left.address - right.address);
+  requireSupported(end !== undefined);
+  requireSupported(body.at(-1)?.next === end);
+  requireSupported(decoded.has(seed.address));
   requireSupported(
     body.every((instruction, index) => index === 0 || body[index - 1]!.next <= instruction.address),
   );
