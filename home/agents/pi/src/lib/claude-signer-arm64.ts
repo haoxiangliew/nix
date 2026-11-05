@@ -20,7 +20,7 @@ type BlockKind = "signer" | "helper" | "hash";
 const schemas = {
   signer: {
     words: 202,
-    digest: "74f4a1b326376ed3db09871ce5eee2c8c903cea04b7f89ec571b5f116febd7db",
+    digest: "2e85d0d3baae5e5489ae0bbd912b64a53bd4287aaef06a840e20d7bd6eac22a9",
   },
   helper: {
     words: 230,
@@ -89,16 +89,6 @@ const checksumEnd: Pattern = [[0x91000121, 0xffc003ff]];
 // USHL shift vectors that extract the checksum digits.
 const checksumShifts = [-8n, 0n, -16n, -12n];
 
-// The linker can replace the second ADRP x9 with NOP when both checksum vectors
-// share a page. x9 is unchanged by the intervening LDR and USHL.
-const relaxedVectorPage: Pattern = [
-  [0x90000009, 0x9f00001f],
-  [0x3dc00121, 0xffc003ff],
-  [0x6ee14401, 0xffffffff],
-  [0xd503201f, 0xffffffff],
-  [0x3dc00122, 0xffc003ff],
-];
-
 // ADD x8, x0, #window; CMP x8, x24; CSEL x8, x8, x24, lo.
 const windowPattern: Pattern = [
   [0x91000008, 0xffc003ff],
@@ -166,18 +156,10 @@ function calls(words: readonly number[], address: number): number[] {
   );
 }
 
-// Returns the index of the ADRP for the load at index + 1, looking past the relaxed NOP.
-// Callers compute the page from that ADRP's own PC.
-function vectorPage(words: readonly number[], index: number): number {
-  return index >= 3 && matches(words, index - 3, relaxedVectorPage) ? index - 3 : index;
-}
-
 function vectors(image: Arm64MachO, words: readonly number[], address: number): bigint[][] {
   const result: bigint[][] = [];
 
-  words.forEach((_, index) => {
-    const page = vectorPage(words, index);
-    const word = words[page]!;
+  words.forEach((word, index) => {
     const load = words[index + 1] ?? 0;
 
     if (!isAdrp(word) || masked(load, 0xffc00000) !== 0x3dc00000) {
@@ -185,7 +167,7 @@ function vectors(image: Arm64MachO, words: readonly number[], address: number): 
     }
 
     requireSupported((word & 31) === ((load >>> 5) & 31));
-    const data = image.slice(pageAddress(address + page * 4, word) + immediate(load) * 16, 16);
+    const data = image.slice(pageAddress(address + index * 4, word) + immediate(load) * 16, 16);
     result.push([data.readBigInt64LE(0), data.readBigInt64LE(8)]);
   });
 
@@ -360,10 +342,7 @@ function checkSchema(words: readonly number[], kind: BlockKind): void {
   const normalized = Buffer.alloc(words.length * 4);
 
   words.forEach((word, index) => {
-    // When a relaxed NOP precedes the load, pass the ADRP as the previous word so
-    // addressSchema masks the load's page offset. The NOP stays in the schema.
-    const previous = index > 0 ? words[vectorPage(words, index - 1)]! : 0;
-    let value = addressSchema(word, previous);
+    let value = addressSchema(word, words[index - 1] ?? 0);
 
     if (kind === "signer") {
       const valueSchema = signerSchema(word, words[index + 1] ?? 0);
