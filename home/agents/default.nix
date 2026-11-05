@@ -567,9 +567,9 @@ in
                   trap 'rm -rf "$tmp"' EXIT
                   cd "$tmp"
                   echo '{}' > package.json
-                  ${lib.getExe pkgs.bun} info "$@"
+                  ${lib.getExe pkgs.nixpkgs-unstable.bun} info "$@"
                 else
-                  exec ${lib.getExe pkgs.bun} "$@"
+                  exec ${lib.getExe pkgs.nixpkgs-unstable.bun} "$@"
                 fi
               ''
             ))

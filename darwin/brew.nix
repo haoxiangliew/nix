@@ -31,6 +31,7 @@
           "1password"
           "1password-cli"
           "betterdisplay"
+          "capso"
           "ghostty"
           "helium-browser"
           "keyboardcleantool"
