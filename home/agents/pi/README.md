@@ -84,12 +84,12 @@ The fork repeats the session's last request, so it reads the prompt cache and ke
 
 `/fast` turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. In the picker, enter applies it to this session and ctrl+s also saves it as the default. `--fast` starts with it on.
 
-| Key                   | Default                                                   | Meaning                                         |
-| --------------------- | --------------------------------------------------------- | ----------------------------------------------- |
-| `fast.models`         | `["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]` | Anthropic models that support fast mode         |
-| `fast.beta`           | `"fast-mode-2026-02-01"`                                  | `anthropic-beta` header that enables it         |
-| `fast.costMultiplier` | `2`                                                       | Price multiple for fast replies                 |
-| `fastMode`            | `false`                                                   | Default on or off. `/fast` saves it with ctrl+s |
+| Key                   | Default                                                                       | Meaning                                         |
+| --------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------- |
+| `fast.models`         | `["claude-fable-5-2", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]` | Anthropic models that support fast mode         |
+| `fast.beta`           | `"fast-mode-2026-02-01"`                                                      | `anthropic-beta` header that enables it         |
+| `fast.costMultiplier` | `2`                                                                           | Price multiple for fast replies                 |
+| `fastMode`            | `false`                                                                       | Default on or off. `/fast` saves it with ctrl+s |
 
 ### `herdr-agents.ts`
 
