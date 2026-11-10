@@ -10,14 +10,7 @@ inputs:
   };
 
   unstable = final: prev: {
-    unstable = import inputs.nixos-unstable {
-      inherit (prev.stdenv.hostPlatform) system;
-      config.allowUnfree = true;
-    };
-  };
-
-  nixpkgs-unstable = final: prev: {
-    nixpkgs-unstable = import inputs.nixpkgs-unstable {
+    unstable = import inputs.nixpkgs-unstable {
       inherit (prev.stdenv.hostPlatform) system;
       config.allowUnfree = true;
     };

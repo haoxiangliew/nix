@@ -5,7 +5,6 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    nixos-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";
@@ -102,7 +101,7 @@
                 name = "pi-${name}";
                 runtimeInputs = [
                   pkgs.flock
-                  pkgs.nixpkgs-unstable.bun
+                  pkgs.unstable.bun
                 ];
                 text = ''
                   cd home/agents/pi
@@ -188,7 +187,7 @@
               pkgs.bashInteractive
               pkgs.nixd
               pkgs.nixfmt
-              pkgs.nixpkgs-unstable.bun
+              pkgs.unstable.bun
             ];
             shellHook = ''
               mkdir -p .helix

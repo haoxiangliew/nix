@@ -15,12 +15,26 @@ let
     );
 
   # pi runs herdr agents with its own tools, from pi/src/herdr-agents.ts, instead of the herdr skill.
+  # claude and codex check pathIsDirectory on each skill, which builds a derivation during evaluation
+  # and fails for other platforms, so they get prose-unslop as text. pi only accepts paths.
   skills = lib.mkMerge [
     (pkgsOf config.home.packages "herdr" (p: "${p.src}/skills/herdr"))
-    piSkills
+    sharedSkills
+    { prose-unslop = proseUnslop; }
   ];
 
   piSkills = lib.mkMerge [
+    sharedSkills
+    { prose-unslop = pkgs.writeTextDir "SKILL.md" proseUnslop; }
+  ];
+
+  proseUnslop =
+    builtins.replaceStrings
+      [ "references/unslop.md" ]
+      [ "${inputs.pstack}/pstack/skills/unslop/SKILL.md" ]
+      (builtins.readFile ./skills/prose-unslop/SKILL.md);
+
+  sharedSkills = lib.mkMerge [
     (pkgsOf config.programs.gh.extensions "gh-stack" (p: "${p.src}/skills/gh-stack"))
     {
       unslop = "${inputs.pstack}/pstack/skills/unslop";
@@ -28,10 +42,6 @@ let
       review-check = ./skills/review-check;
       ts-antislop = ./skills/ts-antislop;
       draft-pr-review = ./skills/draft-pr-review;
-      prose-unslop = pkgs.linkFarm "prose-unslop" {
-        "SKILL.md" = ./skills/prose-unslop/SKILL.md;
-        "references/unslop.md" = "${inputs.pstack}/pstack/skills/unslop/SKILL.md";
-      };
     }
   ];
 
@@ -559,9 +569,9 @@ in
                   trap 'rm -rf "$tmp"' EXIT
                   cd "$tmp"
                   echo '{}' > package.json
-                  ${lib.getExe pkgs.nixpkgs-unstable.bun} info "$@"
+                  ${lib.getExe pkgs.unstable.bun} info "$@"
                 else
-                  exec ${lib.getExe pkgs.nixpkgs-unstable.bun} "$@"
+                  exec ${lib.getExe pkgs.unstable.bun} "$@"
                 fi
               ''
             ))
