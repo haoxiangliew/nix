@@ -153,10 +153,16 @@ let
   '';
 
   # pi loads a local package without installing it, so pi-better-background-tasks' dependencies go
-  # in its node_modules.
+  # in its node_modules. The package runs its scripts with process.execPath, but that is the
+  # compiled pi binary, which starts pi and not the script, so bun runs them.
   backgroundTasks = pkgs.runCommand "pi-better-background-tasks" { } ''
     cp -r ${npmPackage "pi-better-background-tasks"} $out
     chmod -R u+w $out
+    substituteInPlace \
+      $out/src/supervisor/invocation.ts \
+      $out/src/delivery-observer.ts \
+      $out/src/shared-sandbox-core.ts \
+      --replace-fail 'process.execPath' '"${lib.getExe pkgs.unstable.bun}"'
     cp -rL ${
       nodeModules { packages = lockDependencies "pi-better-background-tasks"; }
     } $out/node_modules
