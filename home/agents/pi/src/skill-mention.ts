@@ -2,13 +2,13 @@
  * $name anywhere in a prompt loads that skill. pi's /skill:name works only at the start of a
  * prompt. No settings.
  *
- * Other extensions use these pi.events channels. Handlers answer synchronously, during emit:
- * - "skill-mention:autocomplete" { provide(provider) }: a $name provider for their own
+ * Other extensions use these pi.events channels. Handlers answer synchronously, during emit.
+ * - "skill-mention:autocomplete" { provide(provider) } gives a $name provider for their own
  *   editors, which pi's built-in autocomplete doesn't reach. pi-review uses it.
- * - "skill-mention:expand" { text, done(result) }: for text the user typed into an extension's
- *   prompt. done() gets { text, blocks } with the $ stripped from known skills, or { error }. The
- *   sender puts the blocks first. This extension's input handler skips extension prompts, so
- *   senders opt in here.
+ * - "skill-mention:expand" { text, done(result) } expands text the user typed into an
+ *   extension's prompt. done() gets { text, blocks } with the $ stripped from known skills, or
+ *   { error }. The sender puts the blocks first. This extension's input handler skips extension
+ *   prompts, so senders opt in here.
  */
 
 import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";

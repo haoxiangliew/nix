@@ -142,17 +142,10 @@ let
     '') config.programs.pi-coding-agent.extensions}
   '';
 
-  # pi-better-background-tasks with upstream PR #460, so a subagent can't hide this session's tasks
-  # or stop their completion messages. Drop the patch once #460 ships. pi loads a local package
-  # without installing it, so its dependencies go in its node_modules.
+  # pi loads a local package without installing it, so pi-better-background-tasks' dependencies go
+  # in its node_modules.
   backgroundTasks = pkgs.runCommand "pi-better-background-tasks" { } ''
-    cp -r ${
-      pkgs.applyPatches {
-        name = "pi-better-background-tasks";
-        src = npmPackage "pi-better-background-tasks";
-        patches = [ ./pi/patches/pi-better-background-tasks.patch ];
-      }
-    } $out
+    cp -r ${npmPackage "pi-better-background-tasks"} $out
     chmod -R u+w $out
     cp -rL ${
       nodeModules { packages = lockDependencies "pi-better-background-tasks"; }
@@ -555,7 +548,6 @@ in
           transport = "websocket";
           terminal.showTerminalProgress = true;
           showHardwareCursor = true;
-          markdown.mermaid = "off";
           enableInstallTelemetry = false;
           # use bun as npm. pi's update check runs `npm view`, so this runs `bun info` instead
           npmCommand = [
@@ -575,7 +567,6 @@ in
             ))
           ];
           warnings.anthropicExtraUsage = false;
-          cacheWarming = "idle";
           showCacheMissNotices = true;
           talk.prompt = talkPrompt;
           mcpAncestors.roots = [ "~/Developer" ];
@@ -629,7 +620,6 @@ in
           "auto-mode.ts" = ./pi/src/auto-mode.ts;
           "compaction.ts" = ./pi/src/compaction.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
-          "mermaid.ts" = ./pi/src/mermaid.ts;
           "super-review.ts" = ./pi/src/super-review.ts;
           # Extensions import package.json's dependencies at runtime.
           "node_modules" = nodeModules {

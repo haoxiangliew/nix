@@ -45,3 +45,19 @@ export function cached<T>(
 
   return pending;
 }
+
+// Like cached, but keeps a failure too, so later callers get the same error without a rerun.
+export function cachedOutcome<T>(
+  cache: Map<string, Promise<T>>,
+  key: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  let pending = cache.get(key);
+
+  if (pending === undefined) {
+    pending = load();
+    cache.set(key, pending);
+  }
+
+  return pending;
+}

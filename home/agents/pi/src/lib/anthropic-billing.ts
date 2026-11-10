@@ -4,15 +4,30 @@ import { createHash } from "node:crypto";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
-import { assertBillingReady, billingQuotaError } from "./billing-quota.ts";
-import { attributionFields, attributionText } from "./claude-attribution.ts";
 import {
-  assertCliUnchanged,
+  hasBeta,
+  isRequestId,
   isUuid,
-  requestFingerprint,
-  type ClaudeIdentity,
-} from "./claude-identity.ts";
+  orderedBody,
+  toolDurationsHeader,
+  toolDurationsValue,
+  toolsUsedHeader,
+  toolsUsedValue,
+  withPreviousRequest,
+} from "./billing-fields.ts";
+import { assertBillingReady, billingQuotaError } from "./billing-quota.ts";
+import { recordToolsUsed, type BillingSession, type ThreadState } from "./billing-session.ts";
+import {
+  noteRefusedContinue,
+  planThread,
+  threadResponse,
+  ThreadField,
+  type ThreadPlan,
+} from "./billing-thread.ts";
+import { attributionFields, attributionText } from "./claude-attribution.ts";
+import { assertCliUnchanged, cliVersion, type ClaudeIdentity } from "./claude-identity.ts";
 import { signCliBody } from "./claude-signer.ts";
+import { threadsBetaPrefix, type TurnFormat } from "./claude-turns.ts";
 import { requestHeaders, type FetchInput } from "./fetch.ts";
 import { piAnthropicProvider, readPiIdentity } from "./pi-identity.ts";
 import { awaitAbort, cached } from "./promise.ts";
@@ -23,11 +38,18 @@ const Text = Type.String();
 
 const Block = Type.Object({ type: Text, text: Type.Optional(Text) });
 
+const ToolUse = Type.Object({ type: Type.Literal("tool_use"), name: Text });
+
+// A thread continue has no system prompt or tools. The server keeps the ones it was created with.
 const Payload = Type.Object({
   model: Text,
-  system: Type.Array(Block),
+  system: Type.Optional(Type.Array(Block)),
   messages: Type.Array(Type.Object({ role: Text, content: Type.Union([Text, Type.Array(Block)]) })),
+  max_tokens: Type.Integer({ minimum: 1 }),
   metadata: Type.Optional(Type.Record(Text, Type.Unknown())),
+  tools: Type.Optional(Type.Array(Type.Object({ name: Text }))),
+  thread: ThreadField,
+  diagnostics: Type.Optional(Type.Never()),
 });
 
 const AccountProfile = Type.Object({
@@ -41,15 +63,18 @@ interface PreparedRequest {
   init: RequestInit;
   subscriptionType: string;
   session: BillingSession;
+  main: boolean;
+  plan: ThreadPlan;
 }
 
-export interface BillingSession {
-  sessionId: string;
-  promptId: string;
-  promptIndex: number;
-  turnIndex: number;
-  quotaError?: Error;
+interface RequestContext {
+  /** Undefined when the request doesn't depend on the CLI's later requests. */
+  turns: TurnFormat | undefined;
+  /** A request of the agent loop, not compaction, cache warming, or an extension call. */
+  main: boolean;
 }
+
+export type { BillingSession };
 
 type BillingIdentity =
   | Error
@@ -67,24 +92,41 @@ function firstUserText(payload: Payload): string {
   return content?.find((block) => block.type === "text")?.text ?? "";
 }
 
-function billingBlock(payload: Payload, identity: ClaudeIdentity, session: BillingSession): string {
+// Like the CLI, the turn index counts prompts, not requests. The prompt index advances only when
+// the profile's turn origin is human, and a --print profile's origin isn't.
+function billingBlock(
+  ccVersion: string,
+  identity: ClaudeIdentity,
+  session: BillingSession,
+  previousRequest: string | undefined,
+): string {
   const fields = attributionFields(identity.profile.attributionText, identity.prefix);
+  const prompts = Math.max(0, session.promptIndex);
+  const promptStep = fields.get("cc_turn_origin") === "human" ? 1 : 0;
 
   const replacements = new Map([
-    ["cc_version", `${identity.version}.${requestFingerprint(firstUserText(payload), identity)}`],
+    ["cc_version", ccVersion],
     ["cch", identity.signer.placeholder.subarray(identity.signer.checksumOffset).toString("ascii")],
     ["cc_prompt_id", session.promptId],
-    [
-      "cc_prompt_index",
-      String(Number(fields.get("cc_prompt_index")) + Math.max(0, session.promptIndex)),
-    ],
-    ["cc_turn_index", String(Number(fields.get("cc_turn_index")) + session.turnIndex)],
+    ["cc_prompt_index", String(Number(fields.get("cc_prompt_index")) + promptStep * prompts)],
+    ["cc_turn_index", String(Number(fields.get("cc_turn_index")) + prompts)],
   ]);
+
+  const updated = new Map(
+    [...fields].map(([name, value]) => [name, replacements.get(name) ?? value]),
+  );
 
   return attributionText(
     identity.prefix,
-    new Map([...fields].map(([name, value]) => [name, replacements.get(name) ?? value])),
+    previousRequest === undefined ? updated : withPreviousRequest(updated, previousRequest),
   );
+}
+
+// The CLI names the request-id of the conversation's last reply.
+function previousRequestId(session: BillingSession, turns: RequestContext["turns"]) {
+  const requestId = session.reply?.requestId;
+
+  return turns?.previousRequest === true && isRequestId(requestId) ? requestId : undefined;
 }
 
 async function assertHeaders(
@@ -136,9 +178,7 @@ function tracedHeaders(identity: ClaudeIdentity, session: BillingSession): Heade
   return headers;
 }
 
-function mirrorHeaders(headers: Headers, identity: ClaudeIdentity, session: BillingSession): void {
-  const captured = tracedHeaders(identity, session);
-
+function betaHeader(captured: Headers, headers: Headers, withThreads: boolean): string {
   const betas = new Set(
     (captured.get("anthropic-beta") ?? "")
       .split(",")
@@ -152,6 +192,43 @@ function mirrorHeaders(headers: Headers, identity: ClaudeIdentity, session: Bill
     }
   }
 
+  return [...betas].filter((beta) => withThreads || !beta.startsWith(threadsBetaPrefix)).join(",");
+}
+
+function turnHeaders(
+  headers: Headers,
+  identity: ClaudeIdentity,
+  session: BillingSession,
+  context: RequestContext,
+): void {
+  // Set only when the CLI sent the header as `[]` on its first request.
+  if (identity.profile.headers[toolsUsedHeader] === toolsUsedValue([])) {
+    headers.set(toolsUsedHeader, toolsUsedValue(session.toolsUsed));
+  }
+
+  const durations =
+    context.main && context.turns?.toolDurations === true
+      ? toolDurationsValue(session.toolRuns)
+      : undefined;
+
+  if (durations === undefined) {
+    headers.delete(toolDurationsHeader);
+  } else {
+    headers.set(toolDurationsHeader, durations);
+  }
+}
+
+function mirrorHeaders(
+  headers: Headers,
+  identity: ClaudeIdentity,
+  session: BillingSession,
+  context: RequestContext,
+): void {
+  const captured = tracedHeaders(identity, session);
+
+  // If the CLI doesn't thread, requests drop the threads beta.
+  const betas = betaHeader(captured, headers, context.turns?.threads !== false);
+
   const stale = Array.from(headers.keys()).filter(
     (name) => name.startsWith("x-stainless-") && !captured.has(name),
   );
@@ -164,33 +241,116 @@ function mirrorHeaders(headers: Headers, identity: ClaudeIdentity, session: Bill
     headers.set(name, value);
   }
 
-  headers.set("anthropic-beta", [...betas].join(","));
+  headers.set("anthropic-beta", betas);
   headers.delete("content-length");
+  turnHeaders(headers, identity, session, context);
+}
+
+function cliSystem(payload: Payload, identity: ClaudeIdentity): unknown[] {
+  const [first, ...rest] = payload.system ?? [];
+
+  if (first?.type !== "text" || first.text !== identity.piPrompt) {
+    throw new Error("Pi's original Anthropic OAuth identity prompt changed. Request blocked.");
+  }
+
+  return [{ ...first, text: identity.profile.identityPrompt }, ...rest];
+}
+
+// A continue repeats the stored system prompt and tools only when the CLI would.
+function bodyParts(payload: Payload, identity: ClaudeIdentity, plan: ThreadPlan): ThreadState {
+  if (plan.type !== "continue") {
+    return {
+      ccVersion: cliVersion(firstUserText(payload), identity),
+      system: cliSystem(payload, identity),
+      tools: payload.tools,
+    };
+  }
+
+  if (payload.system !== undefined || payload.tools !== undefined) {
+    throw new Error("Pi's Anthropic OAuth payload format changed. Request blocked.");
+  }
+
+  const { state, full } = plan;
+
+  return {
+    ccVersion: state.ccVersion,
+    system: full ? state.system : [],
+    tools: full ? state.tools : undefined,
+  };
+}
+
+function toolUses(payload: Payload): string[] {
+  return payload.messages
+    .flatMap(({ role, content }) => (role === "assistant" && Array.isArray(content) ? content : []))
+    .flatMap((block) => (Value.Check(ToolUse, block) ? [block.name] : []));
+}
+
+// Like the CLI, which keeps this per agent, only the main loop's own requests update wireTools,
+// toolsUsed and thread. Only a create starts a thread, so a request without one keeps it.
+function remember(
+  session: BillingSession,
+  payload: Payload,
+  parts: ThreadState,
+  plan: ThreadPlan,
+  main: boolean,
+) {
+  if (!main || plan.type === "continue") {
+    return;
+  }
+
+  if (payload.tools !== undefined) {
+    session.wireTools = payload.tools.map((tool) => tool.name);
+  }
+
+  recordToolsUsed(session, toolUses(payload));
+
+  if (plan.type === "create") {
+    session.thread = parts;
+  }
+}
+
+function diagnostics(
+  identity: ClaudeIdentity,
+  session: BillingSession,
+  main: boolean,
+): { previous_message_id: string | null } | undefined {
+  const gated = hasBeta(identity.profile.headers["anthropic-beta"], "cache-diagnosis-");
+
+  if (!main || !gated || !identity.profile.diagnostics) {
+    return undefined;
+  }
+
+  return { previous_message_id: session.reply?.messageId ?? null };
 }
 
 function attributedBody(
   payload: Payload,
   identity: ClaudeIdentity,
   session: BillingSession,
+  parts: ThreadState,
+  context: RequestContext,
 ): string {
-  const [first, ...rest] = payload.system;
-
-  if (first?.type !== "text" || first.text !== identity.piPrompt) {
-    throw new Error("Pi's original Anthropic OAuth identity prompt changed. Request blocked.");
-  }
-
-  const system = [
-    { type: "text", text: billingBlock(payload, identity, session) },
-    { ...first, text: identity.profile.identityPrompt },
-    ...rest,
-  ];
+  const billing = billingBlock(
+    parts.ccVersion,
+    identity,
+    session,
+    previousRequestId(session, context.turns),
+  );
 
   const metadata = {
     ...payload.metadata,
     user_id: JSON.stringify({ ...identity.profile.metadataUserId, session_id: session.sessionId }),
   };
 
-  return signCliBody(JSON.stringify({ ...payload, system, metadata }), identity.signer);
+  const body = {
+    ...payload,
+    system: [{ type: "text", text: billing }, ...parts.system],
+    tools: parts.tools,
+    metadata,
+    diagnostics: diagnostics(identity, session, context.main),
+  };
+
+  return signCliBody(JSON.stringify(orderedBody(body)), identity.signer);
 }
 
 async function fetchAccount(
@@ -276,6 +436,37 @@ function parsePayload(init: RequestInit | undefined): Payload {
   return payload;
 }
 
+// The multi-request probe runs only once a request depends on what the CLI sends after its first
+// request. A failed probe blocks the request.
+async function turnFormat(
+  identity: ClaudeIdentity,
+  payload: Payload,
+  headers: Headers,
+  session: BillingSession,
+  signal: AbortSignal | undefined,
+): Promise<RequestContext["turns"]> {
+  if (
+    payload.thread === undefined &&
+    !hasBeta(headers.get("anthropic-beta"), threadsBetaPrefix) &&
+    session.reply === undefined &&
+    session.toolRuns.length === 0
+  ) {
+    return undefined;
+  }
+
+  return identity.readTurns(signal);
+}
+
+// pi's cache warmer repeats the last request with max_tokens 1 and no thread, and may do so while
+// the reply streams. The agent loop asks for more, unless the context window is full.
+function isCacheRefresh(payload: Payload): boolean {
+  return payload.max_tokens === 1 && payload.thread === undefined;
+}
+
+function isMainRequest(session: BillingSession, side: boolean, payload: Payload): boolean {
+  return !side && session.awaitingReply && !session.compacting && !isCacheRefresh(payload);
+}
+
 async function prepareRequest(
   upstream: FetchFunction,
   init: RequestInit | undefined,
@@ -283,26 +474,46 @@ async function prepareRequest(
   identity: ClaudeIdentity,
   session: BillingSession,
   payload: Payload,
-): Promise<PreparedRequest> {
+  side: boolean,
+): Promise<PreparedRequest | Response> {
   const signal = init?.signal ?? undefined;
   assertBillingReady(identity.subscriptionType, session.quotaError);
   await assertHeaders(headers, identity, signal);
   await assertAccount(upstream, headers, identity, signal);
   assertCliUnchanged(identity);
-  const body = attributedBody(payload, identity, session);
-  mirrorHeaders(headers, identity, session);
-  session.turnIndex++;
+  const turns = await turnFormat(identity, payload, headers, session, signal);
+  const plan = planThread(payload.thread, turns, session);
 
-  return { init: { ...init, headers, body }, subscriptionType: identity.subscriptionType, session };
+  if (plan.type === "refuse") {
+    return threadResponse(plan.code);
+  }
+
+  const context = { turns, main: isMainRequest(session, side, payload) };
+  const parts = bodyParts(payload, identity, plan);
+  remember(session, payload, parts, plan, context.main);
+  const body = attributedBody(payload, identity, session, parts, context);
+  mirrorHeaders(headers, identity, session, context);
+
+  return {
+    init: { ...init, headers, body },
+    subscriptionType: identity.subscriptionType,
+    session,
+    main: context.main,
+    plan,
+  };
 }
 
-async function checkedResponse(
-  response: Response,
-  subscriptionType: string,
-  session: BillingSession,
-): Promise<Response> {
+async function checkedResponse(response: Response, prepared: PreparedRequest): Promise<Response> {
+  const { session, subscriptionType } = prepared;
+
   if (!response.ok) {
+    await noteRefusedContinue(response, prepared.plan, session);
+
     return response;
+  }
+
+  if (prepared.main) {
+    session.responseRequestId = response.headers.get("request-id") ?? undefined;
   }
 
   const cause = billingQuotaError(response.headers, subscriptionType);
@@ -344,7 +555,8 @@ async function prepareOAuth(
   identity: BillingIdentity,
   session: BillingSession | undefined,
   url: URL,
-): Promise<PreparedRequest> {
+  side: boolean,
+): Promise<PreparedRequest | Response> {
   if (identity instanceof Error) {
     throw identity;
   }
@@ -360,7 +572,7 @@ async function prepareOAuth(
     throw new Error("Pi's session identity is unavailable. Request blocked.");
   }
 
-  return prepareRequest(upstream, init, headers, resolved, session, payload);
+  return prepareRequest(upstream, init, headers, resolved, session, payload, side);
 }
 
 function billedUrl(input: FetchInput, init: RequestInit | undefined, headers: Headers) {
@@ -376,14 +588,18 @@ async function prepare(
   identity: BillingIdentity,
   session: BillingSession | undefined,
   url: URL,
+  side: boolean,
 ): Promise<PreparedRequest | Response> {
   const signal = init?.signal ?? undefined;
 
   try {
     signal?.throwIfAborted();
-    const prepared = await prepareOAuth(upstream, init, headers, identity, session, url);
+    const prepared = await prepareOAuth(upstream, init, headers, identity, session, url, side);
     signal?.throwIfAborted();
-    assertBillingReady(prepared.subscriptionType, prepared.session.quotaError);
+
+    if (!(prepared instanceof Response)) {
+      assertBillingReady(prepared.subscriptionType, prepared.session.quotaError);
+    }
 
     return prepared;
   } catch (cause) {
@@ -393,10 +609,12 @@ async function prepare(
   }
 }
 
+/** `side` marks extension calls, which the CLI would send outside its agent loop. */
 export function billingFetch(
   upstream: FetchFunction,
   identity: BillingIdentity,
   session?: BillingSession,
+  side = false,
 ): FetchFunction {
   const wrapped = async (input: FetchInput, init?: RequestInit): Promise<Response> => {
     const headers = requestHeaders(input, init);
@@ -406,7 +624,7 @@ export function billingFetch(
       return upstream(input, init);
     }
 
-    const prepared = await prepare(upstream, init, headers, identity, session, url);
+    const prepared = await prepare(upstream, init, headers, identity, session, url, side);
 
     if (prepared instanceof Response) {
       return prepared;
@@ -414,7 +632,7 @@ export function billingFetch(
 
     const response = await upstream(input, prepared.init);
 
-    return checkedResponse(response, prepared.subscriptionType, prepared.session);
+    return checkedResponse(response, prepared);
   };
 
   return Object.assign(wrapped, upstream);

@@ -53,7 +53,6 @@ export type Request =
   | { kind: "prompt"; prompt: string }
   | { kind: "keys"; keys: string[] };
 
-/** What a multiplexer gives the watcher. */
 export interface Backend {
   // Names the multiplexer in messages, such as `Rex`.
   title: string;

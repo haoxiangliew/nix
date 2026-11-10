@@ -3,23 +3,33 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { billingFetch, type BillingSession } from "./lib/anthropic-billing.ts";
 import { assertBillingReady } from "./lib/billing-quota.ts";
-import { BILLING_TOKEN_HEADER, routeBillingRegistry } from "./lib/billing-registry.ts";
-import { readClaudeIdentity, type ClaudeIdentity } from "./lib/claude-identity.ts";
 import {
-  registerFetchWrapper,
-  requestHeaders,
-  type FetchInput,
-  type FetchWrapper,
-} from "./lib/fetch.ts";
+  BILLING_SIDE_HEADER,
+  BILLING_TOKEN_HEADER,
+  routeBillingRegistry,
+} from "./lib/billing-registry.ts";
+import {
+  endReply,
+  endRun,
+  endTurn,
+  newSession,
+  startPrompt,
+  startQueuedPrompt,
+  startTurn,
+} from "./lib/billing-session.ts";
+import { readClaudeIdentity, type ClaudeIdentity } from "./lib/claude-identity.ts";
+import { registerFetchWrapper, requestHeaders, type FetchInput } from "./lib/fetch.ts";
 import { awaitAbort } from "./lib/promise.ts";
 
+type BillingHandler = (upstream: FetchFunction, side: boolean) => FetchFunction;
+
 interface Shared {
-  handlers: Map<string, FetchWrapper>;
+  handlers: Map<string, BillingHandler>;
   sessions: Map<string, BillingSession>;
 }
 
 declare global {
-  var anthropicBilling: Shared | undefined;
+  var anthropicBillingState: Shared | undefined;
 }
 
 async function locateCli(pi: ExtensionAPI): Promise<{ path: string; version: string }> {
@@ -42,14 +52,16 @@ function untag(input: FetchInput, init: RequestInit | undefined) {
   const headers = requestHeaders(input, init);
 
   const token = headers.get(BILLING_TOKEN_HEADER);
+  const side = headers.has(BILLING_SIDE_HEADER);
 
-  if (token === null) {
-    return { token, init };
+  if (token === null && !side) {
+    return { token, side, init };
   }
 
   headers.delete(BILLING_TOKEN_HEADER);
+  headers.delete(BILLING_SIDE_HEADER);
 
-  return { token, init: { ...init, headers } };
+  return { token, side, init: { ...init, headers } };
 }
 
 function createRouter(shared: Shared, upstream: FetchFunction): FetchFunction {
@@ -64,7 +76,7 @@ function createRouter(shared: Shared, upstream: FetchFunction): FetchFunction {
             upstream,
             new Error("Anthropic billing session is unavailable. Request blocked."),
           )
-        : handler(upstream);
+        : handler(upstream, routed.side);
 
     return send(input, routed.init);
   };
@@ -72,12 +84,8 @@ function createRouter(shared: Shared, upstream: FetchFunction): FetchFunction {
   return Object.assign(wrapped, upstream);
 }
 
-function newSession(sessionId: string): BillingSession {
-  return { sessionId, promptId: crypto.randomUUID(), promptIndex: -1, turnIndex: 0 };
-}
-
 export default function (pi: ExtensionAPI) {
-  const shared: Shared = (globalThis.anthropicBilling ??= {
+  const shared: Shared = (globalThis.anthropicBillingState ??= {
     handlers: new Map(),
     sessions: new Map(),
   });
@@ -140,10 +148,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     setSession(ctx);
-    shared.handlers.set(token, (upstream) => {
+    shared.handlers.set(token, (upstream, side) => {
       const owner = session;
 
-      return billingFetch(upstream, (model, signal) => identity(model, signal, owner), owner);
+      return billingFetch(upstream, (model, signal) => identity(model, signal, owner), owner, side);
     });
     routeBillingRegistry(ctx.modelRegistry, token);
     prefetch(ctx);
@@ -157,8 +165,51 @@ export default function (pi: ExtensionAPI) {
     }
 
     setSession(ctx);
-    session.promptId = crypto.randomUUID();
-    session.promptIndex++;
+    startPrompt(session);
+  });
+
+  // The CLI's per-request fields follow its agent loop. It sends one request per turn and runs tools
+  // between turns.
+  pi.on("turn_start", async (_event, ctx) => {
+    setSession(ctx);
+    startTurn(session);
+  });
+
+  pi.on("message_end", async (event, ctx) => {
+    if (event.message.role === "user") {
+      setSession(ctx);
+      startQueuedPrompt(session);
+    }
+
+    if (event.message.role === "assistant") {
+      setSession(ctx);
+      endReply(session, event.message);
+    }
+  });
+
+  pi.on("turn_end", async (event, ctx) => {
+    setSession(ctx);
+    endTurn(session, event.toolResults);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    setSession(ctx);
+    endRun(session);
+  });
+
+  pi.on("session_before_compact", async (_event, ctx) => {
+    setSession(ctx);
+    session.compacting = true;
+  });
+
+  pi.on("session_compact", async (_event, ctx) => {
+    setSession(ctx);
+    session.compacting = false;
+  });
+
+  pi.on("session_compact_failed", async (_event, ctx) => {
+    setSession(ctx);
+    session.compacting = false;
   });
 
   pi.on("before_provider_headers", async (event, ctx) => {

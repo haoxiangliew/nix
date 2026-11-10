@@ -51,7 +51,7 @@ const schemas = {
 // Direct calls in the signer block, in order. Searches are indirect calls through one slot.
 const signerCallLayout = ["helper", "update", "helper", "update", "update", "digest"] as const;
 
-// Needle source of each search: request path, body marker, placeholder, model marker.
+// Needle sources of the request path, body marker, placeholder, and model marker searches.
 const searchSources = ["stack", "integer", "stack", "integer"] as const;
 
 const checksumDigits = 5;

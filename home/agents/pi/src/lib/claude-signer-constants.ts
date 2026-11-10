@@ -1,4 +1,4 @@
-// Values both signer extractors match against the Claude CLI binary.
+// Values both signer extractors look for in the Claude CLI binary.
 
 export const omissionKinds = ["array", "string", "number"] as const;
 

@@ -264,7 +264,7 @@ interface Placed {
   made?: string;
 }
 
-/** Where a new pane goes: a session, and for a split, the pane it splits. */
+/** The session a new pane goes in, and for a split, the pane it splits. */
 interface Location {
   session: string;
   anchor: string;

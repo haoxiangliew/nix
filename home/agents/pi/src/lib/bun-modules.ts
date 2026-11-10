@@ -9,8 +9,8 @@ export interface BunModule {
   source: Buffer;
 }
 
-// Bun's serialized standalone graph: six StringPointers (u32 offset/length),
-// encoding/loader/format/side bytes. Unknown layouts fail closed.
+// A record of Bun's serialized standalone graph has six StringPointers, each a u32 offset and
+// length, then encoding, loader, format, and side bytes. Unknown layouts fail closed.
 // https://github.com/oven-sh/bun/blob/main/src/standalone_graph/StandaloneModuleGraph.rs
 const recordBytes = 52;
 const offsetsBytes = 32;

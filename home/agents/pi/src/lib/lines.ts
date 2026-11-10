@@ -1,7 +1,3 @@
-/**
- * Splits a stream into lines.
- */
-
 import type { Readable } from "node:stream";
 
 import { errorMessage } from "./settings.ts";

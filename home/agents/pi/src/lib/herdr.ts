@@ -1,7 +1,3 @@
-/**
- * Runs the herdr CLI and subscribes to agent status events on herdr's socket.
- */
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { createConnection, type Socket } from "node:net";

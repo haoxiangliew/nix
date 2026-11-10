@@ -1,7 +1,3 @@
-/**
- * Runs the Rex CLI and streams a Rex session's events.
- */
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { spawn } from "node:child_process";
@@ -131,7 +127,7 @@ export const Created = Type.Object({
   block_ids: Type.Array(Type.String(), { minItems: 1 }),
 });
 
-// What `rex new --json` prints: the session and its first tab, with its one pane.
+// `rex new --json` prints the session and its first tab, with its one pane.
 export const NewSession = Type.Object({
   session_id: Type.String(),
   initial_windows: Type.Array(Created, { minItems: 1 }),

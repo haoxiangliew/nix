@@ -13,19 +13,18 @@
     "@gotgenes/pi-permission-system": "42.0.0",
     "@gotgenes/pi-subagents": "25.0.5",
     "acorn": "8.19.0",
-    "iced-x86": "1.22.0",
-    "lovely-mermaid": "0.3.3"
+    "iced-x86": "1.22.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.5.0",
-    "@earendil-works/pi-coding-agent": "1.5.0",
-    "@earendil-works/pi-tui": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@earendil-works/pi-tui": "1.5.2",
     "@types/bun": "1.4.4",
-    "oxfmt": "0.75.0",
-    "oxlint": "1.90.0",
-    "oxlint-tsgolint": "7.0.2005",
-    "pi-better-background-tasks": "0.13.1",
+    "oxfmt": "0.78.0",
+    "oxlint": "1.93.0",
+    "oxlint-tsgolint": "7.0.2006",
+    "pi-better-background-tasks": "0.14.4",
     "taze": "21.3.0",
-    "typebox": "1.4.3"
+    "typebox": "1.4.6"
   }
 }

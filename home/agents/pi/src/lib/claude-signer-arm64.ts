@@ -79,7 +79,7 @@ const signerCallLayout = [
   "digest",
 ] as const;
 
-// Needle source of each search: request path, body marker, placeholder, model marker.
+// Needle sources of the request path, body marker, placeholder, and model marker searches.
 const searchSources = ["stack", "address", "stack", "address"] as const;
 
 // ADD x0, x9, #offset and ADD x1, x9, #end around the checksum digits.

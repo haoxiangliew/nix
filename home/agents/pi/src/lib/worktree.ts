@@ -1,7 +1,3 @@
-/**
- * Git worktree parameters and messages shared by the herdr and Rex agent tools.
- */
-
 import { Type } from "typebox";
 
 import { tildify } from "./paths.ts";

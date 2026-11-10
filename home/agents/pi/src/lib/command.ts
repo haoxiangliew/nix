@@ -1,7 +1,3 @@
-/**
- * Runs a command with pi.exec, fails on a kill or a non-zero exit, and checks its JSON output.
- */
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { type Static, type TSchema } from "typebox";

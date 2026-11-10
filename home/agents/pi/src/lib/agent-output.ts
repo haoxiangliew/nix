@@ -1,7 +1,3 @@
-/**
- * Formats tool results and agent output for the herdr and Rex agent tools.
- */
-
 import { DEFAULT_MAX_BYTES, formatSize, truncateTail } from "@earendil-works/pi-coding-agent";
 
 import { errorMessage } from "./settings.ts";

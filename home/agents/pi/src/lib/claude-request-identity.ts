@@ -73,8 +73,8 @@ function declarator(context: Body, id: Identifier): VariableDeclarator | undefin
   return declarations && one(declarations, `binding ${id.name}`);
 }
 
-// Discovery only: a matching spelling is not proof of a lexical binding. Keep
-// all possible declarations here; binding() still rejects ambiguous/shadowed ids.
+// Only discovery uses this. A matching spelling doesn't prove a lexical binding, so it keeps every
+// possible declaration. binding() still rejects ambiguous or shadowed ids.
 function hasStringInitializer(context: Body, id: AnyNode): boolean {
   return (
     id.type === "Identifier" &&
@@ -645,7 +645,10 @@ function profilePath(
   local: Body,
   globals: Body,
 ): string[] {
-  const get = match(node.argument, "$client.get($endpoint, $options)");
+  const get = match(
+    node.argument,
+    "$withTimeout($milliseconds, ($request) => $client.get($endpoint, $options))",
+  );
 
   if (!get) {
     return [];

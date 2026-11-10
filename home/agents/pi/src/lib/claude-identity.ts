@@ -16,13 +16,17 @@ import { promisify } from "node:util";
 import { Type, type StaticDecode } from "typebox";
 import { Value } from "typebox/value";
 
+import { isUuid } from "./billing-fields.ts";
 import { attributionFields, readAttribution, readFingerprintFlow } from "./claude-attribution.ts";
 import { readFingerprint } from "./claude-fingerprint.ts";
+import { readProbeFlags, type ProbeFlags } from "./claude-flags.ts";
 import { discoverCliProfile, type CliProfile } from "./claude-profile.ts";
 import { readRequestIdentity } from "./claude-request-identity.ts";
 import { extractCliSigner, validateCliChecksum } from "./claude-signer.ts";
+import { discoverTurnProfile } from "./claude-turn-profile.ts";
+import { readTurnFormat, type TurnFormat } from "./claude-turns.ts";
 import { JavaScript } from "./javascript.ts";
-import { awaitAbort, cached } from "./promise.ts";
+import { awaitAbort, cached, cachedOutcome } from "./promise.ts";
 import { errorMessage } from "./settings.ts";
 
 const Text = Type.String();
@@ -81,6 +85,11 @@ export interface ClaudeIdentity extends SourceIdentity {
   profile: CliProfile;
   subscriptionType: string;
   organizationId: string;
+  /**
+   * Probes the CLI's second request of a prompt on first use, then reuses the result. A failed
+   * probe keeps failing without a rerun until the flags change or pi reloads.
+   */
+  readTurns: (signal?: AbortSignal) => Promise<TurnFormat>;
 }
 
 function launcherTarget(source: string): string {
@@ -152,7 +161,7 @@ const ProbeBody = Type.Object({
   ),
 });
 
-export function requestFingerprint(text: string, identity: SourceIdentity): string {
+function requestFingerprint(text: string, identity: SourceIdentity): string {
   const sample = identity.indices.map((index) => text[index] || identity.padding).join("");
 
   return createHash(identity.algorithm)
@@ -161,8 +170,9 @@ export function requestFingerprint(text: string, identity: SourceIdentity): stri
     .slice(0, identity.digestLength);
 }
 
-export function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+/** cc_version for a conversation whose first prompt is `prompt`. */
+export function cliVersion(prompt: string, identity: SourceIdentity): string {
+  return `${identity.version}.${requestFingerprint(prompt, identity)}`;
 }
 
 const sources = new Map<string, Promise<SourceIdentity>>();
@@ -254,6 +264,8 @@ const subscriptions = new Map<string, ReturnType<typeof readSubscription>>();
 
 const profiles = new Map<string, Promise<CliProfile>>();
 
+const turnFormats = new Map<string, Promise<TurnFormat>>();
+
 async function readExecutable(launcher: string) {
   const launchers: LauncherStamp[] = [];
   const seen = new Set<string>();
@@ -342,7 +354,7 @@ function verifyFingerprint(identity: SourceIdentity, profile: CliProfile): void 
   }
 
   // The CLI hashes the prompt before adding system reminders, so hash the probe prompt itself.
-  const expected = `${identity.version}.${requestFingerprint(profile.probePrompt, identity)}`;
+  const expected = cliVersion(profile.probePrompt, identity);
 
   if (attributionFields(profile.attributionText, identity.prefix).get("cc_version") !== expected) {
     throw new Error("Claude CLI fingerprint doesn't match its captured request. Request blocked.");
@@ -410,8 +422,9 @@ async function captureProfile(
   model: string,
   sourceKey: string,
   source: SourceIdentity,
+  flags: ProbeFlags,
 ): Promise<CliProfile> {
-  const captured = await discoverCliProfile(launcher, model);
+  const captured = await discoverCliProfile(launcher, model, flags.env);
   const verified = await verifiedSource(launcher, version, sourceKey, source, captured);
 
   saveSource(verified);
@@ -443,10 +456,14 @@ export async function readClaudeIdentity(
   assertCliUnchanged(loaded);
 
   validateSubscription?.(subscription.subscriptionType);
-  const profileKey = `${loaded.executableStamp}:${subscription.organizationId}:${accountKey}:${model}`;
+  // A change to the flags behind the probe environment captures the profiles again.
+  const flags = readProbeFlags();
+  const profileKey = `${loaded.executableStamp}:${subscription.organizationId}:${accountKey}:${model}:${flags.key}`;
 
   const profile = await awaitAbort(
-    cached(profiles, profileKey, () => captureProfile(launcher, version, model, sourceKey, loaded)),
+    cached(profiles, profileKey, () =>
+      captureProfile(launcher, version, model, sourceKey, loaded, flags),
+    ),
     signal,
   );
 
@@ -454,7 +471,35 @@ export async function readClaudeIdentity(
   const source = await awaitAbort(loadSource(), signal);
   assertCliUnchanged(source);
 
-  return { ...source, profile, ...subscription };
+  const readTurns = (turnSignal?: AbortSignal) =>
+    awaitAbort(
+      cachedOutcome(turnFormats, profileKey, () =>
+        captureTurns(launcher, model, source, profile, flags),
+      ),
+      turnSignal,
+    );
+
+  return { ...source, profile, ...subscription, readTurns };
+}
+
+async function captureTurns(
+  launcher: string,
+  model: string,
+  source: SourceIdentity,
+  profile: CliProfile,
+  flags: ProbeFlags,
+): Promise<TurnFormat> {
+  const capture = await discoverTurnProfile(launcher, model, flags.env);
+
+  assertCliUnchanged(source);
+
+  return readTurnFormat(capture, {
+    signer: source.signer,
+    prefix: source.prefix,
+    profile,
+    // The CLI hashes the prompt before adding system reminders, as in verifyFingerprint.
+    version: (prompt) => cliVersion(prompt, source),
+  });
 }
 
 export function assertCliUnchanged(identity: SourceIdentity): void {

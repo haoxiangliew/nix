@@ -543,6 +543,7 @@ async function send(
             signal,
             reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
             sessionId: ctx.sessionManager.getSessionId(),
+            disableContinuation: true,
             transport: settings.getTransport(),
             thinkingBudgets: settings.getThinkingBudgets(),
             onPayload: (built) =>

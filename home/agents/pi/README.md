@@ -11,9 +11,12 @@ Extensions and a theme for [pi](https://pi.dev). `home/agents/default.nix` insta
 - `$name` in a custom prompt, custom instructions, or `--extra` loads that skill into the review.
 - `super-review.ts` can add reviewers to `/review`.
 
-`patches/pi-better-background-tasks.patch` applies [pi-better-harness#460](https://github.com/1aboveio/pi-better-harness/pull/460) to [pi-better-background-tasks](https://www.npmjs.com/package/pi-better-background-tasks). Without it, a subagent can hide this session's background tasks and their completion messages until `/reload`. Remove the patch once a release includes #460.
+`patches/pi-subagents.patch` changes [pi-subagents](https://www.npmjs.com/package/@gotgenes/pi-subagents):
 
-The build fails if either patch stops applying after an update.
+- Explore runs on the newest Haiku instead of a fixed version.
+- A fuzzy model name, such as `sonnet`, picks the newest version when several match.
+
+The build fails if a patch stops applying after an update.
 
 ## Configure
 
@@ -24,6 +27,10 @@ Extensions read their settings from `~/.pi/agent/settings.json`. Set them throug
 ### `anthropic-billing.ts`
 
 Sends pi's Anthropic OAuth requests with the same headers, system prompt, and body signature as the installed `claude --print`. This covers agent turns, compaction, cache warming, and extension calls such as `/btw`. It works only on macOS ARM64 and Linux x86-64.
+
+Requests later in a conversation match the CLI too. They carry the previous request and reply IDs, the turn counter, and which tools ran and how long they took. With message threads, pi sends only the new messages. pi uses threads only if the CLI does for the account. Then continued requests carry the same system prompt and tools the CLI sends, and an idle thread restarts on the CLI's schedule. Extension calls and cache warming don't change the conversation's thread or IDs.
+
+To learn the CLI's requests, it runs `claude` against a local mock with the account's own feature flags. `claude` may contact Anthropic for flags and telemetry, as it normally does. A second run makes a tool call to learn the later requests. That run starts on the first threaded request, or on the first request after a reply or a tool run. If a run fails, pi blocks the requests that need it until `/reload`. A change to the flags that decide threads runs both again.
 
 It blocks a request it can't send that way. On non-Enterprise plans, it also blocks further requests once a response uses usage credits. Run `/reload` after updating `claude` or pi, or after switching accounts. No settings.
 
@@ -161,10 +168,6 @@ Loads MCP servers from the `.mcp.json` in each folder from a configured root dow
 | -------------------- | ------- | ------------------------------------------------------------- |
 | `mcpAncestors.roots` | `[]`    | Root folders. The deepest one that contains the session wins. |
 
-### `mermaid.ts`
-
-Draws mermaid diagrams with [lovely-mermaid](https://github.com/xl0/lovely-mermaid), which handles more syntax than pi's built-in renderer. `home/agents/default.nix` turns pi's renderer off. It redraws wide flowcharts top to bottom. A diagram that fails shows its source and the error. It tells the agent which diagram types draw and how long labels can be. No settings.
-
 ### `prompt-sections.ts`
 
 Keeps the prompt cache working when other extensions add text to the system prompt. Without it, pi resends the whole prompt after each change. It has to run after those extensions, so `home/agents/default.nix` lists it last in `packages`. No settings.
@@ -183,7 +186,7 @@ Replaces pi's footer with a line of segments. Statuses from other extensions go 
 
 ### `super-review.ts`
 
-Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6-astra`, or `openai-codex/gpt-6-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-opus-5-5`.
+Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6-astra`, or `openai-codex/gpt-6-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
 
 Each reviewer reviews the same change. The session's model compares their findings and runs discussion rounds. After the round limit, it drops findings still in dispute and gives each finding whose priority is in dispute the lowest priority proposed. It prints the final review once the reviewers confirm it.
 

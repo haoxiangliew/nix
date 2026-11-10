@@ -3,6 +3,9 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const BILLING_TOKEN_HEADER = "x-pi-anthropic-billing";
 
+// Marks extension calls, which aren't agent-loop requests.
+export const BILLING_SIDE_HEADER = "x-pi-anthropic-billing-side";
+
 type Registry = Pick<ExtensionContext["modelRegistry"], "stream" | "streamSimple" | "complete">;
 
 function taggedOptions<T extends ModelsRequestTransforms | undefined>(
@@ -21,6 +24,7 @@ function taggedOptions<T extends ModelsRequestTransforms | undefined>(
     transformHeaders: async (headers: ProviderHeaders): Promise<ProviderHeaders> => ({
       ...(transform === undefined ? headers : await transform(headers)),
       [BILLING_TOKEN_HEADER]: token,
+      [BILLING_SIDE_HEADER]: "1",
     }),
   };
 }

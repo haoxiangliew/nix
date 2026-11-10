@@ -1,7 +1,3 @@
-/**
- * Pane layout and cleanup shared by the herdr and Rex agent tools.
- */
-
 import { errorMessage } from "./settings.ts";
 
 // A split to the right leaves each half at least this many columns, or the split goes down.
