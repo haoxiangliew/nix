@@ -323,9 +323,15 @@ in
               bg_task_list = "allow";
               bg_task_status = "allow";
               bg_task_log = "allow";
+              bg_task_wait_list = "allow";
+              bg_task_wait_cancel = "allow";
+              wait_for_operations = "allow";
+              acknowledge_operation_result = "allow";
               get_subagent_result = "allow";
               subagent = "allow";
               steer_subagent = "allow";
+              rex_agents = "allow";
+              rex_read = "allow";
               get_search_content = "allow";
               ask_user_question = "allow";
               web_enable = "allow";
@@ -383,6 +389,15 @@ in
               };
             };
           };
+      }
+      {
+        # Subagents don't load pi-better-background-tasks. It tells them to end their turn while a
+        # task runs, and pi-subagents can't resume them when the task ends.
+        file."${config.programs.pi-coding-agent.configDir}/subagents.json".source =
+          (pkgs.formats.json { }).generate "subagents.json"
+            {
+              excludedExtensionPackages = [ "${backgroundTasks}" ];
+            };
       }
       {
         file."${config.programs.pi-coding-agent.configDir}/web-search.json".source =
