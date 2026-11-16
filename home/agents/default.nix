@@ -177,6 +177,25 @@ let
     patches = [ ./pi/patches/pi-subagents.patch ];
   };
 
+  # pi that saves an MCP HTTP reply over its 16 MiB message limit to a file and fails the call with
+  # the file's path, instead of cancelling the reply. A pi update that changes the replaced code
+  # fails the build here.
+  piPackage = pkgs.llm-agents.pi.overrideAttrs (old: {
+    # The compiled binary embeds pi-mcp from node_modules, which exists only after npm install.
+    preInstall = ''
+      transport=$(grep -rlF 'MCP JSON response exceeds' node_modules/@earendil-works/pi-mcp/dist --include='*.js')
+      substituteInPlace "$transport" \
+        --replace-fail \
+          'await readBodyText(response, maxBytes);' \
+          'await readBodyOrSpill(response, maxBytes, signal);' \
+        --replace-fail \
+          'async function readBodyText(' \
+          "$(cat ${./pi/patches/mcp-spill.js})
+      async function readBodyText("
+    ''
+    + (old.preInstall or "");
+  });
+
   talkPrompt = "Help the user without changing any files. You can read files and run commands, but don't run commands that create, edit, or delete files. Suggest changes instead of making them.";
 
   integrationAgents = {
@@ -573,7 +592,7 @@ in
       };
       pi-coding-agent = {
         enable = true;
-        package = pkgs.llm-agents.pi;
+        package = piPackage;
         settings = {
           theme = "light/dracula-pro";
           transport = "websocket";
