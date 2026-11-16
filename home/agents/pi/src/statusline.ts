@@ -18,6 +18,7 @@ import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 
+import { cacheRefreshCost } from "./lib/cache-refresh.ts";
 import { tildify } from "./lib/paths.ts";
 import { loadOrReport } from "./lib/settings.ts";
 
@@ -125,6 +126,10 @@ function messageCost(entry: Extract<SessionEntry, { type: "message" }>): number 
 function entryCost(entry: SessionEntry): number {
   if (entry.type === "message") {
     return messageCost(entry);
+  }
+
+  if (entry.type === "custom") {
+    return cacheRefreshCost(entry);
   }
 
   return COSTED_ENTRIES.has(entry.type) && "usage" in entry ? (entry.usage?.cost.total ?? 0) : 0;

@@ -7,7 +7,11 @@
  * model, so this also compacts at the end of a turn once context reaches `compactAt` of the window.
  * A fork over `compactAt` drops its oldest turns. If a fork for pi's compaction or a branch summary
  * fails, pi's summarizer runs. If an end-of-turn fork fails, compaction waits for pi's threshold.
- * The `summaryFork` key in settings.json configures it.
+ *
+ * Pi's idle cache warming stops after 30 minutes, which is before the first refresh of a one-hour
+ * cache. So this also repeats the last request of a large idle session with a one-token reply to
+ * renew its cache, then compacts the session once it has been idle long enough, while the cache is
+ * still warm. The `summaryFork` key in settings.json configures this extension.
  */
 
 import type { Api, AssistantMessage, Model, Usage, UserMessage } from "@earendil-works/pi-ai";
@@ -22,7 +26,15 @@ import type {
   TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 
-import { contentText, retryAssistantCall } from "@earendil-works/pi-ai";
+import {
+  CACHE_WARMING_MAX_IDLE_AGE_MS,
+  contentText,
+  getCacheWarmingDelayMs,
+  getPromptCacheTtlMs,
+  hasApi,
+  isCacheWarmingReplayable,
+  retryAssistantCall,
+} from "@earendil-works/pi-ai";
 import {
   convertToLlm,
   estimateTokens,
@@ -35,6 +47,7 @@ import {
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
+import { CACHE_REFRESH, type CacheRefresh } from "./lib/cache-refresh.ts";
 import { errorMessage, loadOrReport, piSettings } from "./lib/settings.ts";
 
 type AgentMessage = ContextWithSystemEvent["messages"][number];
@@ -46,10 +59,25 @@ const KEY = "summaryFork";
 
 const HEAD_ROLES = new Set<string>(["system", "compactionSummary", "branchSummary"]);
 
+const Idle = Type.Object(
+  {
+    // The extension ignores an idle session with less context than this.
+    minTokens: Type.Integer({ minimum: 0, default: 150_000 }),
+    // Refresh the prompt cache until the session has been idle this long. 0 never refreshes it.
+    warmMinutes: Type.Number({ minimum: 0, default: 240 }),
+    // Compact the session when the refreshes stop.
+    compact: Type.Boolean({ default: true }),
+  },
+  { additionalProperties: false, default: {} },
+);
+
+type Idle = Static<typeof Idle>;
+
 const Config = Type.Object(
   {
     // Compact at this share of the model's context window. The fork gets the rest.
     compactAt: Type.Number({ minimum: 0.5, maximum: 0.95, default: 0.9 }),
+    idle: Idle,
   },
   { additionalProperties: false, default: {} },
 );
@@ -88,7 +116,11 @@ interface Request {
   messages: AgentMessage[];
   thinkingLevel: ThinkingLevel;
   payload?: Fields;
+  sentAt?: number;
 }
+
+// A request pi sent, so the provider has cached it.
+type Sent = Request & { payload: Fields; sentAt: number };
 
 // A replayed fork uses the recorded request's thinking level, so its thinking settings match the
 // recorded ones.
@@ -96,6 +128,28 @@ interface ForkInput {
   messages: AgentMessage[];
   thinkingLevel: ThinkingLevel;
   payload?: Fields;
+}
+
+interface Sending {
+  messages: AgentMessage[];
+  thinkingLevel: ThinkingLevel;
+  maxTokens?: number;
+  // A retry can arrive after the cache expires, so a refresh doesn't retry.
+  retry: boolean;
+  // Returns the body to send in place of the one pi-ai built, or undefined to keep that one.
+  rewrite: (built: Fields) => Fields | undefined;
+}
+
+// An idle session whose cache this extension refreshes.
+interface IdleRun {
+  readonly idleSince: number;
+  readonly ttlMs: number;
+  readonly delayMs: number;
+  readonly controller: AbortController;
+  // When a request last read the cache, which restarts its lifetime.
+  touchedAt: number;
+  refreshes: number;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 type Forked = { text: string; usage: Usage } | { failure: string };
@@ -318,6 +372,42 @@ function messagesSince(entries: SessionEntry[], leafId: string | null): AgentMes
   return since.flatMap((entry) => sessionEntryToContextMessages(entry));
 }
 
+// Anthropic binds a thinking block to the conversation before it. Compaction replaces that
+// conversation with a summary, so Anthropic drops the blocks in the messages compaction kept, each
+// time it gets the whole history. This leaves them out from the first request after a compaction,
+// for the models whose requests ask Anthropic to drop them.
+function withoutUnboundThinking(
+  messages: AgentMessage[],
+  entries: SessionEntry[],
+  model: Model<Api> | undefined,
+): AgentMessage[] {
+  const compacted = getLatestCompactionEntry(entries);
+
+  if (
+    !compacted ||
+    !model ||
+    !hasApi(model, "anthropic-messages") ||
+    model.compat?.supportsMidConvoEffort !== true
+  ) {
+    return messages;
+  }
+
+  const compactedAt = Date.parse(compacted.timestamp);
+
+  return messages.map((message) => {
+    if (message.role !== "assistant" || message.timestamp >= compactedAt) {
+      return message;
+    }
+
+    const content = message.content.filter((block) => block.type !== "thinking");
+
+    // Anthropic rejects an assistant message with no content.
+    return content.length > 0 && content.length < message.content.length
+      ? { ...message, content }
+      : message;
+  });
+}
+
 function forkFailure(reply: AssistantMessage): string | undefined {
   if (reply.stopReason === "error" || reply.stopReason === "aborted") {
     return reply.errorMessage ?? reply.stopReason;
@@ -332,6 +422,48 @@ function forkFailure(reply: AssistantMessage): string | undefined {
   }
 
   return undefined;
+}
+
+// A refresh that wrote the cache found it expired or sent a request the cache doesn't match. Each
+// one costs as much as the miss it should prevent.
+function refreshFailure(reply: AssistantMessage): string | undefined {
+  if (reply.stopReason === "error" || reply.stopReason === "aborted") {
+    return reply.errorMessage ?? reply.stopReason;
+  }
+
+  const { input, cacheRead, cacheWrite } = reply.usage;
+
+  return cacheRead < input + cacheWrite
+    ? `it read only ${cacheShare(reply.usage)} of its input from the cache`
+    : undefined;
+}
+
+// Pi's own idle warming covers a cache whose refresh comes within its 30-minute limit. This
+// returns the times of a cache it leaves to expire.
+function refreshTimes(model: Model<Api>): { ttlMs: number; delayMs: number } | undefined {
+  const ttlMs = getPromptCacheTtlMs(model, undefined);
+  const delayMs = ttlMs === undefined ? undefined : getCacheWarmingDelayMs(ttlMs);
+
+  return ttlMs !== undefined && delayMs !== undefined && delayMs > CACHE_WARMING_MAX_IDLE_AGE_MS
+    ? { ttlMs, delayMs }
+    : undefined;
+}
+
+// Like pi, this allows a late timer half of the time left before the cache expires. A timer that
+// fires later, as after the machine slept, may find the cache expired, and a request would then
+// write it again.
+function refreshDeadline(run: IdleRun): number {
+  return run.touchedAt + run.delayMs + (run.ttlMs - run.delayMs) / 2;
+}
+
+function reasoningOf(thinkingLevel: ThinkingLevel) {
+  return thinkingLevel === "off" ? undefined : thinkingLevel;
+}
+
+function wantsIdle(ctx: ExtensionContext, cfg: Idle): boolean {
+  const used = ctx.getContextUsage()?.tokens ?? 0;
+
+  return (cfg.warmMinutes > 0 || cfg.compact) && used >= cfg.minTokens;
 }
 
 function tokens(messages: AgentMessage[]): number {
@@ -525,35 +657,34 @@ async function piBranchSummary(
 async function send(
   ctx: ExtensionContext,
   model: Model<Api>,
-  input: ForkInput,
+  sending: Sending,
   signal: AbortSignal,
 ): Promise<AssistantMessage> {
   const settings = piSettings(ctx);
-  const { thinkingLevel, payload } = input;
+  const { thinkingLevel, maxTokens, retry, rewrite } = sending;
 
   // before_provider_request doesn't run for this request, so other extensions' changes come only
   // from the replayed request.
-  return retryAssistantCall(
-    () =>
-      ctx.modelRegistry
-        .streamSimple(
-          model,
-          { messages: convertToLlm(input.messages) },
-          {
-            signal,
-            reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
-            sessionId: ctx.sessionManager.getSessionId(),
-            disableContinuation: true,
-            transport: settings.getTransport(),
-            thinkingBudgets: settings.getThinkingBudgets(),
-            onPayload: (built) =>
-              isJson(built) && isFields(built) ? forkPayload(payload, built) : undefined,
-          },
-        )
-        .result(),
-    settings.getRetrySettings(),
-    signal,
-  );
+  const call = () =>
+    ctx.modelRegistry
+      .streamSimple(
+        model,
+        { messages: convertToLlm(sending.messages) },
+        {
+          signal,
+          reasoning: reasoningOf(thinkingLevel),
+          maxTokens,
+          sessionId: ctx.sessionManager.getSessionId(),
+          disableContinuation: true,
+          transport: settings.getTransport(),
+          thinkingBudgets: settings.getThinkingBudgets(),
+          onPayload: (built) => (isJson(built) && isFields(built) ? rewrite(built) : undefined),
+          maxRetries: retry ? undefined : 0,
+        },
+      )
+      .result();
+
+  return retry ? retryAssistantCall(call, settings.getRetrySettings(), signal) : call();
 }
 
 export default function compaction(pi: ExtensionAPI) {
@@ -562,20 +693,54 @@ export default function compaction(pi: ExtensionAPI) {
   // Retry a failed fork on the next run, not on every turn.
   let failedThisRun = false;
 
+  let idle: IdleRun | undefined;
+
+  // Pi is running a compaction that the idle timer asked for.
+  let idleCompaction = false;
+
+  // If a `context` handler changes the list, pi merges the mid-conversation system messages into
+  // the first one, which changes the cached prefix. Pi sends this event's list as returned.
   pi.on("context_with_system", (event, ctx) => {
+    const messages = withoutUnboundThinking(
+      event.messages,
+      ctx.sessionManager.getBranch(),
+      ctx.model,
+    );
+
     request = ctx.model && {
       model: `${ctx.model.provider}/${ctx.model.id}`,
       leafId: ctx.sessionManager.getLeafId(),
-      messages: event.messages,
+      messages,
       thinkingLevel: pi.getThinkingLevel(),
     };
+
+    return { messages };
   });
 
   pi.on("before_provider_request", (event) => {
     if (request && isJson(event.payload) && isFields(event.payload)) {
       request.payload = event.payload;
+      request.sentAt = Date.now();
     }
   });
+
+  // The recorded request, if the provider has it cached and the session still continues from it.
+  function sentRequest(ctx: ExtensionContext, model: Model<Api>): Sent | undefined {
+    const { payload, sentAt } = request ?? {};
+
+    if (
+      !request ||
+      payload === undefined ||
+      sentAt === undefined ||
+      request.model !== `${model.provider}/${model.id}`
+    ) {
+      return undefined;
+    }
+
+    return messagesSince(ctx.sessionManager.getBranch(), request.leafId)
+      ? { ...request, payload, sentAt }
+      : undefined;
+  }
 
   function forkInput(ctx: ExtensionContext, model: Model<Api>): ForkInput {
     const recorded = request?.model === `${model.provider}/${model.id}` ? request : undefined;
@@ -610,7 +775,18 @@ export default function compaction(pi: ExtensionAPI) {
       ctx.ui.notify(`Summary fork dropped the ${fitted.dropped} oldest messages to fit`, "warning");
     }
 
-    const reply = await send(ctx, model, { ...input, messages: fitted.messages }, signal);
+    const reply = await send(
+      ctx,
+      model,
+      {
+        messages: fitted.messages,
+        thinkingLevel: input.thinkingLevel,
+        retry: true,
+        rewrite: (built) => forkPayload(input.payload, built),
+      },
+      signal,
+    );
+
     const summary = contentText(reply.content, "").trim();
     const failure = forkFailure(reply) ?? (summary ? undefined : "the fork returned no summary");
 
@@ -731,6 +907,17 @@ export default function compaction(pi: ExtensionAPI) {
       return { cancel: true };
     }
 
+    // Pi's summarizer would send the whole session uncached, so a failed idle fork leaves the
+    // session as it is.
+    if ("failure" in result && idleCompaction) {
+      ctx.ui.notify(
+        `Idle compaction fork failed: ${result.failure}. The session isn't compacted.`,
+        "warning",
+      );
+
+      return { cancel: true };
+    }
+
     if ("failure" in result) {
       ctx.ui.notify(`Compaction fork failed: ${result.failure}. Using pi's summarizer.`, "warning");
 
@@ -794,10 +981,174 @@ export default function compaction(pi: ExtensionAPI) {
     }
   }
 
+  function disarm() {
+    if (!idle) {
+      return;
+    }
+
+    clearTimeout(idle.timer);
+    idle.controller.abort();
+    idle = undefined;
+  }
+
+  function schedule(ctx: ExtensionContext, run: IdleRun) {
+    const wait = Math.max(0, run.touchedAt + run.delayMs - Date.now());
+
+    run.timer = setTimeout(() => void onIdleTimer(ctx, run), wait);
+    // The timer doesn't keep `pi --print` running.
+    run.timer.unref();
+  }
+
+  function arm(ctx: ExtensionContext) {
+    disarm();
+
+    const settings = active(ctx);
+    const sent = settings && sentRequest(ctx, settings.model);
+    const times = settings && refreshTimes(settings.model);
+
+    if (!settings || !sent || !times || !wantsIdle(ctx, settings.cfg.idle)) {
+      return;
+    }
+
+    idle = {
+      ...times,
+      idleSince: Date.now(),
+      controller: new AbortController(),
+      touchedAt: sent.sentAt,
+      refreshes: 0,
+    };
+
+    schedule(ctx, idle);
+  }
+
+  // Repeats the recorded request with a one-token reply, which renews its cache entry.
+  async function refresh(ctx: ExtensionContext, run: IdleRun, model: Model<Api>, sent: Sent) {
+    const { messages, thinkingLevel, payload } = sent;
+    const sentAt = Date.now();
+
+    const reply = await send(
+      ctx,
+      model,
+      {
+        messages,
+        thinkingLevel,
+        maxTokens: 1,
+        retry: false,
+        rewrite: (built) => mergeFields(payload, built),
+      },
+      run.controller.signal,
+    );
+
+    // A new run, model, or session disarmed the timer during the request.
+    if (idle !== run) {
+      return;
+    }
+
+    if (reply.stopReason !== "error" && reply.stopReason !== "aborted") {
+      pi.appendEntry<CacheRefresh>(CACHE_REFRESH, { model: sent.model, usage: reply.usage });
+    }
+
+    const failure = refreshFailure(reply);
+
+    if (failure !== undefined) {
+      disarm();
+      ctx.ui.notify(`Idle cache refresh stopped: ${failure}`, "warning");
+
+      return;
+    }
+
+    run.touchedAt = sentAt;
+    run.refreshes++;
+    schedule(ctx, run);
+  }
+
+  function compactIdle(ctx: ExtensionContext) {
+    idleCompaction = true;
+
+    ctx.compact({
+      onComplete: () => {
+        idleCompaction = false;
+        ctx.ui.notify(
+          "Compacted while idle, before the prompt cache expired. Turn this off with `summaryFork.idle.compact`.",
+          "info",
+        );
+      },
+      // Pi reports the error.
+      onError: () => {
+        idleCompaction = false;
+      },
+    });
+  }
+
+  async function idleStep(ctx: ExtensionContext, run: IdleRun) {
+    const waiting = ctx.isIdle() && !ctx.hasPendingMessages();
+    const settings = waiting ? active(ctx) : undefined;
+    const sent = settings && sentRequest(ctx, settings.model);
+
+    if (!settings || !sent || Date.now() > refreshDeadline(run)) {
+      disarm();
+
+      return;
+    }
+
+    const { model, cfg } = settings;
+    const warm = Date.now() - run.idleSince < cfg.idle.warmMinutes * 60_000;
+
+    // If the model can't repeat the request with a one-token reply, this compacts the session now.
+    if (warm && isCacheWarmingReplayable(model, { reasoning: reasoningOf(sent.thinkingLevel) })) {
+      await refresh(ctx, run, model, sent);
+
+      return;
+    }
+
+    disarm();
+
+    if (cfg.idle.compact) {
+      compactIdle(ctx);
+    }
+  }
+
+  async function onIdleTimer(ctx: ExtensionContext, run: IdleRun) {
+    if (idle !== run) {
+      return;
+    }
+
+    try {
+      await idleStep(ctx, run);
+    } catch (error) {
+      // After a disarm the session may be gone, and with it ctx.
+      if (idle === run) {
+        disarm();
+        ctx.ui.notify(`Idle cache refresh stopped: ${errorMessage(error)}`, "warning");
+      }
+    }
+  }
+
   pi.on("turn_end", onTurnEnd);
+  pi.on("agent_start", (_event, ctx) => {
+    const refreshes = idle?.refreshes ?? 0;
+
+    disarm();
+
+    if (refreshes > 0) {
+      ctx.ui.notify(
+        `Refreshed the prompt cache ${refreshes === 1 ? "once" : `${refreshes} times`} while idle`,
+        "info",
+      );
+    }
+  });
   pi.on("agent_end", () => {
     failedThisRun = false;
   });
+  pi.on("agent_settled", (_event, ctx) => {
+    arm(ctx);
+  });
+  // Each of these changes the context, so the recorded request no longer matches it.
+  pi.on("model_select", disarm);
+  pi.on("session_tree", disarm);
+  pi.on("session_compact", disarm);
+
+  pi.on("session_shutdown", disarm);
   pi.on("session_before_tree", onTree);
   pi.on("session_before_compact", onCompact);
 }

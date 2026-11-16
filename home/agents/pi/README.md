@@ -76,9 +76,18 @@ Writes the summaries for compaction, `/tree`, and `/end-review` from a fork of t
 
 The fork repeats the session's last request, so it reads the prompt cache and keeps settings other extensions add, such as `/fast`. Requests it can't repeat, such as Google's, go out as pi builds them and may miss the cache. So does the first fork after pi restarts. A notice after each fork shows how much of its input came from the cache.
 
-| Key                     | Default | Meaning                                                      |
-| ----------------------- | ------- | ------------------------------------------------------------ |
-| `summaryFork.compactAt` | `0.9`   | Share of the model's context window that triggers compaction |
+Anthropic binds each thinking block to the conversation before it, and a compaction replaces that conversation with a summary. Anthropic then drops the thinking blocks in the messages the compaction kept, every time it gets the whole history, and pi shows a notice each time. So this extension leaves those blocks out of requests to the Anthropic models that bind thinking, from the first request after a compaction.
+
+Pi's idle cache warming stops after 30 minutes, which is before the first refresh of a one-hour cache. So a large session left idle for an hour pays to write its whole context again. For those caches, this extension repeats the last request with a one-token reply shortly before the cache expires, which renews it. Once the session has been idle for `idle.warmMinutes`, the next refresh compacts it instead, while the cache is still warm. If the model can't repeat the request with a one-token reply, as an Anthropic model with a thinking budget can't, the extension compacts the session at the first refresh time instead. If the compaction's fork fails, the session stays as it was.
+
+The refreshes need pi running and the machine awake. A timer that fires late, as after sleep, sends nothing, because the cache may have expired. After a refresh that misses the cache, the extension sends no more. Each refresh is a `cache-refresh` entry in the session, which the statusline's cost includes. The next run shows a notice with the number of refreshes.
+
+| Key                            | Default  | Meaning                                                                    |
+| ------------------------------ | -------- | -------------------------------------------------------------------------- |
+| `summaryFork.compactAt`        | `0.9`    | Share of the model's context window that triggers compaction               |
+| `summaryFork.idle.minTokens`   | `150000` | Smallest context of an idle session that the extension acts on             |
+| `summaryFork.idle.warmMinutes` | `240`    | How long to refresh an idle session's cache. `0` never refreshes it        |
+| `summaryFork.idle.compact`     | `true`   | Compact the session when the refreshes stop. `false` lets the cache expire |
 
 ### `fast.ts`
 
