@@ -39,6 +39,7 @@ let
     {
       unslop = "${inputs.pstack}/pstack/skills/unslop";
       technical-writing = "${inputs.pstack}/pstack/skills/technical-writing";
+      frontend-design = "${inputs.anthropic-skills}/skills/frontend-design";
       review-check = ./skills/review-check;
       ts-antislop = ./skills/ts-antislop;
       draft-pr-review = ./skills/draft-pr-review;

@@ -40,6 +40,10 @@
       url = "github:earendil-works/pi-review";
       flake = false;
     };
+    anthropic-skills = {
+      url = "github:anthropics/skills";
+      flake = false;
+    };
 
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
