@@ -199,7 +199,7 @@ Replaces pi's footer with a line of segments. Statuses from other extensions go 
 
 ### `super-review.ts`
 
-Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6-astra`, or `openai-codex/gpt-6-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
+Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6.2-astra`, or `openai-codex/gpt-6.2-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
 
 Each reviewer reviews the same change. The session's model compares their findings and runs discussion rounds. After the round limit, it drops findings still in dispute and gives each finding whose priority is in dispute the lowest priority proposed. It prints the final review once the reviewers confirm it.
 
