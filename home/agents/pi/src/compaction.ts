@@ -11,7 +11,14 @@
  * Pi's idle cache warming stops after 30 minutes, which is before the first refresh of a one-hour
  * cache. So this also repeats the last request of a large idle session with a one-token reply to
  * renew its cache, then compacts the session once it has been idle long enough, while the cache is
- * still warm. The `summaryFork` key in settings.json configures this extension.
+ * still warm.
+ *
+ * None of that runs while the machine sleeps or pi is closed. So the first prompt to a large session
+ * compacts it first, if the session was idle for `idle.warmMinutes` and its cache expired. The
+ * compaction's fork reads the session uncached and writes no cache for the conversation. That costs
+ * less than writing the whole context again.
+ *
+ * The `summaryFork` key in settings.json configures this extension.
  */
 
 import type { Api, AssistantMessage, Model, Usage, UserMessage } from "@earendil-works/pi-ai";
@@ -20,6 +27,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   FileOperations,
+  InputEvent,
   SessionBeforeCompactEvent,
   SessionBeforeTreeEvent,
   SessionEntry,
@@ -148,7 +156,6 @@ interface IdleRun {
   readonly controller: AbortController;
   // When a request last read the cache, which restarts its lifetime.
   touchedAt: number;
-  refreshes: number;
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -340,10 +347,14 @@ function replayPayload(recorded: Fields, built: Fields, key: string): Fields | u
   return { ...mergeFields(recorded, built), [key]: [...prefix, ...rest] };
 }
 
-// Without the recorded prefix, nothing reads this conversation's cache, so this drops the message
-// breakpoints. It keeps the system and tool breakpoints because the session shares them. A body
-// with no conversation is sent as pi-ai built it.
-function forkPayload(recorded: Fields | undefined, built: Fields): Fields | undefined {
+// Without the recorded prefix, or once the cache has expired, nothing reads this conversation's
+// cache, so this drops the message breakpoints. It keeps the system and tool breakpoints because
+// the session shares them. A body with no conversation is sent as pi-ai built it.
+function forkPayload(
+  recorded: Fields | undefined,
+  built: Fields,
+  expired: boolean,
+): Fields | undefined {
   const key = conversationKey(built);
 
   if (key === undefined) {
@@ -352,7 +363,43 @@ function forkPayload(recorded: Fields | undefined, built: Fields): Fields | unde
 
   const replayed = recorded && replayPayload(recorded, built, key);
 
-  return replayed ?? { ...built, [key]: itemsOf(built, key).map(stripCacheControl) };
+  if (replayed && !expired) {
+    return replayed;
+  }
+
+  const body = replayed ?? built;
+
+  return { ...body, [key]: itemsOf(body, key).map(stripCacheControl) };
+}
+
+// When the session's last reply was saved. The session file has this after a restart.
+function lastReply(entries: SessionEntry[]): number | undefined {
+  const entry = entries.findLast(
+    (candidate) => candidate.type === "message" && candidate.message.role === "assistant",
+  );
+
+  return entry && Date.parse(entry.timestamp);
+}
+
+function lastRefresh(entries: SessionEntry[]): number | undefined {
+  const entry = entries.findLast(
+    (candidate) => candidate.type === "custom" && candidate.customType === CACHE_REFRESH,
+  );
+
+  return entry && Date.parse(entry.timestamp);
+}
+
+// How long ago a request last used the session's cache. Idle refreshes use it too.
+function cacheAge(ctx: ExtensionContext, idleMs: number): number {
+  const refreshed = lastRefresh(ctx.sessionManager.getBranch());
+
+  return refreshed === undefined ? idleMs : Math.min(idleMs, Date.now() - refreshed);
+}
+
+function cacheExpired(model: Model<Api>, age: number): boolean {
+  const ttlMs = getPromptCacheTtlMs(model, undefined);
+
+  return ttlMs !== undefined && age > ttlMs;
 }
 
 // A missing leaf or a later summary invalidates the recorded context.
@@ -464,6 +511,12 @@ function wantsIdle(ctx: ExtensionContext, cfg: Idle): boolean {
   const used = ctx.getContextUsage()?.tokens ?? 0;
 
   return (cfg.warmMinutes > 0 || cfg.compact) && used >= cfg.minTokens;
+}
+
+function wantsColdCompaction(ctx: ExtensionContext, cfg: Idle, idleMs: number): boolean {
+  const used = ctx.getContextUsage()?.tokens ?? 0;
+
+  return cfg.compact && used >= cfg.minTokens && idleMs >= cfg.warmMinutes * 60_000;
 }
 
 function tokens(messages: AgentMessage[]): number {
@@ -695,8 +748,11 @@ export default function compaction(pi: ExtensionAPI) {
 
   let idle: IdleRun | undefined;
 
-  // Pi is running a compaction that the idle timer asked for.
-  let idleCompaction = false;
+  // Idle refreshes since the last run, which the next run reports.
+  let refreshes = 0;
+
+  // The kind of compaction pi is running because this extension asked for it.
+  let unprompted: "Idle" | "Cold-cache" | undefined;
 
   // If a `context` handler changes the list, pi merges the mid-conversation system messages into
   // the first one, which changes the cached prefix. Pi sends this event's list as returned.
@@ -755,6 +811,16 @@ export default function compaction(pi: ExtensionAPI) {
     return { messages: [...recorded.messages, ...since], thinkingLevel, payload };
   }
 
+  // How long ago the session last sent a request or got a reply. Idle refreshes don't count.
+  function idleTime(ctx: ExtensionContext): number | undefined {
+    const branch = ctx.sessionManager.getBranch();
+    // The recorded request counts only if this branch continues from it.
+    const sentAt = request && messagesSince(branch, request.leafId) ? request.sentAt : undefined;
+    const last = Math.max(lastReply(branch) ?? 0, sentAt ?? 0);
+
+    return last > 0 ? Date.now() - last : undefined;
+  }
+
   async function fork(
     ctx: ExtensionContext,
     cfg: Config,
@@ -763,6 +829,8 @@ export default function compaction(pi: ExtensionAPI) {
     signal: AbortSignal,
   ): Promise<Forked> {
     const input = forkInput(ctx, model);
+    const idleMs = idleTime(ctx);
+    const expired = idleMs !== undefined && cacheExpired(model, cacheAge(ctx, idleMs));
     const limit = model.contextWindow > 0 ? cfg.compactAt * model.contextWindow : Infinity;
     const ask = userMessage(`${prompt}\n\n${NO_TOOLS}`);
     const fitted = fitWindow([...input.messages, ask], limit);
@@ -782,7 +850,7 @@ export default function compaction(pi: ExtensionAPI) {
         messages: fitted.messages,
         thinkingLevel: input.thinkingLevel,
         retry: true,
-        rewrite: (built) => forkPayload(input.payload, built),
+        rewrite: (built) => forkPayload(input.payload, built, expired),
       },
       signal,
     );
@@ -907,11 +975,11 @@ export default function compaction(pi: ExtensionAPI) {
       return { cancel: true };
     }
 
-    // Pi's summarizer would send the whole session uncached, so a failed idle fork leaves the
-    // session as it is.
-    if ("failure" in result && idleCompaction) {
+    // The user didn't ask for this compaction, and pi's summarizer would send the whole session
+    // again. So a failed fork leaves the session as it is.
+    if ("failure" in result && unprompted) {
       ctx.ui.notify(
-        `Idle compaction fork failed: ${result.failure}. The session isn't compacted.`,
+        `${unprompted} compaction fork failed: ${result.failure}. The session isn't compacted.`,
         "warning",
       );
 
@@ -1015,7 +1083,6 @@ export default function compaction(pi: ExtensionAPI) {
       idleSince: Date.now(),
       controller: new AbortController(),
       touchedAt: sent.sentAt,
-      refreshes: 0,
     };
 
     schedule(ctx, idle);
@@ -1058,26 +1125,60 @@ export default function compaction(pi: ExtensionAPI) {
     }
 
     run.touchedAt = sentAt;
-    run.refreshes++;
+    refreshes++;
     schedule(ctx, run);
   }
 
-  function compactIdle(ctx: ExtensionContext) {
-    idleCompaction = true;
+  // Resolves when the compaction ends, whether or not it compacted the session.
+  function compactUnprompted(
+    ctx: ExtensionContext,
+    kind: NonNullable<typeof unprompted>,
+    notice: string,
+  ): Promise<void> {
+    const { promise, resolve } = Promise.withResolvers<void>();
+
+    unprompted = kind;
 
     ctx.compact({
       onComplete: () => {
-        idleCompaction = false;
-        ctx.ui.notify(
-          "Compacted while idle, before the prompt cache expired. Turn this off with `summaryFork.idle.compact`.",
-          "info",
-        );
+        unprompted = undefined;
+        ctx.ui.notify(`${notice} Turn this off with \`summaryFork.idle.compact\`.`, "info");
+        resolve();
       },
       // Pi reports the error.
       onError: () => {
-        idleCompaction = false;
+        unprompted = undefined;
+        resolve();
       },
     });
+
+    return promise;
+  }
+
+  // Pi waits for this handler before it starts the run, so the prompt goes to the compacted
+  // session. The idle timer has already compacted an awake session that was idle for
+  // `idle.warmMinutes`. After a shorter idle, the session keeps its context and pi writes the cache
+  // again.
+  async function onInput(_event: InputEvent, ctx: ExtensionContext) {
+    const idleMs = ctx.isIdle() ? idleTime(ctx) : undefined;
+    const settings = idleMs === undefined ? undefined : active(ctx);
+
+    if (
+      idleMs === undefined ||
+      !settings ||
+      !wantsColdCompaction(ctx, settings.cfg.idle, idleMs) ||
+      !cacheExpired(settings.model, cacheAge(ctx, idleMs))
+    ) {
+      return;
+    }
+
+    disarm();
+
+    await compactUnprompted(
+      ctx,
+      "Cold-cache",
+      `Compacted before this prompt, because the prompt cache expired during ${Math.round(idleMs / 60_000)} idle minutes.`,
+    );
   }
 
   async function idleStep(ctx: ExtensionContext, run: IdleRun) {
@@ -1104,7 +1205,7 @@ export default function compaction(pi: ExtensionAPI) {
     disarm();
 
     if (cfg.idle.compact) {
-      compactIdle(ctx);
+      void compactUnprompted(ctx, "Idle", "Compacted while idle, before the prompt cache expired.");
     }
   }
 
@@ -1124,15 +1225,17 @@ export default function compaction(pi: ExtensionAPI) {
     }
   }
 
+  pi.on("input", onInput);
   pi.on("turn_end", onTurnEnd);
   pi.on("agent_start", (_event, ctx) => {
-    const refreshes = idle?.refreshes ?? 0;
+    const count = refreshes;
 
+    refreshes = 0;
     disarm();
 
-    if (refreshes > 0) {
+    if (count > 0) {
       ctx.ui.notify(
-        `Refreshed the prompt cache ${refreshes === 1 ? "once" : `${refreshes} times`} while idle`,
+        `Refreshed the prompt cache ${count === 1 ? "once" : `${count} times`} while idle`,
         "info",
       );
     }

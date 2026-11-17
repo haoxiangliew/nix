@@ -84,12 +84,14 @@ Pi's idle cache warming stops after 30 minutes, which is before the first refres
 
 The refreshes need pi running and the machine awake. A timer that fires late, as after sleep, sends nothing, because the cache may have expired. After a refresh that misses the cache, the extension sends no more. Each refresh is a `cache-refresh` entry in the session, which the statusline's cost includes. The next run shows a notice with the number of refreshes.
 
-| Key                            | Default  | Meaning                                                                    |
-| ------------------------------ | -------- | -------------------------------------------------------------------------- |
-| `summaryFork.compactAt`        | `0.9`    | Share of the model's context window that triggers compaction               |
-| `summaryFork.idle.minTokens`   | `150000` | Smallest context of an idle session that the extension acts on             |
-| `summaryFork.idle.warmMinutes` | `240`    | How long to refresh an idle session's cache. `0` never refreshes it        |
-| `summaryFork.idle.compact`     | `true`   | Compact the session when the refreshes stop. `false` lets the cache expire |
+After sleep or a restart, a session's cache may have expired. If the session's last reply was at least `idle.warmMinutes` ago and it holds at least `idle.minTokens`, your next prompt compacts the session first and then runs against the summary. The compaction reads the session uncached once and writes no cache for the conversation. That costs less than writing the whole context to the cache again, and every later turn is smaller. The prompt waits for the compaction. If you press Escape or the fork fails, the prompt goes to the full session. After a shorter idle, the session keeps its context and pi writes the cache again. A prompt sent during a run doesn't wait.
+
+| Key                            | Default  | Meaning                                                                                                                |
+| ------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `summaryFork.compactAt`        | `0.9`    | Share of the model's context window that triggers compaction                                                           |
+| `summaryFork.idle.minTokens`   | `150000` | Smallest context of an idle session that the extension acts on                                                         |
+| `summaryFork.idle.warmMinutes` | `240`    | How long to refresh an idle session's cache. `0` never refreshes it                                                    |
+| `summaryFork.idle.compact`     | `true`   | Compact the session when the refreshes stop, or on the next prompt if they couldn't run. `false` lets the cache expire |
 
 ### `fast.ts`
 
@@ -199,7 +201,7 @@ Replaces pi's footer with a line of segments. Statuses from other extensions go 
 
 ### `super-review.ts`
 
-Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6.2-astra`, or `openai-codex/gpt-6.2-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
+Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6-astra`, or `openai-codex/gpt-6-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
 
 Each reviewer reviews the same change. The session's model compares their findings and runs discussion rounds. After the round limit, it drops findings still in dispute and gives each finding whose priority is in dispute the lowest priority proposed. It prints the final review once the reviewers confirm it.
 
