@@ -16,6 +16,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { elapsed, trimRead } from "./agent-output.ts";
+import { countPendingAgents } from "./pending-work.ts";
 import { errorMessage } from "./settings.ts";
 
 // An agent that shows no activity in this time after a prompt may not have it.
@@ -90,14 +91,27 @@ interface Watch {
   arm: number;
   // Counts status events, so a lookup can tell whether an event came in while it ran.
   events: number;
+  // What pi was last told: that the agent finished, that it's blocked or failed, or that it didn't
+  // start on a prompt. The watch stays open after each, in case the agent works again.
+  told: Told | undefined;
+  // Armed by work pi didn't prompt, as when a background task the agent waited on ends or the
+  // user prompts it.
+  unprompted: boolean;
   subscription: Subscription;
 }
 
-// A copy of the watch that a failed call restores.
-type WatchState = Pick<Watch, "name" | "armed" | "active" | "status" | "since" | "arm" | "events">;
+type Told = "finished" | "urgent" | "stall";
 
-function snapshot({ name, armed, active, status, since, arm, events }: Watch): WatchState {
-  return { name, armed, active, status, since, arm, events };
+// A copy of the watch that a failed call restores.
+type WatchState = Pick<
+  Watch,
+  "name" | "armed" | "active" | "status" | "since" | "arm" | "events" | "told" | "unprompted"
+>;
+
+function snapshot(watch: Watch): WatchState {
+  const { name, armed, active, status, since, arm, events, told, unprompted } = watch;
+
+  return { name, armed, active, status, since, arm, events, told, unprompted };
 }
 
 export function label(pane: string, name: string | undefined): string {
@@ -189,17 +203,19 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
     return `${title} agent ${label(pane, name)}`;
   }
 
-  function tell(content: string): void {
+  // A message pi waits for starts a turn. One it doesn't wait for is only added to the session.
+  function tell(content: string, startsTurn = true): void {
     if (live) {
       pi.sendMessage(
         { customType: `${tools}-agent`, content, display: true },
-        { triggerTurn: true, deliverAs: "followUp" },
+        startsTurn ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: false },
       );
     }
   }
 
+  // Work pi didn't prompt starts no turn, so pi doesn't wait on it.
   function waiting(): [string, Watch][] {
-    return [...watches].filter(([, watch]) => watch.armed);
+    return [...watches].filter(([, watch]) => watch.armed && !watch.unprompted);
   }
 
   function hide(ui: ExtensionUIContext): void {
@@ -256,10 +272,11 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
     refresh();
   }
 
-  // A watch closes once it has nothing to report, so no subscription outlives the wait.
-  function settle(pane: string, message: string): void {
-    tell(message);
-    unwatch(pane);
+  // The watch stays open after its message, and onEvent arms it again if the agent works again.
+  function settle(watch: Watch, message: string, told: Told): void {
+    tell(message, !watch.unprompted);
+    Object.assign(watch, { armed: false, active: false, told, unprompted: false });
+    refresh();
   }
 
   // Tells the model when a watch it relies on ends without a result.
@@ -269,6 +286,7 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
     if (watch?.armed === true) {
       tell(
         `Stopped watching ${agentLabel(pane, watch.name)}: ${reason}. Check on it with ${tools}_read.`,
+        !watch.unprompted,
       );
     }
 
@@ -281,12 +299,32 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
       return false;
     }
 
+    const again = watch.unprompted ? "worked again without a prompt from you, and " : "";
+
     settle(
-      pane,
-      `${agentLabel(pane, watch.name)} is ${watch.status}. Read its output with ${tools}_read.`,
+      watch,
+      `${agentLabel(pane, watch.name)} ${again}is ${watch.status}. Read its output with ${tools}_read.`,
+      URGENT.has(watch.status) ? "urgent" : "finished",
     );
 
     return true;
+  }
+
+  // Arms a watch whose agent works again after its message. A blocked, failed, or stalled agent
+  // goes on with pi's prompt. An agent that finished works on something pi didn't prompt, so the
+  // watch only notes how that ends.
+  function armAgain(watch: Watch, status: string): void {
+    if (watch.told === undefined || watch.armed || status !== "working") {
+      return;
+    }
+
+    Object.assign(watch, {
+      armed: true,
+      told: undefined,
+      unprompted: watch.told === "finished",
+      since: Date.now(),
+      arm: watch.arm + 1,
+    });
   }
 
   // Events from an earlier subscription of the pane don't reach a newer watch.
@@ -303,6 +341,9 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
 
     watch.events += 1;
     watch.restarted ||= watch.sending && event.status === "working" && watch.status !== "working";
+
+    armAgain(watch, event.status);
+
     watch.status = event.status;
     watch.active ||= event.status === "working";
 
@@ -344,6 +385,8 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
       since: 0,
       arm: 0,
       events: 0,
+      told: undefined,
+      unprompted: false,
       subscription,
     };
 
@@ -377,9 +420,9 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
     return result;
   }
 
-  // Closes a watch that nothing waits on.
+  // Closes a watch that nothing waits on, unless it stays open for later work.
   function release(pane: string, watch: Watch): void {
-    if (!watch.armed && watches.get(pane) === watch) {
+    if (!watch.armed && watch.told === undefined && watches.get(pane) === watch) {
       unwatch(pane);
     }
   }
@@ -418,8 +461,9 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
     setTimeout(() => {
       if (watch.armed && !watch.active && watch.arm === arm && watches.get(pane) === watch) {
         settle(
-          pane,
+          watch,
           `${agentLabel(pane, watch.name)} didn't start working within ${STALL_MS / 1000} seconds, so it may not have the prompt. Check on it with ${tools}_read.`,
+          "stall",
         );
       }
     }, STALL_MS).unref();
@@ -444,6 +488,8 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
       status: prompted && agent.status !== "working" ? "prompted" : agent.status,
       since: Date.now(),
       arm: watch.arm + 1,
+      told: undefined,
+      unprompted: false,
     });
 
     refresh();
@@ -672,7 +718,8 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
 
     const before = snapshot(watch);
 
-    watch.armed = false;
+    // Work the call causes is pi's, so it doesn't arm the watch as work pi didn't prompt.
+    Object.assign(watch, { armed: false, told: undefined });
     refresh();
 
     try {
@@ -696,13 +743,19 @@ export function createWatcher(pi: ExtensionAPI, backend: Backend) {
     return request.kind === "keys" ? keysPane(pane, request.keys, signal) : watchPane(pane, signal);
   }
 
+  let uncount: (() => void) | undefined;
+
   pi.on("session_start", async (_event, ctx) => {
     context = ctx;
     live = true;
+    // An agent pi waits on starts pi's next turn when it settles, so pi isn't done until then.
+    uncount ??= countPendingAgents(() => waiting().length);
   });
 
   pi.on("session_shutdown", async () => {
     live = false;
+    uncount?.();
+    uncount = undefined;
     [...watches.keys()].forEach(unwatch);
     context = undefined;
   });

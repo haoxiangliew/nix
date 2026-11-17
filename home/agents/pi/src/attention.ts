@@ -1,15 +1,19 @@
 /**
  * Notifies when pi waits on a prompt or finishes a run, and reports prompts to herdr and Rex as
  * blocked. herdr shows a turn that ends on a question as done, so this tells the agent to ask with
- * ask_user_question. The `attention` key in settings.json configures it.
+ * ask_user_question. It reports a run that ends while background work is pending to Rex as
+ * working, not done. The `attention` key in settings.json configures it.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { SubagentsService } from "@gotgenes/pi-subagents";
 
+import { getSubagentsService } from "@gotgenes/pi-subagents";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
 import { multiplexer } from "./lib/multiplexer.ts";
+import { describePending, pendingWork } from "./lib/pending-work.ts";
 import { loadOrReport } from "./lib/settings.ts";
 
 const Config = Type.Object(
@@ -32,34 +36,117 @@ const ASK_RULE = `Use ${ASK_TOOL} only for a choice the user hasn't made and you
 const paneId = multiplexer === "herdr" ? process.env.HERDR_PANE_ID : undefined;
 
 // pi reports its state to Rex with OSC 7501, but shows a ctx.ui.custom() dialog as working. While
-// one is open, this reports pi as blocked, and again after each of pi's own reports. When it closes, this
-// writes pi's latest report again, since pi only reports changes. It reports only after pi has, so
-// pi's support check and PI_PROGRAM_STATUS still apply.
+// one is open, this reports pi as blocked in place of pi's own reports. When it closes, this writes
+// pi's latest report again, since pi only reports changes.
+//
+// pi also reports done when a run ends, even if a background task, a subagent, or an agent in
+// another pane will start the next run when it finishes. An agent that watches this one would take
+// that for the end of the task, so this reports working in place of that done, until the work
+// ends or a run starts. It reports only after pi has, so pi's support check and PI_PROGRAM_STATUS
+// still apply.
 const reportsStatus = multiplexer === "rex";
 
 // How pi's reports on its own record start. They have no `id`.
 const REPORT_PREFIX = "\u001B]7501;state=";
 
-// pi's latest report, which is written again when the dialog closes.
+// How often a session that waits on pending work checks whether the work ended without starting a
+// run, as when the user stops a task.
+const PENDING_CHECK_MS = 2000;
+
+// pi's latest report, which this writes again when the dialog closes or the pending work ends.
 let piReport: string | undefined;
 
 let blockedReport: string | undefined;
+
+// What Rex shows in place of pi's done while the session waits on pending work.
+let pendingReport: string | undefined;
+
+let pendingTimer: ReturnType<typeof setInterval> | undefined;
+
+// The session that owns the terminal, whose pending work counts.
+let owner: { session: string; subagents: SubagentsService | undefined } | undefined;
 
 // Writes without the watch, so this extension's reports aren't taken for pi's.
 let writeRaw: ((chunk: string) => boolean) | undefined;
 
 let unwatch: (() => void) | undefined;
 
-function noteReport(chunk: string | Uint8Array): void {
-  if (chunk instanceof Uint8Array || !chunk.startsWith(REPORT_PREFIX) || chunk.includes(":id=")) {
+// Sends "Ready for input" for the run that settled, unless it already did. Unset during a run.
+let notifyReady: (() => void) | undefined;
+
+function report(state: "working" | "blocked", message: string): string {
+  return `${REPORT_PREFIX}${state}:app=pi:msg=${Buffer.from(message).toString("base64")}\u001B\\`;
+}
+
+// An open dialog needs the user, so it comes before pending work.
+function shownReport(): string | undefined {
+  return blockedReport ?? pendingReport ?? piReport;
+}
+
+function stopPendingChecks(): void {
+  clearInterval(pendingTimer);
+  pendingTimer = undefined;
+  pendingReport = undefined;
+}
+
+// Only a run that pi reports as done can wait on pending work. After Esc or an error, pi's own
+// report stands.
+function checkPending(): void {
+  const done = piReport?.startsWith(`${REPORT_PREFIX}done`) === true;
+
+  const work =
+    owner !== undefined && done ? pendingWork(owner.session, owner.subagents) : undefined;
+
+  if (work === undefined) {
+    stopPendingChecks();
+
     return;
+  }
+
+  pendingReport = report("working", describePending(work));
+
+  if (pendingTimer === undefined) {
+    pendingTimer = setInterval(recheckPending, PENDING_CHECK_MS);
+    pendingTimer.unref();
+  }
+}
+
+function recheckPending(): void {
+  const before = shownReport();
+  const waited = pendingReport !== undefined;
+
+  checkPending();
+
+  // The work ended without a run, so nothing else tells the user that pi is ready.
+  if (waited && pendingReport === undefined) {
+    notifyReady?.();
+  }
+
+  const shown = shownReport();
+
+  if (shown !== undefined && shown !== before) {
+    writeRaw?.(shown);
+  }
+}
+
+// Returns the chunk to write. For one of pi's reports, that is the report of an open dialog or of
+// pending work when there is one.
+function reportFor(chunk: string | Uint8Array): string | Uint8Array {
+  if (chunk instanceof Uint8Array || !chunk.startsWith(REPORT_PREFIX) || chunk.includes(":id=")) {
+    return chunk;
   }
 
   piReport = chunk;
 
-  if (blockedReport !== undefined && !chunk.startsWith(`${REPORT_PREFIX}clear`)) {
-    writeRaw?.(blockedReport);
+  if (chunk.startsWith(`${REPORT_PREFIX}clear`)) {
+    stopPendingChecks();
+
+    return chunk;
   }
+
+  checkPending();
+
+  return blockedReport ?? pendingReport ?? chunk;
 }
 
 function watchReports(): void {
@@ -76,14 +163,11 @@ function watchReports(): void {
     encoding?: BufferEncoding | Done,
     done?: Done,
   ): boolean {
-    const written =
-      encoding === undefined || Value.Check(Type.String(), encoding)
-        ? write(chunk, encoding, done)
-        : write(chunk, encoding);
+    const shown = reportFor(chunk);
 
-    noteReport(chunk);
-
-    return written;
+    return encoding === undefined || Value.Check(Type.String(), encoding)
+      ? write(shown, encoding, done)
+      : write(shown, encoding);
   }
 
   stdout.write = watching;
@@ -119,17 +203,22 @@ function reportBlocked(label: string): void {
     return;
   }
 
-  blockedReport = `\u001B]7501;state=blocked:app=pi:msg=${Buffer.from(label).toString("base64")}\u001B\\`;
+  blockedReport = report("blocked", label);
   writeRaw(blockedReport);
 }
 
 function reportClosed(): void {
-  if (blockedReport === undefined || piReport === undefined || writeRaw === undefined) {
+  if (blockedReport === undefined || writeRaw === undefined) {
     return;
   }
 
   blockedReport = undefined;
-  writeRaw(piReport);
+
+  const shown = shownReport();
+
+  if (shown !== undefined) {
+    writeRaw(shown);
+  }
 }
 
 async function herdrJson<T>(pi: ExtensionAPI, args: string[]): Promise<T | undefined> {
@@ -208,7 +297,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     config = loadOrReport(ctx, "The attention extension", "attention", Config);
 
-    if (reportsStatus && watched(ctx) && unwatch === undefined) {
+    if (!reportsStatus || !watched(ctx)) {
+      return;
+    }
+
+    // Child sessions replace the shared subagents service, so this keeps the owner's.
+    owner = { session: ctx.sessionManager.getSessionId(), subagents: getSubagentsService() };
+
+    if (unwatch === undefined) {
       watchReports();
     }
   });
@@ -222,15 +318,19 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    stopPendingChecks();
+    notifyReady = undefined;
     unwatch?.();
     unwatch = undefined;
     writeRaw = undefined;
+    owner = undefined;
     piReport = undefined;
     blockedReport = undefined;
   });
 
   pi.on("agent_start", async () => {
     busy = true;
+    notifyReady = undefined;
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -276,8 +376,25 @@ export default function (pi: ExtensionAPI) {
     busy = false;
 
     // Esc means the user is already at the terminal.
-    if (config !== undefined && watched(ctx) && !event.aborted) {
-      notifyLater(pi, config, () => live && !busy, "Ready for input");
+    if (config === undefined || !watched(ctx) || event.aborted) {
+      return;
     }
+
+    const current = config;
+    let notified = false;
+
+    // A session that waits on pending work isn't ready. recheckPending notifies when the work ends.
+    const ready = (): boolean => {
+      if (!live || busy || notified || pendingReport !== undefined) {
+        return false;
+      }
+
+      notified = true;
+
+      return true;
+    };
+
+    notifyReady = () => notifyLater(pi, current, ready, "Ready for input");
+    notifyReady();
   });
 }
