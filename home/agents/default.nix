@@ -428,7 +428,7 @@ in
                 "openai"
                 "xai"
               ];
-              openaiSearchModel = "gpt-6-astra";
+              openaiSearchModel = "gpt-6.2-astra";
               xaiSearchTools = [ "x_search" ];
               xaiSearchTimeoutMs = 180000;
               youtube.enabled = false;
@@ -640,16 +640,14 @@ in
         };
         models.providers = {
           openai.modelOverrides = lib.genAttrs [
-            "gpt-6-astra"
             "gpt-6-luna"
-            "gpt-6-sol"
-            "gpt-6.1-sol"
+            "gpt-6.2-astra"
+            "gpt-6.2-sol"
           ] (lib.const { contextWindow = 922000; });
           openai-codex.modelOverrides = lib.genAttrs [
-            "gpt-6-astra"
             "gpt-6-luna"
-            "gpt-6-sol"
-            "gpt-6.1-sol"
+            "gpt-6.2-astra"
+            "gpt-6.2-sol"
           ] (lib.const { contextWindow = 872000; });
         };
         keybindings = {

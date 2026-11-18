@@ -1,7 +1,9 @@
 /**
- * /fast sends `speed: "fast"` to supported Anthropic models and the priority service tier to
- * OpenAI. In the picker, enter applies the choice to this session and ctrl+s also saves it as the
- * default. --fast starts with it on. The `fast` key in settings.json configures it.
+ * /fast picks a speed. Fast sends `speed: "fast"` to supported Anthropic models and the priority
+ * service tier to OpenAI. Ultrafast sends OpenAI's ultrafast service tier to the models that
+ * support it and the fast speed to other models. In the picker, enter applies the speed to this
+ * session and ctrl+s also saves it as the default. --fast and --ultrafast start with that speed.
+ * The `fast` key in settings.json configures it.
  */
 
 import {
@@ -25,26 +27,50 @@ const Config = Type.Object(
     }),
     beta: Type.String({ minLength: 1, default: "fast-mode-2026-02-01" }),
     costMultiplier: Type.Number({ minimum: 1, default: 2 }),
+    ultrafastModels: Type.Array(Type.String(), {
+      default: ["gpt-6.2-astra", "gpt-6.2-sol"],
+    }),
+    ultrafastCostMultiplier: Type.Number({ minimum: 1, default: 6 }),
   },
   { additionalProperties: false, default: {} },
 );
 
 type Config = Static<typeof Config>;
 
-const FastMode = Type.Boolean({ default: false });
+const SPEEDS = ["off", "fast", "ultrafast"] as const;
+
+type Speed = (typeof SPEEDS)[number];
+
+// Settings and session entries saved before ultrafast hold true for fast and false for off.
+const FastMode = Type.Union(
+  [Type.Boolean(), Type.Literal("off"), Type.Literal("fast"), Type.Literal("ultrafast")],
+  { default: "off" },
+);
 
 const Payload = Type.Object({ betas: Type.Optional(Type.Array(Type.String())) });
 
+// The last event of an OpenAI response. Its service_tier is the tier that served the reply, which
+// can differ from the requested tier.
+const ResponseDone = Type.Object({
+  type: Type.Union([
+    Type.Literal("response.completed"),
+    Type.Literal("response.incomplete"),
+    Type.Literal("response.done"),
+  ]),
+  response: Type.Object({ service_tier: Type.String() }),
+});
+
 const OPENAI_PROVIDERS = new Set(["openai", "openai-codex"]);
 
-type Backend = "anthropic" | "openai";
+// "anthropic" is Anthropic's fast mode. The others are OpenAI service tiers.
+type Tier = "anthropic" | "priority" | "ultrafast";
 
 type AssistantMessage = Extract<MessageEndEvent["message"], { role: "assistant" }>;
 
 type Cost = AssistantMessage["usage"]["cost"];
 
 interface Choice {
-  enabled: boolean;
+  speed: Speed;
   persist: boolean;
 }
 
@@ -54,20 +80,54 @@ interface OptionState {
   saved: boolean;
 }
 
-function readDefault(): boolean {
-  return loadSettings("fastMode", FastMode);
+// The request in flight. It keeps its own config and tier because /fast can change the speed
+// before the reply ends.
+interface Request {
+  config: Config;
+  tier: Tier;
+  served?: string;
 }
 
-function backend(model: ExtensionContext["model"], config: Config): Backend | undefined {
-  if (model?.provider === "anthropic" && config.models.includes(model.id)) {
-    return "anthropic";
+const NEXT: Record<Speed, Speed> = { off: "fast", fast: "ultrafast", ultrafast: "off" };
+
+const PREVIOUS: Record<Speed, Speed> = { off: "ultrafast", fast: "off", ultrafast: "fast" };
+
+function toSpeed(value: Static<typeof FastMode>): Speed {
+  if (value === true) {
+    return "fast";
   }
 
-  if (model !== undefined && OPENAI_PROVIDERS.has(model.provider)) {
-    return "openai";
+  if (value === false) {
+    return "off";
   }
 
-  return undefined;
+  return value;
+}
+
+function readDefault(): Speed {
+  return toSpeed(loadSettings("fastMode", FastMode));
+}
+
+function tierFor(model: ExtensionContext["model"], config: Config, speed: Speed): Tier | undefined {
+  if (speed === "off" || model === undefined) {
+    return undefined;
+  }
+
+  if (model.provider === "anthropic") {
+    return config.models.includes(model.id) ? "anthropic" : undefined;
+  }
+
+  if (!OPENAI_PROVIDERS.has(model.provider)) {
+    return undefined;
+  }
+
+  return speed === "ultrafast" && config.ultrafastModels.includes(model.id)
+    ? "ultrafast"
+    : "priority";
+}
+
+function tierLabel(tier: Tier): Speed {
+  return tier === "ultrafast" ? "ultrafast" : "fast";
 }
 
 // Pi ignores usage.speed when pricing replies. A fast request either runs fast or fails, so
@@ -81,7 +141,7 @@ function billedFast(message: AssistantMessage, config: Config): boolean {
   );
 }
 
-function fastCost(cost: Cost, multiplier: number): Cost {
+function scaleCost(cost: Cost, multiplier: number): Cost {
   const input = cost.input * multiplier;
   const output = cost.output * multiplier;
   const cacheRead = cost.cacheRead * multiplier;
@@ -97,13 +157,36 @@ function fastCost(cost: Cost, multiplier: number): Cost {
   };
 }
 
-function optionLine(theme: Theme, value: boolean, state: OptionState): string {
-  const label = value ? "on" : "off";
+// The multiple of pi's price that the reply cost, or undefined if pi priced it right.
+function multiplierFor(message: AssistantMessage, request: Request): number | undefined {
+  const { config, tier, served } = request;
+
+  if (tier === "anthropic") {
+    return billedFast(message, config) ? config.costMultiplier : undefined;
+  }
+
+  // Pi prices an ultrafast reply at the standard rate.
+  return served === "ultrafast" ? config.ultrafastCostMultiplier : undefined;
+}
+
+function optionLine(
+  theme: Theme,
+  speed: Speed,
+  state: OptionState,
+  tier: Tier | undefined,
+): string {
   const cursor = state.selected ? theme.fg("accent", "→ ") : "  ";
   const check = state.current ? theme.fg("accent", "✓ ") : "  ";
+  const label = state.selected ? theme.fg("accent", speed) : speed;
+
+  const fallback =
+    speed === "ultrafast" && tier !== undefined && tier !== "ultrafast"
+      ? theme.fg("muted", " · fast on this model")
+      : "";
+
   const badge = state.saved ? theme.fg("muted", " · default") : "";
 
-  return `${cursor}${check}${state.selected ? theme.fg("accent", label) : label}${badge}`;
+  return `${cursor}${check}${label}${fallback}${badge}`;
 }
 
 function pickerFrame(
@@ -115,7 +198,7 @@ function pickerFrame(
   const model = ctx.model === undefined ? "no model" : `${ctx.model.provider}/${ctx.model.id}`;
 
   const support =
-    backend(ctx.model, config) === undefined ? theme.fg("warning", " (unsupported)") : "";
+    tierFor(ctx.model, config, "fast") === undefined ? theme.fg("warning", " (unsupported)") : "";
 
   const hints = [
     keyHint("tui.select.confirm", "to select"),
@@ -128,7 +211,7 @@ function pickerFrame(
   for (const child of [
     new DynamicBorder(),
     new Spacer(1),
-    new Text(theme.fg("muted", `Fast mode for ${model}`) + support, 0, 0),
+    new Text(theme.fg("muted", `Speed for ${model}`) + support, 0, 0),
     new Spacer(1),
     list,
     new Spacer(1),
@@ -141,30 +224,27 @@ function pickerFrame(
   return frame;
 }
 
-function pick(
-  ctx: ExtensionContext,
-  config: Config,
-  enabled: boolean,
-): Promise<Choice | undefined> {
+function pick(ctx: ExtensionContext, config: Config, current: Speed): Promise<Choice | undefined> {
   const savedDefault = readDefault();
-  const options = [true, false];
 
   return ctx.ui.custom<Choice | undefined>((tui, theme, keybindings, done) => {
-    let selected = enabled;
+    let selected = current;
 
     const list = new Container();
 
     function updateList(): void {
       list.clear();
 
-      for (const value of options) {
+      for (const speed of SPEEDS) {
         const state = {
-          selected: value === selected,
-          current: value === enabled,
-          saved: value === savedDefault,
+          selected: speed === selected,
+          current: speed === current,
+          saved: speed === savedDefault,
         };
 
-        list.addChild(new Text(optionLine(theme, value, state), 0, 0));
+        list.addChild(
+          new Text(optionLine(theme, speed, state, tierFor(ctx.model, config, speed)), 0, 0),
+        );
       }
     }
 
@@ -176,16 +256,16 @@ function pick(
       render: (width: number) => container.render(width),
       invalidate: () => container.invalidate(),
       handleInput(data: string) {
-        if (
-          keybindings.matches(data, "tui.select.up") ||
-          keybindings.matches(data, "tui.select.down")
-        ) {
-          selected = !selected;
+        if (keybindings.matches(data, "tui.select.up")) {
+          selected = PREVIOUS[selected];
+          updateList();
+        } else if (keybindings.matches(data, "tui.select.down")) {
+          selected = NEXT[selected];
           updateList();
         } else if (keybindings.matches(data, "tui.select.confirm")) {
-          done({ enabled: selected, persist: false });
+          done({ speed: selected, persist: false });
         } else if (keybindings.matches(data, "app.models.save")) {
-          done({ enabled: selected, persist: true });
+          done({ speed: selected, persist: true });
         } else if (keybindings.matches(data, "tui.select.cancel")) {
           done(undefined);
         }
@@ -200,85 +280,100 @@ function choose(
   arg: string,
   ctx: ExtensionContext,
   config: Config,
-  enabled: boolean,
+  current: Speed,
 ): Promise<Choice | undefined> {
-  if (arg === "on" || arg === "off") {
-    return Promise.resolve({ enabled: arg === "on", persist: false });
+  const speed = arg === "on" ? "fast" : SPEEDS.find((s) => s === arg);
+
+  if (speed !== undefined) {
+    return Promise.resolve({ speed, persist: false });
   }
 
   if (arg !== "") {
-    ctx.ui.notify(`Unknown /fast argument "${arg}". Use on or off.`, "error");
+    ctx.ui.notify(`Unknown /fast argument "${arg}". Use on, off, fast, or ultrafast.`, "error");
 
     return Promise.resolve(undefined);
   }
 
   if (ctx.mode !== "tui") {
-    return Promise.resolve({ enabled: !enabled, persist: false });
+    return Promise.resolve({ speed: current === "off" ? "fast" : "off", persist: false });
   }
 
-  return pick(ctx, config, enabled);
+  return pick(ctx, config, current);
 }
 
-function handleRequests(pi: ExtensionAPI, current: () => Config | undefined): void {
-  // The config of the request in flight. /fast can change current() before the reply ends.
-  let fastConfig: Config | undefined;
+function handleRequests(pi: ExtensionAPI, current: () => [Config, Speed] | undefined): void {
+  let request: Request | undefined;
 
   pi.on("before_provider_request", async (event, ctx) => {
-    const config = current();
+    const settings = current();
     const { payload } = event;
 
-    fastConfig = undefined;
+    request = undefined;
 
-    if (config === undefined || !Value.Check(Payload, payload)) {
+    if (settings === undefined || !Value.Check(Payload, payload)) {
       return;
     }
 
-    const target = backend(ctx.model, config);
+    const [config, speed] = settings;
+    const tier = tierFor(ctx.model, config, speed);
 
-    if (target === undefined) {
+    if (tier === undefined) {
       return;
     }
+
+    request = { config, tier };
 
     // Mutate in place so compaction.ts records these changes regardless of handler order.
-    if (target === "openai") {
-      return Object.assign(payload, { service_tier: "priority" });
+    if (tier !== "anthropic") {
+      return Object.assign(payload, { service_tier: tier });
     }
 
     const betas = payload.betas ?? [];
 
-    fastConfig = config;
-
     return Object.assign(payload, { speed: "fast", betas: [...new Set([...betas, config.beta])] });
+  });
+
+  pi.on("provider_stream_event", async (event) => {
+    if (request !== undefined && Value.Check(ResponseDone, event.data)) {
+      request.served = event.data.response.service_tier;
+    }
   });
 
   pi.on("message_end", async (event) => {
     const { message } = event;
-    const config = fastConfig;
 
-    if (message.role !== "assistant" || config === undefined) {
+    if (message.role !== "assistant" || request === undefined) {
       return;
     }
 
-    fastConfig = undefined;
+    const multiplier = multiplierFor(message, request);
 
-    if (!billedFast(message, config)) {
+    request = undefined;
+
+    if (multiplier === undefined) {
       return;
     }
 
-    const cost = fastCost(message.usage.cost, config.costMultiplier);
+    const cost = scaleCost(message.usage.cost, multiplier);
 
     return { message: { ...message, usage: { ...message.usage, cost } } };
   });
 }
 
 export default function (pi: ExtensionAPI) {
-  let enabled = false;
+  let speed: Speed = "off";
   let config: Config | undefined;
 
-  handleRequests(pi, () => (enabled ? config : undefined));
+  handleRequests(pi, () => (config === undefined ? undefined : [config, speed]));
 
   pi.registerFlag("fast", {
     description: "Start in fast mode (Anthropic Fable and Opus, OpenAI)",
+    type: "boolean",
+    default: false,
+  });
+
+  pi.registerFlag("ultrafast", {
+    description: "Start in ultrafast mode (OpenAI GPT-6.2 Astra and Sol, fast on other models)",
     type: "boolean",
     default: false,
   });
@@ -288,16 +383,25 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const status =
-      backend(ctx.model, config) === undefined
-        ? ctx.ui.theme.fg("muted", "fast (unsupported model)")
-        : ctx.ui.theme.fg("accent", "fast");
+    const { theme } = ctx.ui;
+    const tier = tierFor(ctx.model, config, speed);
+    let status: string | undefined;
 
-    ctx.ui.setStatus("fast", enabled ? status : undefined);
+    if (speed === "off") {
+      status = undefined;
+    } else if (tier === undefined) {
+      status = theme.fg("muted", `${speed} (unsupported model)`);
+    } else if (tierLabel(tier) === speed) {
+      status = theme.fg("accent", speed);
+    } else {
+      status = theme.fg("accent", tierLabel(tier)) + theme.fg("muted", ` (no ${speed})`);
+    }
+
+    ctx.ui.setStatus("fast", status);
   }
 
   pi.registerCommand("fast", {
-    description: "Select fast mode (on, off)",
+    description: "Select a speed (off, fast, ultrafast)",
     handler: async (args, ctx) => {
       if (config === undefined) {
         ctx.ui.notify("Fast mode is off because `fast` in settings.json is invalid.", "error");
@@ -305,23 +409,21 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const choice = await choose(args.trim(), ctx, config, enabled);
+      const choice = await choose(args.trim(), ctx, config, speed);
 
       if (choice === undefined) {
         return;
       }
 
-      enabled = choice.enabled;
+      speed = choice.speed;
       apply(ctx);
-      pi.appendEntry("fast-mode", enabled);
+      pi.appendEntry("fast-mode", speed);
 
       if (choice.persist) {
-        saveSetting("fastMode", enabled);
+        saveSetting("fastMode", speed);
       }
 
-      ctx.ui.notify(
-        `${choice.persist ? "Default fast mode" : "Fast mode"}: ${enabled ? "on" : "off"}`,
-      );
+      ctx.ui.notify(`${choice.persist ? "Default speed" : "Speed"}: ${speed}`);
     },
   });
 
@@ -329,15 +431,29 @@ export default function (pi: ExtensionAPI) {
     apply(ctx);
   });
 
-  // Resumed sessions and /tree use the branch's last choice. A branch without one uses --fast or
-  // the saved default.
+  function startSpeed(): Speed {
+    if (pi.getFlag("ultrafast") === true) {
+      return "ultrafast";
+    }
+
+    return pi.getFlag("fast") === true ? "fast" : readDefault();
+  }
+
+  // Resumed sessions and /tree use the branch's last choice. A branch without one uses --ultrafast,
+  // --fast, or the saved default.
   function restore(ctx: ExtensionContext): void {
     const saved = ctx.sessionManager
       .getBranch()
       .findLast((e) => e.type === "custom" && e.customType === "fast-mode");
 
-    enabled =
-      saved?.type === "custom" ? saved.data === true : pi.getFlag("fast") === true || readDefault();
+    if (saved?.type !== "custom") {
+      speed = startSpeed();
+    } else if (Value.Check(FastMode, saved.data)) {
+      speed = toSpeed(saved.data);
+    } else {
+      throw new Error(`fast-mode session entry holds ${JSON.stringify(saved.data)}`);
+    }
+
     apply(ctx);
   }
 
@@ -345,7 +461,7 @@ export default function (pi: ExtensionAPI) {
     config = loadOrReport(ctx, "Fast mode", "fast", Config);
 
     if (config === undefined) {
-      enabled = false;
+      speed = "off";
       ctx.ui.setStatus("fast", undefined);
 
       return;

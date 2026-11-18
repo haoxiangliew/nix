@@ -95,14 +95,16 @@ After sleep or a restart, a session's cache may have expired. If the session's l
 
 ### `fast.ts`
 
-`/fast` turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. In the picker, enter applies it to this session and ctrl+s also saves it as the default. `--fast` starts with it on.
+`/fast` picks a speed: `off`, `fast`, or `ultrafast`. Fast turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. Ultrafast sends OpenAI's ultrafast service tier to the models that support it and the fast speed to other models. In the picker, enter applies the speed to this session and ctrl+s also saves it as the default. `/fast on`, `/fast ultrafast`, and `/fast off` skip the picker. `--fast` and `--ultrafast` start with that speed.
 
-| Key                   | Default                                                                       | Meaning                                         |
-| --------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------- |
-| `fast.models`         | `["claude-fable-5-2", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]` | Anthropic models that support fast mode         |
-| `fast.beta`           | `"fast-mode-2026-02-01"`                                                      | `anthropic-beta` header that enables it         |
-| `fast.costMultiplier` | `2`                                                                           | Price multiple for fast replies                 |
-| `fastMode`            | `false`                                                                       | Default on or off. `/fast` saves it with ctrl+s |
+| Key                            | Default                                                                       | Meaning                                                                          |
+| ------------------------------ | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `fast.models`                  | `["claude-fable-5-2", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]` | Anthropic models that support fast mode                                          |
+| `fast.beta`                    | `"fast-mode-2026-02-01"`                                                      | `anthropic-beta` header that enables it                                          |
+| `fast.costMultiplier`          | `2`                                                                           | Price multiple for Anthropic fast replies                                        |
+| `fast.ultrafastModels`         | `["gpt-6.2-astra", "gpt-6.2-sol"]`                                            | OpenAI models that support ultrafast                                             |
+| `fast.ultrafastCostMultiplier` | `6`                                                                           | Price multiple for replies OpenAI served at ultrafast                            |
+| `fastMode`                     | `"off"`                                                                       | Default speed: `"off"`, `"fast"`, or `"ultrafast"`. `/fast` saves it with ctrl+s |
 
 ### `herdr-agents.ts`
 
@@ -201,7 +203,7 @@ Replaces pi's footer with a line of segments. Statuses from other extensions go 
 
 ### `super-review.ts`
 
-Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6-astra`, or `openai-codex/gpt-6-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
+Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6.2-astra`, or `openai-codex/gpt-6.2-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
 
 Each reviewer reviews the same change. The session's model compares their findings and runs discussion rounds. After the round limit, it drops findings still in dispute and gives each finding whose priority is in dispute the lowest priority proposed. It prints the final review once the reviewers confirm it.
 
