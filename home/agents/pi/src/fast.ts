@@ -2,21 +2,27 @@
  * /fast picks a speed. Fast sends `speed: "fast"` to supported Anthropic models and the priority
  * service tier to OpenAI. Ultrafast sends OpenAI's ultrafast service tier and Anthropic's fast
  * mode. On openai-codex, the account's model catalog decides which tiers a model gets. Each
- * model keeps its own speed in settings.json. --fast and --ultrafast set every model's speed until
- * /fast changes one. The `fast` key in settings.json configures it.
+ * model can have a session override and a default in settings.json. --fast and --ultrafast apply
+ * to models without a session override until /fast saves a default. The `fast` key in
+ * settings.json configures it.
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 import {
   DynamicBorder,
-  keyHint,
   type ExtensionAPI,
   type ExtensionContext,
   type MessageEndEvent,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import {
+  Container,
+  Spacer,
+  Text,
+  type Keybinding,
+  type KeybindingsManager,
+} from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
@@ -29,7 +35,7 @@ const Config = Type.Object(
     }),
     beta: Type.String({ minLength: 1, default: "fast-mode-2026-02-01" }),
     costMultiplier: Type.Number({ minimum: 1, default: 2 }),
-    // openai models with ultrafast. Other openai models get fast.
+    // openai models in this list get ultrafast. Other openai models get fast.
     ultrafastModels: Type.Array(Type.String(), {
       default: ["gpt-6.2-astra", "gpt-6.2-sol"],
     }),
@@ -46,14 +52,19 @@ type Speed = (typeof SPEEDS)[number];
 
 const SpeedSetting = Type.Enum(SPEEDS);
 
-const SpeedByModel = Type.Record(Type.String(), SpeedSetting);
+// Maps `provider/id` to the model's default speed.
+const FastMode = Type.Record(Type.String(), SpeedSetting, { default: {} });
 
-// Speeds by `provider/id`. Older settings hold one speed for every model: true for fast, false for
-// off, or a speed.
-const FastMode = Type.Union([SpeedByModel, Type.Boolean(), SpeedSetting], { default: {} });
+const SESSION_ENTRY = "fast-speed";
+
+// A null speed clears the model's session override.
+const SessionSpeed = Type.Object({
+  model: Type.String(),
+  speed: Type.Union([SpeedSetting, Type.Null()]),
+});
 
 declare global {
-  // Set once /fast changes a speed. It outlasts the extension reload on /new and /resume, so
+  // Set once /fast saves a default. It outlasts the extension reload on /new and /resume, so
   // --fast and --ultrafast stop applying for the rest of the process.
   var fastFlagsCleared: boolean | undefined;
 }
@@ -112,9 +123,15 @@ type AssistantMessage = Extract<MessageEndEvent["message"], { role: "assistant" 
 
 type Cost = AssistantMessage["usage"]["cost"];
 
+interface Choice {
+  speed: Speed;
+  persist: boolean;
+}
+
 interface OptionState {
   selected: boolean;
   current: boolean;
+  saved: boolean;
 }
 
 // The request in flight. It keeps its own config and tier because /fast can change the speed
@@ -134,23 +151,11 @@ function modelKey(model: Model<Api>): string {
 }
 
 function savedSpeed(model: Model<Api>): Speed {
-  const saved = loadSettings("fastMode", FastMode);
-
-  if (Value.Check(SpeedByModel, saved)) {
-    return saved[modelKey(model)] ?? "off";
-  }
-
-  if (saved === true) {
-    return "fast";
-  }
-
-  return saved === false ? "off" : saved;
+  return loadSettings("fastMode", FastMode)[modelKey(model)] ?? "off";
 }
 
-// Replaces an older setting for every model, so the other models go back to off.
 function saveSpeed(model: Model<Api>, speed: Speed): void {
-  const saved = loadSettings("fastMode", FastMode);
-  const speeds = Value.Check(SpeedByModel, saved) ? { ...saved } : {};
+  const speeds = loadSettings("fastMode", FastMode);
 
   if (speed === "off") {
     delete speeds[modelKey(model)];
@@ -420,7 +425,9 @@ function optionLine(
       ? theme.fg("muted", " · fast on this model")
       : "";
 
-  return `${cursor}${check}${label}${fallback}`;
+  const badge = state.saved ? theme.fg("muted", " · default") : "";
+
+  return `${cursor}${check}${label}${fallback}${badge}`;
 }
 
 function supportNote(theme: Theme, speeds: Speeds, failed: boolean): string {
@@ -433,31 +440,39 @@ function supportNote(theme: Theme, speeds: Speeds, failed: boolean): string {
 
 function pickerFrame(
   ctx: ExtensionContext,
-  speeds: Speeds,
-  failed: boolean,
+  support: string,
   theme: Theme,
   list: Container,
+  keybindings: KeybindingsManager,
 ): Container {
-  const model = ctx.model === undefined ? "no model" : `${ctx.model.provider}/${ctx.model.id}`;
+  const model = ctx.model === undefined ? "no model" : modelKey(ctx.model);
 
-  const support = supportNote(theme, speeds, failed);
+  function hint(binding: Keybinding, label: string): string {
+    const keys = keybindings.getKeys(binding).join("/");
+
+    return keys === "" ? "" : theme.fg("dim", keys) + theme.fg("muted", ` ${label}`);
+  }
 
   const hints = [
-    keyHint("tui.select.confirm", "to select"),
-    keyHint("tui.select.cancel", "to cancel"),
-  ].join(theme.fg("dim", " · "));
+    hint("tui.select.confirm", "to apply for this session"),
+    hint("app.models.save", "to save to settings.json"),
+    hint("tui.select.cancel", "to cancel"),
+  ]
+    .filter(Boolean)
+    .join(theme.fg("dim", " · "));
 
   const frame = new Container();
+  const border = (line: string) => theme.fg("border", line);
 
   for (const child of [
-    new DynamicBorder(),
+    new DynamicBorder(border),
     new Spacer(1),
     new Text(theme.fg("muted", `Speed for ${model}`) + support, 0, 0),
     new Spacer(1),
     list,
     new Spacer(1),
     new Text(`  ${hints}`, 0, 0),
-    new DynamicBorder(),
+    new DynamicBorder(border),
   ]) {
     frame.addChild(child);
   }
@@ -469,9 +484,10 @@ function pick(
   ctx: ExtensionContext,
   speeds: Speeds,
   current: Speed,
+  saved: Speed,
   failed: boolean,
-): Promise<Speed | undefined> {
-  return ctx.ui.custom<Speed | undefined>((tui, theme, keybindings, done) => {
+): Promise<Choice | undefined> {
+  return ctx.ui.custom<Choice | undefined>((tui, theme, keybindings, done) => {
     let selected = current;
 
     const list = new Container();
@@ -480,13 +496,23 @@ function pick(
       list.clear();
 
       for (const speed of SPEEDS) {
-        const state = { selected: speed === selected, current: speed === current };
+        const state = {
+          selected: speed === selected,
+          current: speed === current,
+          saved: speed === saved,
+        };
 
         list.addChild(new Text(optionLine(theme, speed, state, speeds[speed]), 0, 0));
       }
     }
 
-    const container = pickerFrame(ctx, speeds, failed, theme, list);
+    const container = pickerFrame(
+      ctx,
+      supportNote(theme, speeds, failed),
+      theme,
+      list,
+      keybindings,
+    );
 
     updateList();
 
@@ -501,7 +527,9 @@ function pick(
           selected = NEXT[selected];
           updateList();
         } else if (keybindings.matches(data, "tui.select.confirm")) {
-          done(selected);
+          done({ speed: selected, persist: false });
+        } else if (keybindings.matches(data, "app.models.save")) {
+          done({ speed: selected, persist: true });
         } else if (keybindings.matches(data, "tui.select.cancel")) {
           done(undefined);
         }
@@ -516,7 +544,8 @@ async function pickWithCatalog(
   ctx: ExtensionContext,
   load: () => Promise<Speeds>,
   current: Speed,
-): Promise<Speed | undefined> {
+  saved: Speed,
+): Promise<Choice | undefined> {
   let speeds: Speeds;
   let failed = false;
 
@@ -530,19 +559,19 @@ async function pickWithCatalog(
     failed = true;
   }
 
-  return pick(ctx, speeds, current, failed);
+  return pick(ctx, speeds, current, saved, failed);
 }
 
 async function choose(
   arg: string,
   ctx: ExtensionContext,
-  speeds: () => Promise<Speeds>,
+  openPicker: () => Promise<Choice | undefined>,
   current: Speed,
-): Promise<Speed | undefined> {
+): Promise<Choice | undefined> {
   const speed = arg === "on" ? "fast" : SPEEDS.find((s) => s === arg);
 
   if (speed !== undefined) {
-    return speed;
+    return { speed, persist: false };
   }
 
   if (arg !== "") {
@@ -552,10 +581,10 @@ async function choose(
   }
 
   if (ctx.mode !== "tui") {
-    return current === "off" ? "fast" : "off";
+    return { speed: current === "off" ? "fast" : "off", persist: false };
   }
 
-  return pickWithCatalog(ctx, speeds, current);
+  return openPicker();
 }
 
 function statusText(theme: Theme, speed: Speed, tier: Tier | undefined): string | undefined {
@@ -637,14 +666,43 @@ function handleRequests(
 
 export default function (pi: ExtensionAPI) {
   let config: Config | undefined;
-  // Holds the --fast or --ultrafast speed until /fast changes a model's speed.
+  // Holds the --fast or --ultrafast speed until /fast saves a default.
   let flagSpeed: Speed | undefined;
+  const sessionSpeeds = new Map<string, Speed>();
   // Counts status updates, so a slow catalog download can't overwrite a newer status.
   let updates = 0;
   const catalog = codexCatalog();
 
   function speedOf(model: Model<Api> | undefined): Speed {
-    return model === undefined ? "off" : (flagSpeed ?? savedSpeed(model));
+    return model === undefined
+      ? "off"
+      : (sessionSpeeds.get(modelKey(model)) ?? flagSpeed ?? savedSpeed(model));
+  }
+
+  function restore(ctx: ExtensionContext): void {
+    sessionSpeeds.clear();
+
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== SESSION_ENTRY) {
+        continue;
+      }
+
+      if (!Value.Check(SessionSpeed, entry.data)) {
+        throw new Error(
+          `${SESSION_ENTRY} session entry ${entry.id} holds ${JSON.stringify(entry.data)}`,
+        );
+      }
+
+      const { model, speed } = entry.data;
+
+      if (speed === null) {
+        sessionSpeeds.delete(model);
+      } else {
+        sessionSpeeds.set(model, speed);
+      }
+    }
+
+    applyLater(ctx);
   }
 
   // Requests look up their tier through apply, so the footer shows the tier each request sends.
@@ -719,22 +777,40 @@ export default function (pi: ExtensionAPI) {
       }
 
       const settings = config;
+      const current = speedOf(model);
 
-      const speed = await choose(
+      const choice = await choose(
         args.trim(),
         ctx,
-        () => speedsFor(ctx, catalog, settings),
-        speedOf(model),
+        () =>
+          pickWithCatalog(ctx, () => speedsFor(ctx, catalog, settings), current, savedSpeed(model)),
+        current,
       );
 
-      if (speed === undefined) {
+      if (choice === undefined) {
         return;
       }
 
-      saveSpeed(model, speed);
-      globalThis.fastFlagsCleared = true;
-      flagSpeed = undefined;
-      ctx.ui.notify(`Speed for ${modelKey(model)}: ${speed}`);
+      const { speed, persist } = choice;
+      const key = modelKey(model);
+
+      if (persist) {
+        saveSpeed(model, speed);
+        globalThis.fastFlagsCleared = true;
+        flagSpeed = undefined;
+
+        if (sessionSpeeds.has(key)) {
+          pi.appendEntry(SESSION_ENTRY, { model: key, speed: null });
+          sessionSpeeds.delete(key);
+        }
+
+        ctx.ui.notify(`Default speed for ${key}: ${speed}`);
+      } else {
+        pi.appendEntry(SESSION_ENTRY, { model: key, speed });
+        sessionSpeeds.set(key, speed);
+        ctx.ui.notify(`Session speed for ${key}: ${speed}`);
+      }
+
       await apply(ctx);
     },
   });
@@ -760,6 +836,8 @@ export default function (pi: ExtensionAPI) {
       flagSpeed = "fast";
     }
 
-    applyLater(ctx);
+    restore(ctx);
   });
+
+  pi.on("session_tree", async (_event, ctx) => restore(ctx));
 }

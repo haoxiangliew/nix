@@ -99,7 +99,11 @@ After sleep or a restart, a session's cache may have expired. If the session's l
 
 ### `fast.ts`
 
-`/fast` picks the current model's speed: `off`, `fast`, or `ultrafast`. Each model keeps its own speed in `fastMode`, so turning on fast mode for one model leaves the others as they were. An older `fastMode` holds one speed for every model. The first `/fast` replaces it, so the other models go back to off. Fast turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. Ultrafast sends OpenAI's ultrafast service tier and Anthropic's fast mode. On `openai`, every model gets fast, and the models in `fast.ultrafastModels` also get ultrafast. Other models get fast when you pick ultrafast. `/fast on`, `/fast ultrafast`, and `/fast off` skip the picker. `--fast` and `--ultrafast` set every model's speed until `/fast` changes one, including after `/new` and `/resume`. The footer shows the tier each request sends, so it follows speed changes from other pi processes.
+`/fast` picks the current model's speed: `off`, `fast`, or `ultrafast`. In the picker, Enter sets the speed for this session only. Ctrl+S saves it as the model's default in `fastMode` and clears the model's session override. `/fast on`, `/fast ultrafast`, and `/fast off` skip the picker and set the speed for this session only. Each model has its own session override. `/resume` and `/tree` restore the overrides on the current branch.
+
+`--fast` and `--ultrafast` override saved defaults until `/fast` saves a default. A session override wins over both. The footer shows the tier each request sends, so it also shows defaults that other pi processes save.
+
+Fast turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. Ultrafast sends OpenAI's ultrafast service tier and Anthropic's fast mode. On `openai`, every model gets fast, and the models in `fast.ultrafastModels` also get ultrafast. Other models get fast when you pick ultrafast.
 
 On `openai-codex`, the extension downloads the account's model catalog, like Codex does, and requests only the tiers the catalog lists for the model. The catalog requires a `client_version`, so the extension sends the latest Codex release from npm. After 5 minutes, it downloads the catalog again in the background. Startup and model switches don't wait for the download. If a download fails, requests go out without a tier and pi shows the error. Requests in the next 30 seconds get the same error without waiting, and then pi tries again. The `/fast` picker still opens during a failure, so you can still choose `off`.
 
@@ -110,7 +114,7 @@ On `openai-codex`, the extension downloads the account's model catalog, like Cod
 | `fast.costMultiplier`          | `2`                                       | Price multiple for Anthropic fast replies                                                   |
 | `fast.ultrafastModels`         | `["gpt-6.2-astra", "gpt-6.2-sol"]`        | `openai` models that support ultrafast                                                      |
 | `fast.ultrafastCostMultiplier` | `6`                                       | Price multiple for replies OpenAI served at ultrafast                                       |
-| `fastMode`                     | `{}`                                      | Speed by `provider/id`: `"fast"` or `"ultrafast"`. A missing model is off. `/fast` saves it |
+| `fastMode`                     | `{}`                                      | Default speed by `provider/id`: `"fast"` or `"ultrafast"`. A missing model defaults to off. |
 
 ### `herdr-agents.ts`
 
