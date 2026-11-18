@@ -93,7 +93,7 @@ After sleep or a restart, a session's cache may have expired. If the session's l
 | Key                            | Default  | Meaning                                                                                                                |
 | ------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `summaryFork.compactAt`        | `0.9`    | Share of the model's context window that triggers compaction                                                           |
-| `summaryFork.idle.minTokens`   | `150000` | Smallest context of an idle session that the extension acts on                                                         |
+| `summaryFork.idle.minTokens`   | `150000` | Smallest context of an idle session that the extension acts on. `/fast` uses it too                                    |
 | `summaryFork.idle.warmMinutes` | `240`    | How long to refresh an idle session's cache. `0` never refreshes it                                                    |
 | `summaryFork.idle.compact`     | `true`   | Compact the session when the refreshes stop, or on the next prompt if they couldn't run. `false` lets the cache expire |
 
@@ -104,6 +104,13 @@ After sleep or a restart, a session's cache may have expired. If the session's l
 `--fast` and `--ultrafast` override saved defaults until `/fast` saves a default. A session override wins over both. The footer shows the tier each request sends, so it also shows defaults that other pi processes save.
 
 Fast turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. Ultrafast sends OpenAI's ultrafast service tier and Anthropic's fast mode. On `openai`, every model gets fast, and the models in `fast.ultrafastModels` also get ultrafast. Other models get fast when you pick ultrafast.
+
+Anthropic and OpenAI cache a prompt for one speed, so the first request after a speed change pays for the whole context again, at the new speed's price. The picker asks before such a change if the session is idle, holds at least `summaryFork.idle.minTokens`, and its cache hasn't expired. Each choice shows an estimated price.
+
+- "Compact, then switch" compacts the session at the old speed, which reads the cache, and then changes the speed. After pi restarts, the compaction reads the session uncached, and the price includes that.
+- "Switch now" changes the speed and keeps the whole context.
+
+Escape leaves the speed as it was, and so does a compaction that fails. `/fast` with an argument doesn't ask. It shows both prices and changes the speed. A change during a run happens at once.
 
 On `openai-codex`, the extension downloads the account's model catalog, like Codex does, and requests only the tiers the catalog lists for the model. The catalog requires a `client_version`, so the extension sends the latest Codex release from npm. After 5 minutes, it downloads the catalog again in the background. Startup and model switches don't wait for the download. If a download fails, requests go out without a tier and pi shows the error. Requests in the next 30 seconds get the same error without waiting, and then pi tries again. The `/fast` picker still opens during a failure, so you can still choose `off`.
 

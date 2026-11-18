@@ -45,7 +45,6 @@ import {
 } from "@earendil-works/pi-ai";
 import {
   convertToLlm,
-  estimateTokens,
   findCutPoint,
   generateBranchSummary,
   getLatestCompactionEntry,
@@ -55,42 +54,30 @@ import {
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
-import { CACHE_REFRESH, type CacheRefresh } from "./lib/cache-refresh.ts";
+import {
+  CACHE_REFRESH,
+  cacheAge,
+  cacheExpired,
+  lastReply,
+  type CacheRefresh,
+} from "./lib/cache-refresh.ts";
 import { errorMessage, loadOrReport, piSettings } from "./lib/settings.ts";
+import {
+  entriesSince,
+  messageTokens,
+  RECORDED_REQUEST,
+  RecordedQuery,
+  SUMMARY_FORK_KEY,
+  SummaryFork,
+  type Idle,
+  type Recorded,
+} from "./lib/summary-fork.ts";
 
 type AgentMessage = ContextWithSystemEvent["messages"][number];
 
 const NAME = "compaction";
 
-// Pi uses the `compaction` key.
-const KEY = "summaryFork";
-
 const HEAD_ROLES = new Set<string>(["system", "compactionSummary", "branchSummary"]);
-
-const Idle = Type.Object(
-  {
-    // The extension ignores an idle session with less context than this.
-    minTokens: Type.Integer({ minimum: 0, default: 150_000 }),
-    // Refresh the prompt cache until the session has been idle this long. 0 never refreshes it.
-    warmMinutes: Type.Number({ minimum: 0, default: 240 }),
-    // Compact the session when the refreshes stop.
-    compact: Type.Boolean({ default: true }),
-  },
-  { additionalProperties: false, default: {} },
-);
-
-type Idle = Static<typeof Idle>;
-
-const Config = Type.Object(
-  {
-    // Compact at this share of the model's context window. The fork gets the rest.
-    compactAt: Type.Number({ minimum: 0.5, maximum: 0.95, default: 0.9 }),
-    idle: Idle,
-  },
-  { additionalProperties: false, default: {} },
-);
-
-type Config = Static<typeof Config>;
 
 // A request body as pi-ai builds it. Google's carries an abort signal, so it isn't JSON.
 type Json = string | number | boolean | null | undefined | Json[] | Fields;
@@ -372,51 +359,8 @@ function forkPayload(
   return { ...body, [key]: itemsOf(body, key).map(stripCacheControl) };
 }
 
-// When the session's last reply was saved. The session file has this after a restart.
-function lastReply(entries: SessionEntry[]): number | undefined {
-  const entry = entries.findLast(
-    (candidate) => candidate.type === "message" && candidate.message.role === "assistant",
-  );
-
-  return entry && Date.parse(entry.timestamp);
-}
-
-function lastRefresh(entries: SessionEntry[]): number | undefined {
-  const entry = entries.findLast(
-    (candidate) => candidate.type === "custom" && candidate.customType === CACHE_REFRESH,
-  );
-
-  return entry && Date.parse(entry.timestamp);
-}
-
-// How long ago a request last used the session's cache. Idle refreshes use it too.
-function cacheAge(ctx: ExtensionContext, idleMs: number): number {
-  const refreshed = lastRefresh(ctx.sessionManager.getBranch());
-
-  return refreshed === undefined ? idleMs : Math.min(idleMs, Date.now() - refreshed);
-}
-
-function cacheExpired(model: Model<Api>, age: number): boolean {
-  const ttlMs = getPromptCacheTtlMs(model, undefined);
-
-  return ttlMs !== undefined && age > ttlMs;
-}
-
-// A missing leaf or a later summary invalidates the recorded context.
 function messagesSince(entries: SessionEntry[], leafId: string | null): AgentMessage[] | undefined {
-  const start = leafId === null ? 0 : entries.findIndex((entry) => entry.id === leafId) + 1;
-
-  if (start === 0 && leafId !== null) {
-    return undefined;
-  }
-
-  const since = entries.slice(start);
-
-  if (since.some((entry) => entry.type === "compaction" || entry.type === "branch_summary")) {
-    return undefined;
-  }
-
-  return since.flatMap((entry) => sessionEntryToContextMessages(entry));
+  return entriesSince(entries, leafId)?.flatMap((entry) => sessionEntryToContextMessages(entry));
 }
 
 // Anthropic binds a thinking block to the conversation before it. Compaction replaces that
@@ -519,10 +463,6 @@ function wantsColdCompaction(ctx: ExtensionContext, cfg: Idle, idleMs: number): 
   return cfg.compact && used >= cfg.minTokens && idleMs >= cfg.warmMinutes * 60_000;
 }
 
-function tokens(messages: AgentMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
-}
-
 function nextTurn(messages: AgentMessage[], from: number, end: number): number | undefined {
   for (let i = from; i < end; i++) {
     if (messages[i]?.role === "user") {
@@ -545,7 +485,7 @@ function fitWindow(
     head++;
   }
 
-  let excess = tokens(messages) - limit;
+  let excess = messageTokens(messages) - limit;
   let start = head;
 
   while (excess > 0) {
@@ -555,7 +495,9 @@ function fitWindow(
       return undefined;
     }
 
-    excess -= tokens(messages.slice(start, next).filter((message) => message.role !== "system"));
+    excess -= messageTokens(
+      messages.slice(start, next).filter((message) => message.role !== "system"),
+    );
     start = next;
   }
 
@@ -655,8 +597,8 @@ function withPreviousFiles(fileOps: FileOperations, entries: SessionEntry[]): Fi
   return { read, written: new Set(fileOps.written), edited };
 }
 
-function active(ctx: ExtensionContext): { cfg: Config; model: Model<Api> } | undefined {
-  const cfg = loadOrReport(ctx, NAME, KEY, Config);
+function active(ctx: ExtensionContext): { cfg: SummaryFork; model: Model<Api> } | undefined {
+  const cfg = loadOrReport(ctx, NAME, SUMMARY_FORK_KEY, SummaryFork);
 
   return cfg && ctx.model ? { cfg, model: ctx.model } : undefined;
 }
@@ -780,6 +722,15 @@ export default function compaction(pi: ExtensionAPI) {
     }
   });
 
+  // fast.ts asks whether a fork can repeat the recorded request.
+  pi.events.on(RECORDED_REQUEST, (data) => {
+    Value.Assert(RecordedQuery, data);
+
+    if (request?.payload !== undefined && request.sentAt !== undefined) {
+      data.done({ model: request.model, leafId: request.leafId } satisfies Recorded);
+    }
+  });
+
   // The recorded request, if the provider has it cached and the session still continues from it.
   function sentRequest(ctx: ExtensionContext, model: Model<Api>): Sent | undefined {
     const { payload, sentAt } = request ?? {};
@@ -823,14 +774,15 @@ export default function compaction(pi: ExtensionAPI) {
 
   async function fork(
     ctx: ExtensionContext,
-    cfg: Config,
+    cfg: SummaryFork,
     model: Model<Api>,
     prompt: string,
     signal: AbortSignal,
   ): Promise<Forked> {
     const input = forkInput(ctx, model);
     const idleMs = idleTime(ctx);
-    const expired = idleMs !== undefined && cacheExpired(model, cacheAge(ctx, idleMs));
+    const age = idleMs === undefined ? undefined : cacheAge(ctx.sessionManager.getBranch(), idleMs);
+    const expired = age !== undefined && cacheExpired(model, age);
     const limit = model.contextWindow > 0 ? cfg.compactAt * model.contextWindow : Infinity;
     const ask = userMessage(`${prompt}\n\n${NO_TOOLS}`);
     const fitted = fitWindow([...input.messages, ask], limit);
@@ -872,7 +824,7 @@ export default function compaction(pi: ExtensionAPI) {
 
   async function forkSafely(
     ctx: ExtensionContext,
-    cfg: Config,
+    cfg: SummaryFork,
     model: Model<Api>,
     prompt: string,
     signal: AbortSignal,
@@ -886,7 +838,7 @@ export default function compaction(pi: ExtensionAPI) {
 
   async function compactionSummary(
     ctx: ExtensionContext,
-    cfg: Config,
+    cfg: SummaryFork,
     model: Model<Api>,
     fileOps: FileOperations,
     entries: SessionEntry[],
@@ -997,7 +949,7 @@ export default function compaction(pi: ExtensionAPI) {
     return { compaction: { ...result, firstKeptEntryId, tokensBefore } };
   }
 
-  function shouldCompact(ctx: ExtensionContext, cfg: Config, model: Model<Api>): boolean {
+  function shouldCompact(ctx: ExtensionContext, cfg: SummaryFork, model: Model<Api>): boolean {
     const used = ctx.getContextUsage()?.tokens ?? 0;
 
     return !failedThisRun && model.contextWindow > 0 && used >= cfg.compactAt * model.contextWindow;
@@ -1167,7 +1119,7 @@ export default function compaction(pi: ExtensionAPI) {
       idleMs === undefined ||
       !settings ||
       !wantsColdCompaction(ctx, settings.cfg.idle, idleMs) ||
-      !cacheExpired(settings.model, cacheAge(ctx, idleMs))
+      !cacheExpired(settings.model, cacheAge(ctx.sessionManager.getBranch(), idleMs))
     ) {
       return;
     }

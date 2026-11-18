@@ -5,6 +5,10 @@
  * model can have a session override and a default in settings.json. --fast and --ultrafast apply
  * to models without a session override until /fast saves a default. The `fast` key in
  * settings.json configures it.
+ *
+ * A speed change makes the provider write the prompt cache again. For a large idle session with a
+ * warm cache, the picker offers to compact at the old speed first, and /fast with an argument
+ * shows what the change costs.
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -27,6 +31,8 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
 import { errorMessage, loadOrReport, loadSettings, saveSetting } from "./lib/settings.ts";
+import { speedSwitch, type SpeedSwitch } from "./lib/speed-switch.ts";
+import { forkReplays } from "./lib/summary-fork.ts";
 
 const Config = Type.Object(
   {
@@ -117,6 +123,10 @@ const CATALOG_RETRY_MS = 30_000;
 
 const CATALOG_TIMEOUT_MS = 5_000;
 
+// Pi prices a priority reply at these multiples of the standard rate.
+const PRIORITY_COST_MULTIPLIER = 2;
+const GPT_5_5_PRIORITY_COST_MULTIPLIER = 2.5;
+
 type Speeds = Record<Speed, Tier | undefined>;
 
 type AssistantMessage = Extract<MessageEndEvent["message"], { role: "assistant" }>;
@@ -126,6 +136,8 @@ type Cost = AssistantMessage["usage"]["cost"];
 interface Choice {
   speed: Speed;
   persist: boolean;
+  // Whether the user chose in the picker.
+  picked: boolean;
 }
 
 interface OptionState {
@@ -371,6 +383,67 @@ function tierLabel(tier: Tier): Speed {
   return tier === "ultrafast" ? "ultrafast" : "fast";
 }
 
+// The multiple of the standard rate that requests at a tier cost.
+function tierMultiplier(tier: Tier | undefined, config: Config, model: Model<Api>): number {
+  if (tier === undefined) {
+    return 1;
+  }
+
+  if (tier === "anthropic") {
+    return config.costMultiplier;
+  }
+
+  if (tier === "ultrafast") {
+    return config.ultrafastCostMultiplier;
+  }
+
+  return model.id === "gpt-5.5" ? GPT_5_5_PRIORITY_COST_MULTIPLIER : PRIORITY_COST_MULTIPLIER;
+}
+
+function dollars(amount: number): string {
+  return `$${amount.toFixed(2)}`;
+}
+
+function rewriteNote(plan: SpeedSwitch): string {
+  return `rewrites ${Math.round(plan.tokens / 1000)}k tokens of prompt cache, about ${dollars(plan.rewrite)}`;
+}
+
+// Resolves to whether the session compacted. Pi shows the error if compaction fails.
+function compactFirst(ctx: ExtensionContext): Promise<boolean> {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+
+  ctx.compact({ onComplete: () => resolve(true), onError: () => resolve(false) });
+
+  return promise;
+}
+
+// Asks how to make a speed change that rewrites the cache. Resolves to whether to change the speed.
+async function confirmSwitch(
+  ctx: ExtensionContext,
+  speed: Speed,
+  plan: SpeedSwitch,
+): Promise<boolean> {
+  const compact = `Compact, then switch (about ${dollars(plan.compacted)})`;
+  const now = `Switch now (${rewriteNote(plan)})`;
+
+  const answer = await ctx.ui.select(`Switching to ${speed} rewrites the prompt cache`, [
+    compact,
+    now,
+  ]);
+
+  if (answer !== compact) {
+    return answer === now;
+  }
+
+  if (await compactFirst(ctx)) {
+    return true;
+  }
+
+  ctx.ui.notify("The speed is unchanged, because the session didn't compact.", "warning");
+
+  return false;
+}
+
 // Pi ignores usage.speed when pricing replies. A fast request either runs fast or fails, so
 // Anthropic bills a completed reply at the fast rate.
 function billedFast(message: AssistantMessage, config: Config): boolean {
@@ -527,9 +600,9 @@ function pick(
           selected = NEXT[selected];
           updateList();
         } else if (keybindings.matches(data, "tui.select.confirm")) {
-          done({ speed: selected, persist: false });
+          done({ speed: selected, persist: false, picked: true });
         } else if (keybindings.matches(data, "app.models.save")) {
-          done({ speed: selected, persist: true });
+          done({ speed: selected, persist: true, picked: true });
         } else if (keybindings.matches(data, "tui.select.cancel")) {
           done(undefined);
         }
@@ -571,7 +644,7 @@ async function choose(
   const speed = arg === "on" ? "fast" : SPEEDS.find((s) => s === arg);
 
   if (speed !== undefined) {
-    return { speed, persist: false };
+    return { speed, persist: false, picked: false };
   }
 
   if (arg !== "") {
@@ -581,7 +654,7 @@ async function choose(
   }
 
   if (ctx.mode !== "tui") {
-    return { speed: current === "off" ? "fast" : "off", persist: false };
+    return { speed: current === "off" ? "fast" : "off", persist: false, picked: false };
   }
 
   return openPicker();
@@ -606,20 +679,26 @@ function statusText(theme: Theme, speed: Speed, tier: Tier | undefined): string 
 function handleRequests(
   pi: ExtensionAPI,
   resolve: (ctx: ExtensionContext) => Promise<[Config, Tier | undefined] | undefined>,
+  sent: (model: Model<Api> | undefined, tier: Tier | undefined) => void,
 ): void {
   let request: Request | undefined;
+  // The model and tier of the request in flight, which the provider caches once it replies.
+  let asked: [Model<Api> | undefined, Tier | undefined] | undefined;
 
   pi.on("before_provider_request", async (event, ctx) => {
     const settings = await resolve(ctx);
     const { payload } = event;
 
     request = undefined;
+    asked = undefined;
 
     if (settings === undefined || !Value.Check(Payload, payload)) {
       return;
     }
 
     const [config, tier] = settings;
+
+    asked = [ctx.model, tier];
 
     if (tier === undefined) {
       return;
@@ -646,7 +725,17 @@ function handleRequests(
   pi.on("message_end", async (event) => {
     const { message } = event;
 
-    if (message.role !== "assistant" || request === undefined) {
+    if (message.role !== "assistant") {
+      return;
+    }
+
+    if (asked !== undefined && message.stopReason !== "error") {
+      sent(...asked);
+    }
+
+    asked = undefined;
+
+    if (request === undefined) {
       return;
     }
 
@@ -672,6 +761,8 @@ export default function (pi: ExtensionAPI) {
   // Counts status updates, so a slow catalog download can't overwrite a newer status.
   let updates = 0;
   const catalog = codexCatalog();
+  // The tier of the last request this process sent, which is the tier the provider cached.
+  let cached: { model: string; tier: Tier | undefined } | undefined;
 
   function speedOf(model: Model<Api> | undefined): Speed {
     return model === undefined
@@ -681,6 +772,7 @@ export default function (pi: ExtensionAPI) {
 
   function restore(ctx: ExtensionContext): void {
     sessionSpeeds.clear();
+    cached = undefined;
 
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom" || entry.customType !== SESSION_ENTRY) {
@@ -706,7 +798,9 @@ export default function (pi: ExtensionAPI) {
   }
 
   // Requests look up their tier through apply, so the footer shows the tier each request sends.
-  handleRequests(pi, apply);
+  handleRequests(pi, apply, (model, tier) => {
+    cached = model && { model: modelKey(model), tier };
+  });
 
   pi.registerFlag("fast", {
     description: "Start in fast mode (Anthropic Fable and Opus, OpenAI)",
@@ -759,6 +853,61 @@ export default function (pi: ExtensionAPI) {
       });
   }
 
+  // The prices of a change to `speed`, if it rewrites the cache of a large idle session.
+  async function switchPlan(
+    ctx: ExtensionContext,
+    settings: Config,
+    model: Model<Api>,
+    speed: Speed,
+  ): Promise<SpeedSwitch | undefined> {
+    const key = modelKey(model);
+    const known = cached?.model === key ? cached : undefined;
+    let from: Tier | undefined;
+    let to: Tier | undefined;
+
+    // The catalog download can fail. The change goes ahead without a price, so off stays
+    // selectable, and apply reports the error after the change.
+    try {
+      from = known ? known.tier : await tierFor(ctx, catalog, settings, speedOf(model));
+      to = await tierFor(ctx, catalog, settings, speed);
+    } catch {
+      return undefined;
+    }
+
+    if (from === to) {
+      return undefined;
+    }
+
+    return speedSwitch(ctx, model, {
+      from: tierMultiplier(from, settings, model),
+      to: tierMultiplier(to, settings, model),
+      replays: forkReplays(pi, ctx.sessionManager.getBranch(), key),
+    });
+  }
+
+  // Resolves to whether to change the speed. Only the picker asks.
+  async function allowSwitch(
+    ctx: ExtensionContext,
+    plan: SpeedSwitch | undefined,
+    speed: Speed,
+    picked: boolean,
+  ): Promise<boolean> {
+    if (plan === undefined) {
+      return true;
+    }
+
+    if (picked) {
+      return confirmSwitch(ctx, speed, plan);
+    }
+
+    ctx.ui.notify(
+      `Switching to ${speed} ${rewriteNote(plan)}. Compacting first would cost about ${dollars(plan.compacted)}.`,
+      "warning",
+    );
+
+    return true;
+  }
+
   pi.registerCommand("fast", {
     description: "Select a speed (off, fast, ultrafast)",
     handler: async (args, ctx) => {
@@ -791,8 +940,13 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const { speed, persist } = choice;
+      const { speed, persist, picked } = choice;
       const key = modelKey(model);
+      const plan = await switchPlan(ctx, settings, model, speed);
+
+      if (!(await allowSwitch(ctx, plan, speed, picked))) {
+        return;
+      }
 
       if (persist) {
         saveSpeed(model, speed);
