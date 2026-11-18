@@ -18,6 +18,10 @@ Extensions and a theme for [pi](https://pi.dev). `home/agents/default.nix` insta
 
 The build fails if a patch stops applying after an update.
 
+## ChatGPT plan
+
+To use a ChatGPT plan, run `/login openai-codex` and select `openai-codex/gpt-6.2-sol` in `/model`.
+
 ## Configure
 
 Extensions read their settings from `~/.pi/agent/settings.json`. Set them through `programs.pi-coding-agent.settings` in `home/agents/default.nix`, then run `/reload`. Missing keys use the defaults below. An unknown key or invalid value turns the extension off and shows an error. Activation doesn't delete old keys, so remove renamed keys by hand.
@@ -55,7 +59,7 @@ When the reviewer denies a request, the agent takes the safer step if the reason
 
 | Key                                     | Default                                                          | Meaning                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `autoMode.models`                       | `["openai/codex-auto-review", "openai-codex/codex-auto-review"]` | Reviewer models as `provider/id`. The first one with credentials reviews |
+| `autoMode.models`                       | `["openai-codex/codex-auto-review", "openai/codex-auto-review"]` | Reviewer models as `provider/id`. The first one with credentials reviews |
 | `autoMode.reasoning`                    | `"low"`                                                          | Reasoning for the second stage                                           |
 | `autoMode.firstStage`                   | `true`                                                           | Run the one-word first stage                                             |
 | `autoMode.timeoutMs`                    | `30000`                                                          | Timeout for each model call, including its retries                       |
@@ -95,16 +99,18 @@ After sleep or a restart, a session's cache may have expired. If the session's l
 
 ### `fast.ts`
 
-`/fast` picks a speed: `off`, `fast`, or `ultrafast`. Fast turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. Ultrafast sends OpenAI's ultrafast service tier to the models that support it and the fast speed to other models. In the picker, enter applies the speed to this session and ctrl+s also saves it as the default. `/fast on`, `/fast ultrafast`, and `/fast off` skip the picker. `--fast` and `--ultrafast` start with that speed.
+`/fast` picks the current model's speed: `off`, `fast`, or `ultrafast`. Each model keeps its own speed in `fastMode`, so turning on fast mode for one model leaves the others as they were. An older `fastMode` holds one speed for every model. The first `/fast` replaces it, so the other models go back to off. Fast turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. Ultrafast sends OpenAI's ultrafast service tier and Anthropic's fast mode. On `openai`, every model gets fast, and the models in `fast.ultrafastModels` also get ultrafast. Other models get fast when you pick ultrafast. `/fast on`, `/fast ultrafast`, and `/fast off` skip the picker. `--fast` and `--ultrafast` set every model's speed until `/fast` changes one, including after `/new` and `/resume`. The footer shows the tier each request sends, so it follows speed changes from other pi processes.
 
-| Key                            | Default                                                                       | Meaning                                                                          |
-| ------------------------------ | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `fast.models`                  | `["claude-fable-5-2", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]` | Anthropic models that support fast mode                                          |
-| `fast.beta`                    | `"fast-mode-2026-02-01"`                                                      | `anthropic-beta` header that enables it                                          |
-| `fast.costMultiplier`          | `2`                                                                           | Price multiple for Anthropic fast replies                                        |
-| `fast.ultrafastModels`         | `["gpt-6.2-astra", "gpt-6.2-sol"]`                                            | OpenAI models that support ultrafast                                             |
-| `fast.ultrafastCostMultiplier` | `6`                                                                           | Price multiple for replies OpenAI served at ultrafast                            |
-| `fastMode`                     | `"off"`                                                                       | Default speed: `"off"`, `"fast"`, or `"ultrafast"`. `/fast` saves it with ctrl+s |
+On `openai-codex`, the extension downloads the account's model catalog, like Codex does, and requests only the tiers the catalog lists for the model. The catalog requires a `client_version`, so the extension sends the latest Codex release from npm. After 5 minutes, it downloads the catalog again in the background. Startup and model switches don't wait for the download. If a download fails, requests go out without a tier and pi shows the error. Requests in the next 30 seconds get the same error without waiting, and then pi tries again. The `/fast` picker still opens during a failure, so you can still choose `off`.
+
+| Key                            | Default                                   | Meaning                                                                                     |
+| ------------------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `fast.models`                  | `["claude-fable-5-2", "claude-opus-5-5"]` | Anthropic models that support fast mode                                                     |
+| `fast.beta`                    | `"fast-mode-2026-02-01"`                  | `anthropic-beta` header that enables it                                                     |
+| `fast.costMultiplier`          | `2`                                       | Price multiple for Anthropic fast replies                                                   |
+| `fast.ultrafastModels`         | `["gpt-6.2-astra", "gpt-6.2-sol"]`        | `openai` models that support ultrafast                                                      |
+| `fast.ultrafastCostMultiplier` | `6`                                       | Price multiple for replies OpenAI served at ultrafast                                       |
+| `fastMode`                     | `{}`                                      | Speed by `provider/id`: `"fast"` or `"ultrafast"`. A missing model is off. `/fast` saves it |
 
 ### `herdr-agents.ts`
 
@@ -203,7 +209,7 @@ Replaces pi's footer with a line of segments. Statuses from other extensions go 
 
 ### `super-review.ts`
 
-Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai/gpt-6.2-astra`, or `openai-codex/gpt-6.2-astra` if only Codex is logged in. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
+Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai-codex/gpt-6.2-astra`, or `openai/gpt-6.2-astra` if only `openai` has credentials. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
 
 Each reviewer reviews the same change. The session's model compares their findings and runs discussion rounds. After the round limit, it drops findings still in dispute and gives each finding whose priority is in dispute the lowest priority proposed. It prints the final review once the reviewers confirm it.
 

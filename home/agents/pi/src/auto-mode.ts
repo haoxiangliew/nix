@@ -43,7 +43,7 @@ const Config = Type.Object(
     // The first model with credentials reviews.
     models: Type.Array(Type.String({ pattern: "^[^/\\s]+/\\S+$" }), {
       minItems: 1,
-      default: ["openai/codex-auto-review", "openai-codex/codex-auto-review"],
+      default: ["openai-codex/codex-auto-review", "openai/codex-auto-review"],
     }),
     // The first stage runs without reasoning.
     reasoning: Type.Enum(["minimal", "low", "medium", "high", "xhigh", "max"], { default: "low" }),

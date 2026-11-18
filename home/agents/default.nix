@@ -575,8 +575,7 @@ in
         settings = {
           approvals_reviewer = "auto_review";
           features.daemon_auto_start = false;
-          model_context_window = 1000000;
-          model_auto_compact_token_limit = 900000;
+          model_context_window = 872000;
           tui = {
             status_line = [
               "model-with-reasoning"
@@ -596,7 +595,6 @@ in
         package = piPackage;
         settings = {
           theme = "light/dracula-pro";
-          transport = "websocket";
           terminal.showTerminalProgress = true;
           showHardwareCursor = true;
           enableInstallTelemetry = false;
@@ -638,18 +636,11 @@ in
             "${./pi/src/prompt-sections.ts}"
           ];
         };
-        models.providers = {
-          openai.modelOverrides = lib.genAttrs [
-            "gpt-6-luna"
-            "gpt-6.2-astra"
-            "gpt-6.2-sol"
-          ] (lib.const { contextWindow = 922000; });
-          openai-codex.modelOverrides = lib.genAttrs [
-            "gpt-6-luna"
-            "gpt-6.2-astra"
-            "gpt-6.2-sol"
-          ] (lib.const { contextWindow = 872000; });
-        };
+        models.providers.openai-codex.modelOverrides = lib.genAttrs [
+          "gpt-6-luna"
+          "gpt-6.2-astra"
+          "gpt-6.2-sol"
+        ] (lib.const { contextWindow = 872000; });
         keybindings = {
           "app.thinking.cycle" = "ctrl+t";
           "app.thinking.toggle" = "ctrl+shift+t";
