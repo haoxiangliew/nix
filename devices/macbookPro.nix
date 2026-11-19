@@ -19,6 +19,5 @@
       [
         "discord"
         "slack"
-        "tailscale-app"
       ];
 }
