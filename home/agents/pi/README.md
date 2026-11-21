@@ -114,13 +114,15 @@ Escape leaves the speed as it was, and so does a compaction that fails. `/fast` 
 
 On `openai-codex`, the extension downloads the account's model catalog, like Codex does, and requests only the tiers the catalog lists for the model. The catalog requires a `client_version`, so the extension sends the latest Codex release from npm. After 5 minutes, it downloads the catalog again in the background. Startup and model switches don't wait for the download. If a download fails, requests go out without a tier and pi shows the error. Requests in the next 30 seconds get the same error without waiting, and then pi tries again. The `/fast` picker still opens during a failure, so you can still choose `off`.
 
+The `openai-codex` backend reports the default tier for every reply, so pi would price fast and ultrafast replies at the standard rate. The extension prices them at the tier it requested.
+
 | Key                            | Default                                   | Meaning                                                                                     |
 | ------------------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `fast.models`                  | `["claude-fable-5-2", "claude-opus-5-5"]` | Anthropic models that support fast mode                                                     |
 | `fast.beta`                    | `"fast-mode-2026-02-01"`                  | `anthropic-beta` header that enables it                                                     |
 | `fast.costMultiplier`          | `2`                                       | Price multiple for Anthropic fast replies                                                   |
 | `fast.ultrafastModels`         | `["gpt-6.2-astra", "gpt-6.2-sol"]`        | `openai` models that support ultrafast                                                      |
-| `fast.ultrafastCostMultiplier` | `6`                                       | Price multiple for replies OpenAI served at ultrafast                                       |
+| `fast.ultrafastCostMultiplier` | `6`                                       | Price multiple for ultrafast OpenAI replies                                                 |
 | `fastMode`                     | `{}`                                      | Default speed by `provider/id`: `"fast"` or `"ultrafast"`. A missing model defaults to off. |
 
 ### `herdr-agents.ts`

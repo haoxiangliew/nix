@@ -384,7 +384,7 @@ function tierLabel(tier: Tier): Speed {
 }
 
 // The multiple of the standard rate that requests at a tier cost.
-function tierMultiplier(tier: Tier | undefined, config: Config, model: Model<Api>): number {
+function tierMultiplier(tier: Tier | undefined, config: Config, modelId: string): number {
   if (tier === undefined) {
     return 1;
   }
@@ -397,7 +397,7 @@ function tierMultiplier(tier: Tier | undefined, config: Config, model: Model<Api
     return config.ultrafastCostMultiplier;
   }
 
-  return model.id === "gpt-5.5" ? GPT_5_5_PRIORITY_COST_MULTIPLIER : PRIORITY_COST_MULTIPLIER;
+  return modelId === "gpt-5.5" ? GPT_5_5_PRIORITY_COST_MULTIPLIER : PRIORITY_COST_MULTIPLIER;
 }
 
 function dollars(amount: number): string {
@@ -479,7 +479,13 @@ function multiplierFor(message: AssistantMessage, request: Request): number | un
     return billedFast(message, config) ? config.costMultiplier : undefined;
   }
 
-  // Pi prices an ultrafast reply at the standard rate.
+  // The openai-codex backend reports the default tier for every reply. Pi doesn't see the tier this
+  // extension requests, so it prices the reply at the standard rate. Price it at the requested tier.
+  if (message.provider === "openai-codex" && served === "default") {
+    return tierMultiplier(tier, config, message.model);
+  }
+
+  // Pi prices a priority reply itself, and an ultrafast reply at the standard rate.
   return served === "ultrafast" ? config.ultrafastCostMultiplier : undefined;
 }
 
@@ -879,8 +885,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     return speedSwitch(ctx, model, {
-      from: tierMultiplier(from, settings, model),
-      to: tierMultiplier(to, settings, model),
+      from: tierMultiplier(from, settings, model.id),
+      to: tierMultiplier(to, settings, model.id),
       replays: forkReplays(pi, ctx.sessionManager.getBranch(), key),
     });
   }
