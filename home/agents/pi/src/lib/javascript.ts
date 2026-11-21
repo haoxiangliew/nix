@@ -746,6 +746,45 @@ function importedName(specifier: ImportDeclaration["specifiers"][number]): strin
   }
 }
 
+// Returns the source of a static import or named re-export. Other links load the whole module.
+function linkSource(node: AnyNode): Literal | undefined {
+  const linked = node.type === "ImportDeclaration" || node.type === "ExportNamedDeclaration";
+
+  return (linked && node.source) || undefined;
+}
+
+// A template can spell the path inside a longer string, so a substring counts.
+function mentions(node: AnyNode, path: string): boolean {
+  if (node.type === "TemplateElement") {
+    return [node.value.cooked, node.value.raw].some((part) => part?.includes(path));
+  }
+
+  return stringLiteral(node) === path;
+}
+
+// Export specifiers name a binding without reading it.
+function exportLinkage(module: Program): Set<AnyNode> {
+  const linkage = new Set<AnyNode>();
+
+  for (const statement of module.body) {
+    if (statement.type === "ExportNamedDeclaration" && !statement.source) {
+      for (const specifier of statement.specifiers) {
+        linkage.add(specifier.local).add(specifier.exported);
+      }
+    }
+  }
+
+  return linkage;
+}
+
+type UseCheck = (root: Program, isUse: (node: AnyNode) => boolean) => boolean;
+
+interface ExportedBinding {
+  path: string;
+  names: Set<string>;
+  check: UseCheck;
+}
+
 interface ImportBinding {
   exported: string;
   source: string;
@@ -895,12 +934,11 @@ export class JavaScript {
     return exports;
   }
 
-  private exportNames(target: SymbolReference): Set<string> {
-    const local = declaredFunction(target).id;
+  private exportNames(module: Program, local: Identifier): Set<string> {
     const names = new Set<string>();
 
-    for (const [exported, identifier] of this.moduleExports(target.module)) {
-      if (this.binding(target.module, identifier) === local) {
+    for (const [exported, identifier] of this.moduleExports(module)) {
+      if (this.binding(module, identifier) === local) {
         names.add(exported);
       }
     }
@@ -947,8 +985,89 @@ export class JavaScript {
     return (
       !!imported &&
       imported.source === this.modulePath(target.module) &&
-      this.exportNames(target).has(imported.exported)
+      this.exportNames(target.module, local).has(imported.exported)
     );
+  }
+
+  checkBindingUses(module: Program, id: Identifier, check: UseCheck): boolean {
+    const binding = this.binding(module, id);
+
+    if (!binding || !this.usesPass(module, id, exportLinkage(module), check)) {
+      return false;
+    }
+
+    const names = this.exportNames(module, binding);
+
+    if (!names.size) {
+      return true;
+    }
+
+    const exported = { path: this.modulePath(module), names, check };
+    const needles = this.needles([exported.path]);
+
+    // Importer parses are kept so that the caller's query does not parse them again.
+    for (const file of this.files.values()) {
+      if (contains(file, needles) && this.exposes(this.embedded(file), exported)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private usesPass(
+    root: Program,
+    local: Identifier,
+    linkage: Set<AnyNode>,
+    check: UseCheck,
+  ): boolean {
+    return (
+      this.unchanged(root, local) &&
+      check(root, (node) => !linkage.has(node) && this.sameBinding(root, node, local))
+    );
+  }
+
+  // Bun uses literal bundled paths. Any other mention of the path, such as require(), can load
+  // the whole module.
+  private exposes(root: Program, exported: ExportedBinding): boolean {
+    const sources = new Set<AnyNode>();
+
+    for (const node of walk(root)) {
+      if (mentions(node, exported.path) && !sources.has(node)) {
+        return true;
+      }
+
+      const source = linkSource(node);
+
+      if (source?.value === exported.path) {
+        sources.add(source);
+
+        if (this.linkExposes(root, node, exported)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private linkExposes(root: Program, link: AnyNode, exported: ExportedBinding): boolean {
+    if (link.type !== "ImportDeclaration") {
+      return (
+        link.type === "ExportNamedDeclaration" &&
+        link.specifiers.some((specifier) => exported.names.has(staticName(specifier.local)))
+      );
+    }
+
+    return link.specifiers.some((specifier) => {
+      const imported = importedName(specifier);
+
+      return (
+        imported === undefined ||
+        (exported.names.has(imported) &&
+          !this.usesPass(root, specifier.local, new Set(childNodes(specifier)), exported.check))
+      );
+    });
   }
 
   private localFunction(module: Program, binding: Identifier): SymbolReference | undefined {
@@ -971,7 +1090,7 @@ export class JavaScript {
     }
 
     const path = this.modulePath(target.module);
-    const exports = this.exportNames(target);
+    const exports = this.exportNames(target.module, declaredFunction(target).id);
     const result = new Set<string>();
 
     for (const statement of module.body) {
@@ -1057,7 +1176,7 @@ export class JavaScript {
   importers(target: SymbolReference, ...markers: string[]): Program[] {
     const needles = this.needles(markers);
     const path = this.modulePath(target.module);
-    const exports = this.exportNames(target);
+    const exports = this.exportNames(target.module, declaredFunction(target).id);
 
     // Tokens only pre-filter modules. Parsed imports and exports are still checked.
     const modules: Program[] = [];

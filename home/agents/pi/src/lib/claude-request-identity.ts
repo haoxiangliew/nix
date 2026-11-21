@@ -42,6 +42,7 @@ function blocked(description: string): never {
 interface Lexical {
   sameBinding(left: AnyNode, right: AnyNode): boolean;
   unchanged(identifier: AnyNode): boolean;
+  onlyObjectSpreads(identifier: Identifier): boolean;
 }
 
 interface Body extends Lexical {
@@ -491,26 +492,11 @@ function template(
     : undefined;
 }
 
-function exportedBinding(context: Body, identifier: Identifier): boolean {
-  for (const node of walk(context.root)) {
-    if (
-      node.type === "ExportNamedDeclaration" &&
-      node.declaration?.type === "VariableDeclaration" &&
-      node.declaration.declarations.some((value) => context.sameBinding(value.id, identifier))
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-// Only object spreads copy this binding without exposing the original object.
-// Reject mutation, aliases, calls, and iteration.
-function spreadOnly(context: Body, identifier: Identifier): boolean {
+// Object spreads copy properties without exposing the original object.
+function spreadOnly(root: Program, isUse: (node: AnyNode) => boolean): boolean {
   const spreads = new Set<AnyNode>();
 
-  for (const parent of walk(context.root)) {
+  for (const parent of walk(root)) {
     if (parent.type === "ObjectExpression") {
       for (const property of parent.properties) {
         if (property.type === "SpreadElement") {
@@ -519,17 +505,16 @@ function spreadOnly(context: Body, identifier: Identifier): boolean {
       }
     }
 
-    for (const node of childNodes(parent)) {
-      if (!context.sameBinding(node, identifier)) {
-        continue;
-      }
+    if (spreads.has(parent)) {
+      continue;
+    }
 
-      const declaration = parent.type === "VariableDeclarator" && parent.id === node;
-      const spread = spreads.has(parent);
-
-      if (!declaration && !spread) {
-        return false;
-      }
+    if (
+      childNodes(parent).some(
+        (node) => isUse(node) && !(parent.type === "VariableDeclarator" && parent.id === node),
+      )
+    ) {
+      return false;
     }
   }
 
@@ -547,8 +532,7 @@ function spreadSource(node: AnyNode, local: Body, globals: Body): ObjectExpressi
     node.type !== "Identifier" ||
     value?.type !== "ObjectExpression" ||
     value.end > node.start ||
-    exportedBinding(globals, node) ||
-    !spreadOnly(globals, node)
+    !globals.onlyObjectSpreads(node)
   ) {
     return undefined;
   }
@@ -713,6 +697,7 @@ export function readRequestIdentity(js: JavaScript, selector: SymbolReference): 
       const lexical: Lexical = {
         sameBinding: (left, right) => js.sameBinding(root, left, right),
         unchanged: (identifier) => js.unchanged(root, identifier),
+        onlyObjectSpreads: (id) => js.checkBindingUses(root, id, spreadOnly),
       };
 
       result = { globals: body(root, lexical), fns: functions(root).filter(hasBlock) };

@@ -32,7 +32,7 @@ type BlockKind = "signer" | "helper" | "update" | "digest";
 const schemas = {
   signer: {
     instructions: 227,
-    digest: "4bd33c4721ec83b69c424bfe3d3bfde892f16310594d74bc7a781ca44f756c05",
+    digest: "4ffdf4fc0379a428c44ce6f4d246b3889956f5d8b2884236b719222ff95dd4b5",
   },
   helper: {
     instructions: 251,
