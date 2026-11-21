@@ -15,7 +15,7 @@ agent=$1
 
 # Claude Code sets this to sdk-cli for a print run.
 if [ "$agent" = claude ] && [ "${CLAUDE_CODE_ENTRYPOINT:-}" != cli ]; then
-  exit 0
+	exit 0
 fi
 
 # Codex's global options that take a value, which comes before its subcommand.
@@ -25,29 +25,29 @@ codex_valued=" -c --config --enable --disable --remote --remote-auth-token-env -
 # Whether a word is a Codex subcommand that doesn't start an interactive session. resume and fork
 # do, and a bare word that isn't a subcommand is a prompt.
 codex_batch() {
-  case $1 in
-  agents | exec | e | review | login | logout | mcp | plugin | app-server | remote-control | app) ;;
-  completion | update | doctor | sandbox | debug | apply | a | queue | archive | delete) ;;
-  migrate-rollouts | migrate-nfs-db | unarchive | cloud | exec-server | features | help) ;;
-  *) return 1 ;;
-  esac
+	case $1 in
+	agents | exec | e | review | login | logout | mcp | plugin | app-server | remote-control | app) ;;
+	completion | update | doctor | sandbox | debug | apply | a | queue | archive | delete) ;;
+	migrate-rollouts | migrate-nfs-db | unarchive | cloud | exec-server | features | help) ;;
+	*) return 1 ;;
+	esac
 }
 
 # Prints Codex's first word that isn't an option or an option's value. ps joins the arguments with
 # spaces, so a value with a space in it throws this off.
 codex_subcommand() {
-  local skip="" word
+	local skip="" word
 
-  for word in "$@"; do
-    if [ -n "$skip" ]; then
-      skip=""
-    elif [[ $word != -* ]]; then
-      echo "$word"
-      return
-    elif [[ $word != *=* && $codex_valued == *" $word "* ]]; then
-      skip=1
-    fi
-  done
+	for word in "$@"; do
+		if [ -n "$skip" ]; then
+			skip=""
+		elif [[ $word != -* ]]; then
+			echo "$word"
+			return
+		elif [[ $word != *=* && $codex_valued == *" $word "* ]]; then
+			skip=1
+		fi
+	done
 }
 
 # Walks up from the hook's parent. The first process named for the agent is the agent.
@@ -55,36 +55,36 @@ owner=""
 pid=$PPID
 
 while [ "$pid" -gt 1 ]; do
-  read -r parent comm <<<"$(ps -o ppid=,comm= -p "$pid")"
-  args=$(ps -o args= -p "$pid")
-  argv0=${args%% *}
-  argv0=${argv0##*/}
+	read -r parent comm <<<"$(ps -o ppid=,comm= -p "$pid")"
+	args=$(ps -o args= -p "$pid")
+	argv0=${args%% *}
+	argv0=${argv0##*/}
 
-  case ${comm##*/} in
-  rex) break ;;
-  herdr) exit 0 ;;
-  esac
+	case ${comm##*/} in
+	rex) break ;;
+	herdr) exit 0 ;;
+	esac
 
-  case $argv0 in
-  pi | claude | codex)
-    if [ -n "$owner" ] || [ "$argv0" != "$agent" ]; then
-      exit 0
-    fi
+	case $argv0 in
+	pi | claude | codex)
+		if [ -n "$owner" ] || [ "$argv0" != "$agent" ]; then
+			exit 0
+		fi
 
-    owner=$pid
-    read -ra words <<<"$args"
+		owner=$pid
+		read -ra words <<<"$args"
 
-    if [ "$agent" = codex ] && codex_batch "$(codex_subcommand "${words[@]:1}")"; then
-      exit 0
-    fi
-    ;;
-  esac
+		if [ "$agent" = codex ] && codex_batch "$(codex_subcommand "${words[@]:1}")"; then
+			exit 0
+		fi
+		;;
+	esac
 
-  pid=$parent
+	pid=$parent
 done
 
 if [ "$pid" -le 1 ] || [ -z "$owner" ]; then
-  exit 0
+	exit 0
 fi
 
 records="${XDG_STATE_HOME:-$HOME/.local/state}/rex/agents"
@@ -103,7 +103,7 @@ case $status in
 0) mv -f "$record.$$.tmp" "$record" ;;
 4) rm -f "$record.$$.tmp" ;;
 *)
-  rm -f "$record.$$.tmp"
-  exit "$status"
-  ;;
+	rm -f "$record.$$.tmp"
+	exit "$status"
+	;;
 esac

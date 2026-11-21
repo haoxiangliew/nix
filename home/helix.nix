@@ -9,7 +9,7 @@
     package = pkgs.helix;
     extraPackages = with pkgs; [
       bash-language-server
-      unstable.marksman
+      marksman
       mdterm
       shellcheck
       shfmt

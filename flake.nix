@@ -205,35 +205,39 @@
           #   use flake "$HOME/Developer/nix#fluidstack"
           # in their .envrc.
           fluidstack = pkgs.unstable.mkShell {
-            packages = with pkgs.unstable; [
-              bashInteractive
+            packages =
+              with pkgs.unstable;
+              [
+                bashInteractive
 
-              # toolchain bootstrap
-              proto
+                # toolchain bootstrap
+                proto
 
-              # go
-              gopls
-              delve
+                # go
+                gopls
+                delve
 
-              # typescript
-              vtsls
+                # typescript
+                vtsls
 
-              # python
-              ruff
-              ty
+                # python
+                ruff
+                ty
 
-              # protobuf
-              protols
+                # protobuf
+                protols
 
-              # terraform
-              terraform-ls
+                # terraform
+                terraform-ls
 
-              # aws / cluster access
-              awscli2
-              granted
-              kubectl
-              teleport.client
-            ];
+                # aws / cluster access
+                awscli2
+                granted
+                kubectl
+              ]
+              ++ [
+                pkgs.teleport.client
+              ];
 
             shellHook = ''
               if [ -f .prototools ]; then

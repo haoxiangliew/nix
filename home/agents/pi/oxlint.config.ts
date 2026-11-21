@@ -16,4 +16,10 @@ export default defineConfig({
     "oxc/no-accumulating-spread": "error",
     "typescript/consistent-return": "off",
   },
+  overrides: [
+    {
+      files: ["patches/*.js"],
+      rules: { "no-unused-vars": "off" },
+    },
+  ],
 });
