@@ -636,11 +636,35 @@ in
             "${./pi/src/prompt-sections.ts}"
           ];
         };
-        models.providers.openai-codex.modelOverrides = lib.genAttrs [
-          "gpt-6-luna"
-          "gpt-6.2-astra"
-          "gpt-6.2-sol"
-        ] (lib.const { contextWindow = 872000; });
+        models.providers = {
+          openai-codex.modelOverrides = lib.genAttrs [
+            "gpt-6-luna"
+            "gpt-6.2-astra"
+            "gpt-6.2-sol"
+          ] (lib.const { contextWindow = 872000; });
+          ollama = {
+            baseUrl = "http://localhost:11434/v1";
+            api = "openai-completions";
+            apiKey = "ollama";
+            models = [
+              {
+                id = "inkling-2-mini";
+                reasoning = true;
+                thinkingLevelMap = {
+                  off = "none";
+                  xhigh = "xhigh";
+                  max = "max";
+                };
+                input = [
+                  "text"
+                  "image"
+                ];
+                contextWindow = 524288;
+                maxTokens = 65536;
+              }
+            ];
+          };
+        };
         keybindings = {
           "app.thinking.cycle" = "ctrl+t";
           "app.thinking.toggle" = "ctrl+shift+t";

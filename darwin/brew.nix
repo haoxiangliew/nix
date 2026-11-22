@@ -4,6 +4,7 @@
 
   environment.variables = {
     HOMEBREW_NO_ANALYTICS = "1";
+    OLLAMA_CONTEXT_LENGTH = "524288";
   };
   homebrew = {
     enable = true;
@@ -37,6 +38,7 @@
           "keyboardcleantool"
           "middleclick"
           "mos"
+          "ollama-binary"
           "orbstack"
           "spotify"
           "superwhisper"
