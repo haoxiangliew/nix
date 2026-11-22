@@ -22,8 +22,8 @@
     "@types/bun": "1.4.5",
     "oxfmt": "0.79.0",
     "oxlint": "1.94.0",
-    "oxlint-tsgolint": "7.0.2007",
-    "pi-better-background-tasks": "0.19.0",
+    "oxlint-tsgolint": "7.0.2008",
+    "pi-better-background-tasks": "0.20.0",
     "taze": "21.3.0",
     "typebox": "1.4.7"
   }
