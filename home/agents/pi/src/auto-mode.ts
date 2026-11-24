@@ -179,7 +179,12 @@ const DECIDE_TOOL: Tool = {
 };
 
 // pi-permission-system asks the user for these permissions even if the reviewer allows them.
-const CAPPED_FAMILIES = new Set(["path", "external_directory"]);
+// Of the external_directory asks, pi-permission-system.patch leaves only proven writes and edits
+// to the user.
+const CAPPED_GATES = new Set(["path", "path_read", "path_write", "external_directory_write"]);
+
+// The key for the main agent's denials. A subagent's key is its session id.
+const MAIN_AGENT = "";
 
 // pi-permission-system ends the reason with a period.
 function denyNote(nextStep: string): string {
@@ -537,9 +542,22 @@ function gateOf(details: PromptPermissionDetails): string | undefined {
   return details.accessIntent?.surface ?? details.surface ?? undefined;
 }
 
-// Matches pi-permission-system's delegation envelope, which also caps an ask with no surface.
-function isCapped(gate: string | undefined): boolean {
-  return gate === undefined || CAPPED_FAMILIES.has(gate.replace(/_(read|write)$/, ""));
+// Names the kind of ask that pi-permission-system leaves to the user, which includes an ask with
+// no surface. Returns undefined for an ask the reviewer can allow.
+function cappedAsks(details: PromptPermissionDetails): string | undefined {
+  const gate = gateOf(details);
+
+  if (gate === undefined) {
+    return "these asks";
+  }
+
+  if (CAPPED_GATES.has(gate)) {
+    return `${gate} asks`;
+  }
+
+  return gate.startsWith("external_directory") && details.payload.request.toolName === "edit"
+    ? "edits outside the project"
+    : undefined;
 }
 
 function askKey(details: PromptPermissionDetails): string {
@@ -575,11 +593,11 @@ function verdictNotice(
     return `denied this. ${reason}`.trim();
   }
 
-  const gate = gateOf(details);
+  const capped = cappedAsks(details);
 
-  return isCapped(gate)
-    ? `allowed this, but pi-permission-system leaves ${gate ?? "these"} asks to you. ${reason}`.trim()
-    : undefined;
+  return capped === undefined
+    ? undefined
+    : `allowed this, but pi-permission-system leaves ${capped} to you. ${reason}`.trim();
 }
 
 // Unknown model ids use the settings of an available model from the same provider.
@@ -665,7 +683,7 @@ export default function (pi: ExtensionAPI) {
   let dispose: (() => void) | undefined;
   let thread = newThread();
   let reviewStart: string | undefined;
-  let denials = 0;
+  const denials = new Map<string, number>();
   const deniedCappedAsks = new Set<string>();
   // Maps request ids to tool call ids. One tool call can raise several asks.
   const askCalls = new Map<string, string>();
@@ -791,6 +809,23 @@ export default function (pi: ExtensionAPI) {
     return { stage: 2, ...(await secondStage(ctx, cfg, model, items, action, hooks)) };
   }
 
+  // Returns the requester's denials in a row, counting this decision.
+  function countDenials(details: PromptPermissionDetails, decision: Decision): number {
+    const requester = details.payload.request.requester.sessionId ?? MAIN_AGENT;
+
+    if (decision.verdict.kind !== "deny") {
+      denials.delete(requester);
+
+      return 0;
+    }
+
+    const denied = (denials.get(requester) ?? 0) + 1;
+
+    denials.set(requester, denied);
+
+    return denied;
+  }
+
   async function authorize(
     details: PromptPermissionDetails,
     query: PermissionQuery,
@@ -818,13 +853,6 @@ export default function (pi: ExtensionAPI) {
 
       return defer(message);
     };
-
-    if (denials >= cfg.maxDenials) {
-      return skip(
-        `${denials} denials in a row`,
-        `stopped after ${denials} denials in a row, so you decide. Your next message turns it back on.`,
-      );
-    }
 
     if (reviewer === undefined) {
       const models = cfg.models.join(", ");
@@ -867,7 +895,8 @@ export default function (pi: ExtensionAPI) {
         exec: pi.exec.bind(pi),
       });
 
-      denials = decision.verdict.kind === "deny" ? denials + 1 : 0;
+      const denied = countDenials(details, decision);
+
       log.review("auto_mode_decision", {
         requestId: details.requestId,
         model: reviewer.ref,
@@ -878,6 +907,14 @@ export default function (pi: ExtensionAPI) {
         authorized: decision.authorization,
         durationMs: Date.now() - started,
       });
+
+      // This runs after the review, so an allow resets the count without a user message.
+      if (denied > cfg.maxDenials) {
+        return skip(
+          `${denied} denials in a row`,
+          `denied ${denied} asks in a row, so you decide this one. ${decision.reason ?? ""}`.trim(),
+        );
+      }
 
       const message = verdictNotice(decision, details);
 
@@ -957,7 +994,7 @@ export default function (pi: ExtensionAPI) {
     query: PermissionQuery,
     log: AuthorizerLog,
   ): Promise<AuthorizerVerdict> {
-    const key = isCapped(gateOf(details)) ? askKey(details) : undefined;
+    const key = cappedAsks(details) === undefined ? undefined : askKey(details);
     const skipped = skipReview(details, key, log);
 
     if (skipped !== undefined) {
@@ -973,20 +1010,19 @@ export default function (pi: ExtensionAPI) {
     context = ctx;
     thread = newThread();
     reviewStart = undefined;
-    denials = 0;
+    denials.clear();
     deniedCappedAsks.clear();
     askCalls.clear();
     userApprovedCalls.clear();
     config = loadOrReport(ctx, "Auto mode", "autoMode", Config);
   });
 
-  // A new user message can authorize what the reviewer denied, so the reviewer gets another try.
-  pi.on("before_agent_start", async (event) => {
-    if (event.messageType !== "user") {
-      return;
+  // A user message can authorize what the reviewer denied. before_agent_start misses a message
+  // sent while the agent works, so this listens for input.
+  pi.on("input", async (event) => {
+    if (event.source !== "extension") {
+      denials.clear();
     }
-
-    denials = 0;
   });
 
   pi.on("session_shutdown", async () => {

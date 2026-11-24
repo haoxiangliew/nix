@@ -178,6 +178,24 @@ let
     patches = [ ./pi/patches/pi-subagents.patch ];
   };
 
+  # This pi-permission-system lets the reviewer allow a request outside the project unless it is a
+  # proven write or an edit. Without the patch, such a request opens the permission dialog unless
+  # none of its paths exist. pi loads a local package without installing it, so its dependencies go
+  # in its node_modules.
+  permissionSystem = pkgs.runCommand "pi-permission-system" { } ''
+    cp -r ${
+      pkgs.applyPatches {
+        name = "pi-permission-system-patched";
+        src = npmPackage "@gotgenes/pi-permission-system";
+        patches = [ ./pi/patches/pi-permission-system.patch ];
+      }
+    } $out
+    chmod -R u+w $out
+    cp -rL ${
+      nodeModules { packages = lockDependencies "@gotgenes/pi-permission-system"; }
+    } $out/node_modules
+  '';
+
   # pi that saves an MCP HTTP reply over its 16 MiB message limit to a file and fails the call with
   # the file's path, instead of cancelling the reply. A pi update that changes the replaced code
   # fails the build here.
@@ -357,7 +375,9 @@ in
               web_enable = "allow";
               skill = "allow";
 
-              # tier 2: writes inside the project. external_directory sends writes outside it to the reviewer
+              # tier 2: writes inside the project. the reviewer checks access outside it that isn't a
+              # proven read. if the reviewer allows a proven write or an edit outside it, the dialog
+              # still asks you
               edit = "allow";
               write = "allow";
 
@@ -391,7 +411,9 @@ in
               };
               external_directory_read."*" = "allow";
 
-              # the reviewer checks credential files, even for read-only tools
+              # the reviewer checks credential files, even for read-only tools.
+              # pi-permission-system.patch checks only the write rules for a path that a command
+              # writes, so don't make a read rule stricter than its write rule
               path = {
                 "*" = "allow";
                 "*.env" = "ask";
@@ -627,7 +649,7 @@ in
             "npm:pi-web-access"
             "${subagents}"
             "${backgroundTasks}"
-            "npm:@gotgenes/pi-permission-system"
+            "${permissionSystem}"
             "npm:pi-pigment"
             "npm:@juicesharp/rpiv-ask-user-question"
             "npm:@narumitw/pi-btw"

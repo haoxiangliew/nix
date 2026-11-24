@@ -1,0 +1,69 @@
+--- a/src/access-intent/effect.ts
++++ b/src/access-intent/effect.ts
+@@ -70,6 +70,13 @@
+  * fold honest rather than lossy.
+  */
+ export function mergeTokenEffects(a: TokenEffect, b: TokenEffect): TokenEffect {
++  // This local patch keeps a path with a proven write a proven write, whatever
++  // else the command does with it, so the delegation envelope excludes it.
++  // Only its _write rules apply, so a stricter _read rule for it is skipped.
++  if (a.effect !== b.effect && a.effect === "write") return a;
++
++  if (a.effect !== b.effect && b.effect === "write") return b;
++
+   if (a.effect !== b.effect) return UNPROVEN_EFFECT;
+   return a.source === "unproven" ? b : a;
+ }
+--- a/src/authority/delegation-envelope.ts
++++ b/src/authority/delegation-envelope.ts
+@@ -82,10 +82,20 @@
+  */
+ function isExcludedSurface(details: PromptPermissionDetails): boolean {
+   const surface = details.accessIntent?.surface ?? details.surface ?? undefined;
+-  return (
+-    surface === undefined ||
+-    DELEGATION_EXCLUDED_SURFACES.has(surfaceFamilyOf(surface))
+-  );
++
++  if (surface === undefined) return true;
++
++  // This local patch lets a link allow an external_directory ask unless it is
++  // a proven write or comes from the edit tool, whose gate proves no effect.
++  // The path family stays excluded.
++  if (surfaceFamilyOf(surface) === "external_directory") {
++    return (
++      surface === "external_directory_write" ||
++      details.payload.request.toolName === "edit"
++    );
++  }
++
++  return DELEGATION_EXCLUDED_SURFACES.has(surfaceFamilyOf(surface));
+ }
+ 
+ /**
+--- a/src/handlers/gates/bash-external-directory.ts
++++ b/src/handlers/gates/bash-external-directory.ts
+@@ -94,12 +94,21 @@
+   // After the early bypass, at least one path is uncovered, so worstCheck is
+   // defined; the fallback keeps TypeScript happy across the early return. A
+   // config-level "deny" is preserved (not downgraded to the catch-all "ask").
+-  const preCheck = worstCheck ?? uncoveredEntries[0].check;
++  const worst = worstCheck ?? uncoveredEntries[0].check;
+   // The AccessPath the decision was made against — its facts ride the wire.
++  // This local patch picks a proven write over the worst path when both are as
++  // restricted. The ask then has the write surface, so the delegation envelope
++  // excludes a command that also has unproven paths.
+   const worstEntry =
+-    uncoveredEntries.find(({ check }) => check === preCheck) ??
++    uncoveredEntries.find(
++      ({ check, effect }) =>
++        check.state === worst.state && effect.effect === "write",
++    ) ??
++    uncoveredEntries.find(({ check }) => check === worst) ??
+     uncoveredEntries[0];
+ 
++  const preCheck = worstEntry.check;
++
+   const disclosures = uncoveredEntries.map(({ path }) => ({
+     path: path.value(),
+     resolvedPath: path.resolvedAlias(),

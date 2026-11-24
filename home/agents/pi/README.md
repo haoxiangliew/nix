@@ -55,7 +55,9 @@ It also tells the agent to ask with `ask_user_question` only for choices it can'
 
 A model reviews pi-permission-system requests instead of asking you. Rules in `home/agents/default.nix` allow read-only tools, read-only commands, and writes inside the project without a review. The reviewer trusts your messages and your answers to `ask_user_question`, not the agent's tool calls or output.
 
-When the reviewer denies a request, the agent takes the safer step if the reason names one. Otherwise it asks you with `ask_user_question` and retries once if you approve. A subagent stops and reports the denial to its parent instead. Errors and repeated denials open the permission dialog. So does a `path` or `external_directory` request that the reviewer doesn't deny.
+When the reviewer denies a request, the agent takes the safer step if the reason names one. Otherwise it asks you with `ask_user_question` and retries once if you approve. A subagent stops and reports the denial to its parent instead. Errors open the permission dialog. So does a `path` request that the reviewer doesn't deny, and so does a proven write or an edit outside the project. `patches/pi-permission-system.patch` lets the reviewer allow other requests outside the project. Without the patch, pi-permission-system sends them to the dialog unless none of their paths exist.
+
+After `autoMode.maxDenials` denials in a row, the reviewer keeps reviewing, but each further denial opens the permission dialog instead of going back to the agent. An allow or a message from you resets the count. The main agent and each subagent have their own count.
 
 | Key                                     | Default                                                          | Meaning                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -66,7 +68,7 @@ When the reviewer denies a request, the agent takes the safer step if the reason
 | `autoMode.maxRetries`                   | `3`                                                              | Retries per model call after a transient error                           |
 | `autoMode.retryDelayMs`                 | `250`                                                            | Wait before the first retry                                              |
 | `autoMode.maxRetryDelayMs`              | `2000`                                                           | Longest wait between retries                                             |
-| `autoMode.maxDenials`                   | `3`                                                              | Denials in a row before asks go to the dialog until your next message    |
+| `autoMode.maxDenials`                   | `3`                                                              | Denials in a row before further denials open the dialog                  |
 | `autoMode.environment`                  | `[]`                                                             | Organizations, domains, and services the reviewer trusts                 |
 | `autoMode.context.messageTokens`        | `5000`                                                           | Limit per user message                                                   |
 | `autoMode.context.toolCallTokens`       | `1000`                                                           | Limit per tool call                                                      |
