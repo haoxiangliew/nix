@@ -32,11 +32,11 @@ type BlockKind = "signer" | "helper" | "update" | "digest";
 const schemas = {
   signer: {
     instructions: 227,
-    digest: "4ffdf4fc0379a428c44ce6f4d246b3889956f5d8b2884236b719222ff95dd4b5",
+    digest: "b750946ad3aef2fa10d866829f5a5319f7501a629aba357afb8adedcc254f029",
   },
   helper: {
     instructions: 251,
-    digest: "3108186ac03f7bb92ba5af41abd9495161551c626c8584304e53202448d65bf1",
+    digest: "6861044c726eb1429916f8284312104615864dc9551ee228cb222ea65650bc81",
   },
   update: {
     instructions: 116,
@@ -635,11 +635,10 @@ function checkSchema(
   const normalized = new InstructionSchema(image, code, variables, window, exit).normalize();
   const digest = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 
-  if (normalized.length !== schema.instructions || digest !== schema.digest) {
-    throw new Error(
-      `The installed Claude CLI build is unsupported (${kind} instruction schema). Request blocked.`,
-    );
-  }
+  requireSupported(
+    normalized.length === schema.instructions && digest === schema.digest,
+    `x64 ${kind} instruction schema`,
+  );
 }
 
 interface Seed {
@@ -802,7 +801,7 @@ function findSeed(image: X64Elf): { seed: Seed; start: number } {
     }
   }
 
-  requireSupported(candidates.length === 1);
+  requireSupported(candidates.length === 1, "x64 signer discovery");
 
   return candidates[0]!;
 }

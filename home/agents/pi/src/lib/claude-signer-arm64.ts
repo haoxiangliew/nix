@@ -19,12 +19,12 @@ type BlockKind = "signer" | "helper" | "hash";
 // SHA-256 of each block's words, with addresses and extracted constants masked out.
 const schemas = {
   signer: {
-    words: 202,
-    digest: "2e85d0d3baae5e5489ae0bbd912b64a53bd4287aaef06a840e20d7bd6eac22a9",
+    words: 191,
+    digest: "4026fb8f24619f1a4bec701705e3782e00bf3cd97057174e6de5d37a4fc0346b",
   },
   helper: {
     words: 230,
-    digest: "804a6fa8a7b708b1da7ef834d5a4fb4ca2a8654b74e8189f1df6974b3bdc4116",
+    digest: "3481800a9c1f6639d9111ad7093dcd2659255457892bce8ae39d9c7330be7f70",
   },
   hash: { words: 214, digest: "9bb9ecb6c755f94690b370c70d757912da4dc91ca03e0eeb4e77f4512c0355a6" },
 } satisfies Record<BlockKind, { words: number; digest: string }>;
@@ -38,8 +38,8 @@ const seedPattern: Pattern = [
   [0x910003e0, 0xffc003ff],
   [0x94000000, 0xfc000000],
   [0xd10003a0, 0xffc003ff],
-  [0xaa1503e1, 0xffffffff],
-  [0xaa1803e2, 0xffffffff],
+  [0xaa1703e1, 0xffffffff],
+  [0xaa1603e2, 0xffffffff],
   [0xd2800003, 0xffffffff],
   [0x94000000, 0xfc000000],
 ];
@@ -50,9 +50,9 @@ const seedCalls = { reset: 5, helper: 10 };
 // MOVZ/STRB of the first two request path bytes.
 const signerStart: Pattern = [
   [0x52800008, 0xffe0001f],
-  [0x390303e8, 0xffffffff],
+  [0x3902e3e8, 0xffffffff],
   [0x52800009, 0xffe0001f],
-  [0x390307e9, 0xffffffff],
+  [0x3902e7e9, 0xffffffff],
 ];
 
 const signerEnd = [0x39001109, 0xbd000100];
@@ -89,11 +89,11 @@ const checksumEnd: Pattern = [[0x91000121, 0xffc003ff]];
 // USHL shift vectors that extract the checksum digits.
 const checksumShifts = [-8n, 0n, -16n, -12n];
 
-// ADD x8, x0, #window; CMP x8, x24; CSEL x8, x8, x24, lo.
+// ADD x8, x0, #window; CMP x8, x22; CSEL x8, x8, x22, lo.
 const windowPattern: Pattern = [
   [0x91000008, 0xffc003ff],
-  [0xeb18011f, 0xffffffff],
-  [0x9a983108, 0xffffffff],
+  [0xeb16011f, 0xffffffff],
+  [0x9a963108, 0xffffffff],
 ];
 
 function masked(word: number, mask: number): number {
@@ -156,52 +156,19 @@ function calls(words: readonly number[], address: number): number[] {
   );
 }
 
-function branchEntries(words: readonly number[]): Set<number> {
-  const entries = new Set<number>();
+// Indices of the vector loads whose base address comes from the ADRP right before them.
+function vectorLoads(words: readonly number[]): number[] {
+  return words.flatMap((word, index) => {
+    const page = words[index - 1] ?? 0;
+    const load = masked(word, 0xffc00000) === 0x3dc00000;
 
-  words.forEach((word, index) => {
-    if (masked(word, 0x7c000000) === 0x14000000) {
-      entries.add(index + signed(word & 0x03ffffff, 26));
-    } else if (masked(word, 0xff000010) === 0x54000000 || masked(word, 0x7e000000) === 0x34000000) {
-      entries.add(index + signed((word >>> 5) & 0x7ffff, 19));
-    } else if (masked(word, 0x7e000000) === 0x36000000) {
-      entries.add(index + signed((word >>> 5) & 0x3fff, 14));
-    }
+    return load && isAdrp(page) && (page & 31) === ((word >>> 5) & 31) ? [index] : [];
   });
-
-  return entries;
-}
-
-// Maps vector loads to the ADRP instructions that supply their base addresses.
-function vectorPages(words: readonly number[]): Map<number, number> {
-  const entries = branchEntries(words);
-  const registers = new Map<number, number>();
-  const pages = new Map<number, number>();
-
-  words.forEach((word, index) => {
-    if (entries.has(index)) {
-      registers.clear();
-    }
-
-    if (isAdrp(word) && (word & 31) !== 31) {
-      registers.set(word & 31, index);
-    } else if (masked(word, 0xffc00000) === 0x3dc00000) {
-      const page = registers.get((word >>> 5) & 31);
-
-      if (page !== undefined) {
-        pages.set(index, page);
-      }
-    } else if (word !== 0xd503201f && masked(word, 0xff20fc00) !== 0x6e204400) {
-      // NOP and vector USHL preserve the page registers; everything else invalidates them.
-      registers.clear();
-    }
-  });
-
-  return pages;
 }
 
 function vectors(image: Arm64MachO, words: readonly number[], address: number): bigint[][] {
-  return [...vectorPages(words)].map(([index, page]) => {
+  return vectorLoads(words).map((index) => {
+    const page = index - 1;
     const location = pageAddress(address + page * 4, words[page]!) + immediate(words[index]!) * 16;
     const data = image.slice(location, 16);
 
@@ -373,18 +340,12 @@ function signerSchema(word: number, next: number): number {
 
 function checkSchema(words: readonly number[], kind: BlockKind): void {
   const schema = schemas[kind];
-  requireSupported(words.length === schema.words);
+  const detail = `ARM64 ${kind} instruction schema`;
+  requireSupported(words.length === schema.words, detail);
   const normalized = Buffer.alloc(words.length * 4);
-  const pages = vectorPages(words);
 
   words.forEach((word, index) => {
-    const previous = words[pages.get(index) ?? index - 1] ?? 0;
-    let value = addressSchema(word, previous);
-
-    // A reused page and a fresh ADRP are equivalent when the resolved vectors match.
-    if (word === 0xd503201f && pages.has(index + 1)) {
-      value = (0x90000000 | ((words[index + 1]! >>> 5) & 31)) >>> 0;
-    }
+    let value = addressSchema(word, words[index - 1] ?? 0);
 
     if (kind === "signer") {
       const valueSchema = signerSchema(word, words[index + 1] ?? 0);
@@ -397,7 +358,8 @@ function checkSchema(words: readonly number[], kind: BlockKind): void {
     normalized.writeUInt32LE(value, index * 4);
   });
 
-  requireSupported(createHash("sha256").update(normalized).digest("hex") === schema.digest);
+  const digest = createHash("sha256").update(normalized).digest("hex");
+  requireSupported(digest === schema.digest, detail);
 }
 
 interface Block {
@@ -421,12 +383,12 @@ function findSeed(image: Arm64MachO): Block {
     const words = image.words(text.address + (offset - text.offset), seedPattern.length);
 
     if (matches(words, 0, seedPattern)) {
-      requireSupported(found === -1);
+      requireSupported(found === -1, "ARM64 signer discovery");
       found = text.address + (offset - text.offset);
     }
   }
 
-  requireSupported(found !== -1);
+  requireSupported(found !== -1, "ARM64 signer discovery");
 
   return { address: found, words: image.words(found, seedPattern.length) };
 }

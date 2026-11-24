@@ -177,9 +177,6 @@ export function cliVersion(prompt: string, identity: SourceIdentity): string {
 
 const sources = new Map<string, Promise<SourceIdentity>>();
 
-// Sources read from source-identity.json rather than scanned in this process.
-const savedSources = new WeakSet<SourceIdentity>();
-
 const SavedSource = Type.Object({ code: Text, source: Source });
 
 const savedPath = () =>
@@ -232,8 +229,6 @@ function readSavedSource(launcher: string, version: string): SourceIdentity | un
     ) {
       return undefined;
     }
-
-    savedSources.add(source);
 
     return source;
   } catch {
@@ -388,46 +383,16 @@ function verifyTraceFields(identity: SourceIdentity, profile: CliProfile): void 
   }
 }
 
-// A saved source can be from an older scan, so a mismatch rescans once. A mismatch with a source
-// scanned in this process fails right away.
-async function verifiedSource(
-  launcher: string,
-  version: string,
-  sourceKey: string,
-  source: SourceIdentity,
-  captured: CliProfile,
-): Promise<SourceIdentity> {
-  try {
-    verifyProfile(source, captured);
-
-    return source;
-  } catch (cause) {
-    if (!savedSources.has(source)) {
-      throw cause;
-    }
-
-    sources.delete(sourceKey);
-
-    const scanned = await cached(sources, sourceKey, () => sourceIdentity(launcher, version));
-
-    verifyProfile(scanned, captured);
-
-    return scanned;
-  }
-}
-
 async function captureProfile(
   launcher: string,
-  version: string,
   model: string,
-  sourceKey: string,
   source: SourceIdentity,
   flags: ProbeFlags,
 ): Promise<CliProfile> {
   const captured = await discoverCliProfile(launcher, model, flags.env);
-  const verified = await verifiedSource(launcher, version, sourceKey, source, captured);
 
-  saveSource(verified);
+  verifyProfile(source, captured);
+  saveSource(source);
 
   return captured;
 }
@@ -441,34 +406,30 @@ export async function readClaudeIdentity(
 ): Promise<ClaudeIdentity> {
   const sourceKey = `${launcher}:${version}`;
 
-  const loadSource = () =>
-    cached(
-      sources,
-      sourceKey,
-      async () => readSavedSource(launcher, version) ?? sourceIdentity(launcher, version),
-    );
-
-  const [loaded, { accountKey, ...subscription }] = await awaitAbort(
-    Promise.all([loadSource(), cached(subscriptions, sourceKey, () => readSubscription(launcher))]),
+  const [source, { accountKey, ...subscription }] = await awaitAbort(
+    Promise.all([
+      cached(
+        sources,
+        sourceKey,
+        async () => readSavedSource(launcher, version) ?? sourceIdentity(launcher, version),
+      ),
+      cached(subscriptions, sourceKey, () => readSubscription(launcher)),
+    ]),
     signal,
   );
 
-  assertCliUnchanged(loaded);
+  assertCliUnchanged(source);
 
   validateSubscription?.(subscription.subscriptionType);
   // A change to the flags behind the probe environment captures the profiles again.
   const flags = readProbeFlags();
-  const profileKey = `${loaded.executableStamp}:${subscription.organizationId}:${accountKey}:${model}:${flags.key}`;
+  const profileKey = `${source.executableStamp}:${subscription.organizationId}:${accountKey}:${model}:${flags.key}`;
 
   const profile = await awaitAbort(
-    cached(profiles, profileKey, () =>
-      captureProfile(launcher, version, model, sourceKey, loaded, flags),
-    ),
+    cached(profiles, profileKey, () => captureProfile(launcher, model, source, flags)),
     signal,
   );
 
-  // Reload because captureProfile may have replaced the source.
-  const source = await awaitAbort(loadSource(), signal);
   assertCliUnchanged(source);
 
   const readTurns = (turnSignal?: AbortSignal) =>

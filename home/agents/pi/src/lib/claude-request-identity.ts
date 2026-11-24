@@ -376,28 +376,12 @@ function promptSelector(
   return [constant(context, fallback)];
 }
 
-function hostBlock(fn: BlockFunction): BlockStatement | undefined {
-  const statements = fn.body.body;
-  const attempt = statements[0];
-
-  if (
-    fn.async ||
-    fn.generator ||
-    statements.length !== 1 ||
-    attempt?.type !== "TryStatement" ||
-    !attempt.handler ||
-    attempt.finalizer
-  ) {
-    return undefined;
-  }
-
-  const failure = returned(attempt.handler.body);
-
-  return failure && isFalse(failure) ? attempt.block : undefined;
-}
-
 function isFalse(node: AnyNode): boolean {
   return (node.type === "Literal" && node.value === false) || !!match(node, "!1");
+}
+
+function isTrue(node: AnyNode): boolean {
+  return (node.type === "Literal" && node.value === true) || !!match(node, "!0");
 }
 
 function hostOrigin(hostname: string): string {
@@ -426,11 +410,46 @@ function resolve(node: AnyNode, local: Body, outer?: Body): AnyNode | undefined 
   return binding(local, node) ?? (outer && binding(outer, node));
 }
 
-function readHosts(fn: BlockFunction, globals: Body): string[] {
-  const url = parameter(fn);
-  const block = hostBlock(fn);
+function shortcutOrigin(shortcut: Statement, url: Identifier, globals: Body): string | undefined {
+  if (shortcut.type !== "IfStatement" || shortcut.alternate) {
+    return undefined;
+  }
 
-  return url && block ? hostPredicate(block, url, globals) : [];
+  const equal = match(shortcut.test, "$url === $origin");
+  const success = returned(shortcut.consequent);
+
+  if (!equal || !globals.sameBinding(capture(equal, "url"), url) || !success || !isTrue(success)) {
+    return undefined;
+  }
+
+  return stringLiteral(capture(equal, "origin"));
+}
+
+function hostBlock(attempt: Statement): BlockStatement | undefined {
+  if (attempt.type !== "TryStatement" || !attempt.handler || attempt.finalizer) {
+    return undefined;
+  }
+
+  const failure = returned(attempt.handler.body);
+
+  return failure && isFalse(failure) ? attempt.block : undefined;
+}
+
+function readHosts(fn: BlockFunction, globals: Body): string[] {
+  const url = syncParameter(fn);
+  const [shortcut, attempt] = fn.body.body;
+
+  if (!url || fn.body.body.length !== 2 || !shortcut || !attempt) {
+    return [];
+  }
+
+  const origin = shortcutOrigin(shortcut, url, globals);
+  const block = hostBlock(attempt);
+
+  // The shortcut's origin must equal the allowlisted host's origin.
+  return origin && block
+    ? hostPredicate(block, url, globals).filter((host) => host === origin)
+    : [];
 }
 
 function hostPredicate(block: BlockStatement, url: Identifier, globals: Body): string[] {

@@ -5,9 +5,11 @@ export interface Segment {
   readonly fileSize: number;
 }
 
-export function requireSupported(condition: boolean): asserts condition {
+export function requireSupported(condition: boolean, detail?: string): asserts condition {
   if (!condition) {
-    throw new Error("The installed Claude CLI build is unsupported. Request blocked.");
+    const context = detail === undefined ? "" : ` (${detail})`;
+
+    throw new Error(`The installed Claude CLI build is unsupported${context}. Request blocked.`);
   }
 }
 
