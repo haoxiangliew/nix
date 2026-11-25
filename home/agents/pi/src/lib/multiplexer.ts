@@ -1,6 +1,6 @@
 /**
  * Finds the terminal multiplexer whose pane runs pi. Panes inherit environment variables such as
- * HERDR_ENV and REX_SESSION from whatever started the multiplexer, so this walks pi's process
+ * HERDR_ENV and REX_BLOCK from whatever started the multiplexer, so this walks pi's process
  * ancestry instead, and the nearest multiplexer wins.
  */
 

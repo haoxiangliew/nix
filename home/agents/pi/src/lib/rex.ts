@@ -47,6 +47,8 @@ export const BlockList = Type.Object({
   blocks: Type.Optional(Type.Union([Type.Array(Block), Type.Null()])),
 });
 
+export const WhoAmI = Type.Object({ session_id: Type.String() });
+
 export const SessionList = Type.Object({
   sessions: Type.Array(
     Type.Object({ session_id: Type.String(), label: Type.Optional(Type.String()) }),
@@ -379,8 +381,9 @@ export async function rexJson<T extends TSchema>(
 }
 
 /**
- * Streams a session's events. Resolves once Rex reports this stream's own connection, so no event
- * after that is missed. onFail gets errors and the stream ending, but not close().
+ * Streams a session's events. `session` is a session ID, or the ID of a pane in that session.
+ * Resolves once Rex reports this stream's own connection, so no event after that is missed.
+ * onFail gets errors and the stream ending, but not close().
  */
 export function subscribe(
   session: string,

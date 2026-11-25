@@ -41,6 +41,7 @@ import {
   SessionView,
   type SessionWindow,
   Size,
+  WhoAmI,
   WorktreeOpened,
   WorktreeRemoved,
   WorktreeState,
@@ -98,9 +99,7 @@ const NOT_READY = new Map([
   ["error", "failed during startup"],
 ]);
 
-const session = multiplexer === "rex" ? process.env.REX_SESSION : undefined;
-
-const ownBlock = process.env.REX_BLOCK;
+const ownBlock = multiplexer === "rex" ? process.env.REX_BLOCK : undefined;
 
 const CONFIG_HOME = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
 
@@ -255,6 +254,8 @@ interface Pane {
   window_label?: string;
   session_id: string;
   session_label?: string;
+  // Whether the pane is in pi's own session.
+  mine: boolean;
 }
 
 interface Placed {
@@ -270,6 +271,8 @@ interface Location {
   anchor: string;
   // Names the tab or session when it isn't pi's own, for messages.
   elsewhere: string;
+  // Whether the session is pi's own.
+  mine: boolean;
 }
 
 type Target = { kind: "agent"; pane: string; name?: string } | { kind: "pane"; pane: string };
@@ -427,16 +430,78 @@ function tabHeading(pane: Pane, worktrees: Map<string, { path: string; branch?: 
   return `Tab \`${pane.window_label ?? "-"}\` (${pane.window_id}${shows})`;
 }
 
+function sessionPanes({
+  one,
+  blocks,
+  windows,
+  mine,
+}: {
+  one: Static<typeof SessionList>["sessions"][number];
+  blocks: NonNullable<Static<typeof BlockList>["blocks"]>;
+  windows: SessionWindow[];
+  mine: boolean;
+}): Pane[] {
+  const order = new Map(windows.map((window, index) => [window.window_id, index]));
+  const labels = new Map(windows.map((window) => [window.window_id, window.label]));
+
+  const rank = (window?: string) =>
+    window === undefined ? windows.length : (order.get(window) ?? windows.length);
+
+  return blocks
+    .toSorted((a, b) => rank(a.window_id) - rank(b.window_id))
+    .map((block): Pane => ({
+      block_id: block.block_id,
+      label: block.label,
+      window_id: block.window_id,
+      window_label: block.window_id === undefined ? undefined : labels.get(block.window_id),
+      session_id: one.session_id,
+      session_label: one.label,
+      mine,
+    }));
+}
+
+// A block ID also names the session that holds the block.
+function inSession(pane: string): string[] {
+  return ["-s", pane];
+}
+
+// Agents under their session and tab, pi's session first.
+function agentTree(
+  rows: { pane: Pane; line: string }[],
+  worktrees: Map<string, { path: string; branch?: string }>,
+): string {
+  const lines: string[] = [];
+  let lastSession: string | undefined;
+  let lastTab: string | undefined;
+
+  for (const { pane, line } of rows) {
+    if (pane.session_id !== lastSession) {
+      const yours = pane.mine ? ", yours" : "";
+
+      lines.push(`Session \`${pane.session_label ?? "-"}\` (${pane.session_id}${yours})`);
+      lastSession = pane.session_id;
+      lastTab = undefined;
+    }
+
+    const tab = tabHeading(pane, worktrees);
+
+    if (tab !== lastTab) {
+      lines.push(`  ${tab}`);
+      lastTab = tab;
+    }
+
+    lines.push(`    ${line}`);
+  }
+
+  return lines.join("\n");
+}
+
 export default function (pi: ExtensionAPI) {
-  if (session === undefined || ownBlock === undefined) {
+  if (ownBlock === undefined) {
     return;
   }
 
   const own = ownBlock;
-  const sessionId = session;
-
-  // The session of each pane a lookup found. Rex finds a block only in the session it's told.
-  const sessionOf = new Map<string, string>([[own, sessionId]]);
 
   // Names of agents whose worktree is still being made, which checkName treats as taken.
   const reserved = new Set<string>();
@@ -447,12 +512,16 @@ export default function (pi: ExtensionAPI) {
   // Sessions this process made. A failed start in one kills it when nothing is left there.
   const madeHere = new Set<string>();
 
-  function inSession(pane: string): string[] {
-    return ["-s", sessionOf.get(pane) ?? sessionId];
-  }
-
   function run(args: string[], timeout?: number, signal?: AbortSignal): Promise<string> {
     return rex(pi, args, timeout, signal);
+  }
+
+  // Rex sets REX_BLOCK in a pane but no REX_SESSION, and pi's tab can move to another session. So
+  // this asks Rex which session holds pi's pane now.
+  async function ownSession(signal?: AbortSignal): Promise<string> {
+    const args = ["whoami", "--json"];
+
+    return (await rexJson(pi, WhoAmI, args, REX_TIMEOUT_MS, signal)).session_id;
   }
 
   async function sessions(signal?: AbortSignal) {
@@ -469,11 +538,11 @@ export default function (pi: ExtensionAPI) {
   // closes meanwhile is skipped. With `tabs`, panes are in tab order and have their tab's label,
   // which takes a session.view call per session that finding a pane doesn't need.
   async function panes(signal?: AbortSignal, tabs = false): Promise<Pane[]> {
-    const all = await sessions(signal);
+    const [all, ownId] = await Promise.all([sessions(signal), ownSession(signal)]);
 
     const ordered = [
-      ...all.filter((one) => one.session_id === sessionId),
-      ...all.filter((one) => one.session_id !== sessionId),
+      ...all.filter((one) => one.session_id === ownId),
+      ...all.filter((one) => one.session_id !== ownId),
     ];
 
     const listings = await inBatches(ordered, async (one) => {
@@ -492,41 +561,15 @@ export default function (pi: ExtensionAPI) {
 
       const [listed, shown] = found;
 
-      return { one, blocks: listed.blocks ?? [], windows: shown?.windows ?? [] };
+      return {
+        one,
+        blocks: listed.blocks ?? [],
+        windows: shown?.windows ?? [],
+        mine: one.session_id === ownId,
+      };
     });
 
     return listings.flatMap((listing) => (listing === undefined ? [] : sessionPanes(listing)));
-  }
-
-  function sessionPanes({
-    one,
-    blocks,
-    windows,
-  }: {
-    one: Static<typeof SessionList>["sessions"][number];
-    blocks: NonNullable<Static<typeof BlockList>["blocks"]>;
-    windows: SessionWindow[];
-  }): Pane[] {
-    const order = new Map(windows.map((window, index) => [window.window_id, index]));
-    const labels = new Map(windows.map((window) => [window.window_id, window.label]));
-
-    const rank = (window?: string) =>
-      window === undefined ? windows.length : (order.get(window) ?? windows.length);
-
-    return blocks
-      .toSorted((a, b) => rank(a.window_id) - rank(b.window_id))
-      .map((block): Pane => {
-        sessionOf.set(block.block_id, one.session_id);
-
-        return {
-          block_id: block.block_id,
-          label: block.label,
-          window_id: block.window_id,
-          window_label: block.window_id === undefined ? undefined : labels.get(block.window_id),
-          session_id: one.session_id,
-          session_label: one.label,
-        };
-      });
   }
 
   // Names are block labels, which Rex doesn't keep unique. A bare name in pi's session wins,
@@ -547,7 +590,7 @@ export default function (pi: ExtensionAPI) {
         (inOne === undefined || pane.session_label === inOne || pane.session_id === inOne),
     );
 
-    const mine = matches.filter((pane) => pane.session_id === sessionId);
+    const mine = matches.filter((pane) => pane.mine);
     const [found, ...others] = inOne === undefined && mine.length > 0 ? mine : matches;
 
     if (found === undefined) {
@@ -611,10 +654,10 @@ export default function (pi: ExtensionAPI) {
   // A paste keeps a multi-line prompt in one message, and Enter submits it.
   async function submit(pane: string, prompt: string, signal?: AbortSignal): Promise<void> {
     const event = { type: "paste", payload: { text: prompt } };
-    const target = { session_id: sessionOf.get(pane) ?? sessionId, block_id: pane };
-    const params = JSON.stringify({ ...target, event });
+    const params = JSON.stringify({ block_id: pane, event });
+    const call = ["api", "call", ...inSession(pane), "block.event", params];
 
-    await run(["api", "call", "block.event", params], SEND_TIMEOUT_MS, signal);
+    await run(call, SEND_TIMEOUT_MS, signal);
     await run(["send-key", ...inSession(pane), "-b", pane, "enter"], SEND_TIMEOUT_MS, signal);
   }
 
@@ -635,7 +678,7 @@ export default function (pi: ExtensionAPI) {
       const status = paneStatus();
 
       const subscription = await subscribe(
-        sessionOf.get(pane) ?? sessionId,
+        pane,
         (event) => {
           const update = event.block === pane ? status.update(event) : undefined;
 
@@ -667,8 +710,11 @@ export default function (pi: ExtensionAPI) {
 
   // A session no app shows keeps its panes at 80x24, so a pane in another session splits right
   // without a size check. pi's own session is usually the one the user sees.
-  async function splitDirection(anchor: string, signal: AbortSignal | undefined): Promise<string> {
-    if ((sessionOf.get(anchor) ?? sessionId) !== sessionId) {
+  async function splitDirection(
+    { anchor, mine }: Location,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    if (!mine) {
       return "right";
     }
 
@@ -718,8 +764,6 @@ export default function (pi: ExtensionAPI) {
       throw new Error(`Tab \`${tabName}\` of ${named} has no pane to split.`);
     }
 
-    sessionOf.set(anchor, id);
-
     return { anchor, tabName };
   }
 
@@ -729,28 +773,31 @@ export default function (pi: ExtensionAPI) {
     placement: "split" | "tab" | undefined,
     signal: AbortSignal | undefined,
   ): Promise<Location> {
+    const ownId = await ownSession(signal);
+
     if (params.tab === undefined) {
-      return { session: sessionId, anchor: own, elsewhere: "" };
+      return { session: ownId, anchor: own, elsewhere: "", mine: true };
     }
 
-    const found = await findSession(sessionId, signal);
+    const found = await findSession(ownId, signal);
 
     if (found === undefined) {
-      throw new Error(`pi's own Rex session ${sessionId} is gone.`);
+      throw new Error(`pi's own Rex session ${ownId} is gone.`);
     }
 
-    return placeIn(found, { ...params, placement }, signal);
+    return placeIn(found, ownId, { ...params, placement }, signal);
   }
 
   // A session with no panes, as when its last agent exited, has nothing to split, so the pane opens
   // a tab there.
   async function placementIn(
     id: string,
+    ownId: string,
     tab: string | undefined,
     placement: "split" | "tab" | undefined,
     signal: AbortSignal | undefined,
   ): Promise<"split" | "tab" | undefined> {
-    if (placement === "tab" || tab !== undefined || id === sessionId) {
+    if (placement === "tab" || tab !== undefined || id === ownId) {
       return placement;
     }
 
@@ -762,26 +809,28 @@ export default function (pi: ExtensionAPI) {
 
   async function placeIn(
     { id, named }: { id: string; named: string },
+    ownId: string,
     params: { tab?: string; placement?: string },
     signal: AbortSignal | undefined,
   ): Promise<Location> {
-    const ofSession = id === sessionId ? "" : ` of ${named}`;
+    const mine = id === ownId;
+    const ofSession = mine ? "" : ` of ${named}`;
 
     if (params.placement === "tab") {
       if (params.tab !== undefined) {
         throw new Error('`tab` names a tab to split, so it needs `placement: "split"`.');
       }
 
-      return { session: id, anchor: own, elsewhere: ofSession };
+      return { session: id, anchor: own, elsewhere: ofSession, mine };
     }
 
-    if (params.tab === undefined && id === sessionId) {
-      return { session: id, anchor: own, elsewhere: "" };
+    if (params.tab === undefined && mine) {
+      return { session: id, anchor: own, elsewhere: "", mine };
     }
 
     const { anchor, tabName } = await tabAnchor(id, named, params.tab, signal);
 
-    return { session: id, anchor, elsewhere: ` in tab \`${tabName}\`${ofSession}` };
+    return { session: id, anchor, elsewhere: ` in tab \`${tabName}\`${ofSession}`, mine };
   }
 
   // Parallel starts split a pane one at a time, so each sees the layout the last one left. Without a
@@ -796,9 +845,9 @@ export default function (pi: ExtensionAPI) {
     const { anchor } = where;
 
     return serial(`split ${anchor}`, async () => {
-      const at = ["-b", anchor, "--split", await splitDirection(anchor, signal)];
+      const at = ["-b", anchor, "--split", await splitDirection(where, signal)];
       const labeled = name === undefined ? [] : ["--label", name];
-      const args = ["split", ...inSession(anchor), ...at, ...labeled, "--focus=false", "-c", cwd];
+      const args = ["split", "-s", where.session, ...at, ...labeled, "--focus=false", "-c", cwd];
 
       const created = await rexJson(
         pi,
@@ -808,11 +857,7 @@ export default function (pi: ExtensionAPI) {
         signal,
       );
 
-      const pane = firstBlock(created);
-
-      sessionOf.set(pane, where.session);
-
-      return pane;
+      return firstBlock(created);
     });
   }
 
@@ -829,8 +874,6 @@ export default function (pi: ExtensionAPI) {
     const args = ["window", "new", ...scope, ...labeled, "--focus=false", "-c", cwd, "--json"];
     const created = await rexJson(pi, Created, [...args, ...command], REX_TIMEOUT_MS, signal);
     const pane = firstBlock(created);
-
-    sessionOf.set(pane, where.session);
 
     if (name !== undefined) {
       await orClose(pane, () =>
@@ -862,7 +905,6 @@ export default function (pi: ExtensionAPI) {
 
     const pane = firstBlock(first);
 
-    sessionOf.set(pane, created.session_id);
     madeHere.add(created.session_id);
 
     if (name !== undefined) {
@@ -946,8 +988,9 @@ export default function (pi: ExtensionAPI) {
         const { found, release } = held;
 
         try {
-          const into = await placementIn(found.id, params.tab, placement, signal);
-          const where = await placeIn(found, { ...params, placement: into }, signal);
+          const ownId = await ownSession(signal);
+          const into = await placementIn(found.id, ownId, params.tab, placement, signal);
+          const where = await placeIn(found, ownId, { ...params, placement: into }, signal);
 
           const placed = await withName(
             name,
@@ -1061,7 +1104,7 @@ export default function (pi: ExtensionAPI) {
       );
     });
 
-    const call = ["do", "-s", sessionId, "-b", own, WORKTREE_SCRIPT, "--action", action];
+    const call = ["do", ...inSession(own), "-b", own, WORKTREE_SCRIPT, "--action", action];
 
     const stdout = await run(
       [...call, "--args", JSON.stringify(args)],
@@ -1186,13 +1229,7 @@ export default function (pi: ExtensionAPI) {
       focus: false,
     };
 
-    const opened = await worktreeAction(WorktreeOpened, "worktree_open", args, signal);
-
-    if (opened.block_id !== undefined) {
-      sessionOf.set(opened.block_id, opened.session_id);
-    }
-
-    return opened;
+    return worktreeAction(WorktreeOpened, "worktree_open", args, signal);
   }
 
   // Returns the agent's first state, or undefined if it reports none in time, as when it shows a
@@ -1324,7 +1361,7 @@ export default function (pi: ExtensionAPI) {
   // A worktree's open tab is used from any session, so a message names the tab's session when it
   // isn't pi's own.
   async function sessionNote(id: string, signal: AbortSignal | undefined): Promise<string> {
-    if (id === sessionId) {
+    if (id === (await ownSession(signal))) {
       return "";
     }
 
@@ -1615,37 +1652,6 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // Agents under their session and tab, pi's session first.
-  function agentTree(
-    rows: { pane: Pane; line: string }[],
-    worktrees: Map<string, { path: string; branch?: string }>,
-  ): string {
-    const lines: string[] = [];
-    let lastSession: string | undefined;
-    let lastTab: string | undefined;
-
-    for (const { pane, line } of rows) {
-      if (pane.session_id !== lastSession) {
-        const yours = pane.session_id === sessionId ? ", yours" : "";
-
-        lines.push(`Session \`${pane.session_label ?? "-"}\` (${pane.session_id}${yours})`);
-        lastSession = pane.session_id;
-        lastTab = undefined;
-      }
-
-      const tab = tabHeading(pane, worktrees);
-
-      if (tab !== lastTab) {
-        lines.push(`  ${tab}`);
-        lastTab = tab;
-      }
-
-      lines.push(`    ${line}`);
-    }
-
-    return lines.join("\n");
-  }
-
   const agentsTool = defineTool({
     name: "rex_agents",
     label: "Rex Agents",
@@ -1725,7 +1731,7 @@ export default function (pi: ExtensionAPI) {
 
       await run(["block", "focus", ...inSession(target.pane), target.pane], REX_TIMEOUT_MS, signal);
 
-      if (found.session_id === sessionId) {
+      if (found.mine) {
         return text(`${focused}.`);
       }
 
