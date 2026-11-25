@@ -10,20 +10,20 @@
     "taze": "taze"
   },
   "dependencies": {
-    "@gotgenes/pi-permission-system": "42.2.1",
+    "@gotgenes/pi-permission-system": "43.0.0",
     "@gotgenes/pi-subagents": "25.1.0",
     "acorn": "8.19.0",
     "iced-x86": "1.22.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.6.0",
-    "@earendil-works/pi-coding-agent": "1.6.0",
-    "@earendil-works/pi-tui": "1.6.0",
+    "@earendil-works/pi-ai": "1.6.1",
+    "@earendil-works/pi-coding-agent": "1.6.1",
+    "@earendil-works/pi-tui": "1.6.1",
     "@types/bun": "1.4.5",
     "oxfmt": "0.80.0",
     "oxlint": "1.95.0",
     "oxlint-tsgolint": "7.0.2008",
-    "pi-better-background-tasks": "0.20.3",
+    "pi-better-background-tasks": "0.21.0",
     "taze": "21.3.0",
     "typebox": "1.4.7"
   }

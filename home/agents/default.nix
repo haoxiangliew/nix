@@ -638,7 +638,12 @@ in
             ))
           ];
           warnings.anthropicExtraUsage = false;
-          showCacheMissNotices = true;
+          notices = {
+            cacheMisses = true;
+            cacheWarming = true;
+            compactionCosts = true;
+            reasoningDrops = true;
+          };
           talk.prompt = talkPrompt;
           mcpAncestors.roots = [ "~/Developer" ];
           rewind.silentCheckpoints = true;
