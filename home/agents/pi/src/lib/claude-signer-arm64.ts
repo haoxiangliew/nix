@@ -20,7 +20,7 @@ type BlockKind = "signer" | "helper" | "hash";
 const schemas = {
   signer: {
     words: 191,
-    digest: "4026fb8f24619f1a4bec701705e3782e00bf3cd97057174e6de5d37a4fc0346b",
+    digest: "5860bde5401044c26cf5ea786ea50bbada8bd718864e5f76f36da8456386e8e2",
   },
   helper: {
     words: 230,
