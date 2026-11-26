@@ -1,6 +1,8 @@
 { pkgs, ... }:
 
 {
+  imports = [ ./nix.nix ];
+
   home = {
     packages = with pkgs; [
       unstable.ioskeley-mono.standard
