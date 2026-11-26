@@ -118,14 +118,14 @@ On `openai-codex`, the extension downloads the account's model catalog, like Cod
 
 The `openai-codex` backend reports the default tier for every reply, so pi would price fast and ultrafast replies at the standard rate. The extension prices them at the tier it requested.
 
-| Key                            | Default                                   | Meaning                                                                                     |
-| ------------------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `fast.models`                  | `["claude-fable-5-2", "claude-opus-5-5"]` | Anthropic models that support fast mode                                                     |
-| `fast.beta`                    | `"fast-mode-2026-02-01"`                  | `anthropic-beta` header that enables it                                                     |
-| `fast.costMultiplier`          | `2`                                       | Price multiple for Anthropic fast replies                                                   |
-| `fast.ultrafastModels`         | `["gpt-6.2-astra", "gpt-6.2-sol"]`        | `openai` models that support ultrafast                                                      |
-| `fast.ultrafastCostMultiplier` | `6`                                       | Price multiple for ultrafast OpenAI replies                                                 |
-| `fastMode`                     | `{}`                                      | Default speed by `provider/id`: `"fast"` or `"ultrafast"`. A missing model defaults to off. |
+| Key                            | Default                                                        | Meaning                                                                                     |
+| ------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `fast.models`                  | `["claude-fable-5-2", "claude-mythos-5-2", "claude-opus-5-5"]` | Anthropic models that support fast mode                                                     |
+| `fast.beta`                    | `"fast-mode-2026-02-01"`                                       | `anthropic-beta` header that enables it                                                     |
+| `fast.costMultiplier`          | `2`                                                            | Price multiple for Anthropic fast replies                                                   |
+| `fast.ultrafastModels`         | `["gpt-6.2-astra", "gpt-6.2-sol"]`                             | `openai` models that support ultrafast                                                      |
+| `fast.ultrafastCostMultiplier` | `6`                                                            | Price multiple for ultrafast OpenAI replies                                                 |
+| `fastMode`                     | `{}`                                                           | Default speed by `provider/id`: `"fast"` or `"ultrafast"`. A missing model defaults to off. |
 
 ### `herdr-agents.ts`
 

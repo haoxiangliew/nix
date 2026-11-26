@@ -12,7 +12,6 @@ import {
   RoundingControl,
   type Instruction as DecodedInstruction,
 } from "iced-x86";
-import { createHash } from "node:crypto";
 
 import type { CliOmission, CliSignerConfig } from "./claude-signer.ts";
 
@@ -25,28 +24,6 @@ import {
   unsigned,
 } from "./claude-signer-constants.ts";
 import { X64Elf } from "./elf.ts";
-
-type BlockKind = "signer" | "helper" | "update" | "digest";
-
-// SHA-256 of each block's non-NOP instructions, normalized by InstructionSchema.
-const schemas = {
-  signer: {
-    instructions: 227,
-    digest: "11ad8d7178869ff729f0b2daa4c891efdf2793f29c0648f2cabf6d0d9a38959a",
-  },
-  helper: {
-    instructions: 251,
-    digest: "6861044c726eb1429916f8284312104615864dc9551ee228cb222ea65650bc81",
-  },
-  update: {
-    instructions: 116,
-    digest: "abc69fcf94a5bf0ac02ab7e2fac5baaa1a6cdf30a3d3c0e5ae19362be6801832",
-  },
-  digest: {
-    instructions: 113,
-    digest: "c718ef01ba10dc92c27bbe24f40fa409f3a889264b5d7c2b31dc80239e129276",
-  },
-} satisfies Record<BlockKind, { instructions: number; digest: string }>;
 
 // Direct calls in the signer block, in order. Searches are indirect calls through one slot.
 const signerCallLayout = ["helper", "update", "helper", "update", "update", "digest"] as const;
@@ -62,7 +39,9 @@ const limits = {
   seedInstructions: 8,
   signerLookback: 2048,
   signerBytes: 4096,
-  functionBytes: 8192,
+  helperBytes: 8192,
+  // The helper scan covers the search calls and their argument setup.
+  helperInstructions: 251,
   window: 65536,
 };
 
@@ -105,7 +84,6 @@ interface Memory {
   kind: "memory";
   base: Register;
   index: Register;
-  scale: number;
   displacement: number;
   size: number;
 }
@@ -135,7 +113,6 @@ function decodeOperand(instruction: DecodedInstruction, index: number): Operand 
           kind: "memory",
           base: instruction.memoryBase,
           index: instruction.memoryIndex,
-          scale: instruction.memoryIndexScale,
           displacement,
           size: MemorySizeExt.size(instruction.memorySize),
         }
@@ -265,9 +242,6 @@ function decodeX64(
 
   return result;
 }
-
-const significant = (instructions: readonly Instruction[]) =>
-  instructions.filter((instruction) => instruction.mnemonic !== Mnemonic.Nop);
 
 // Decodes until `count` non-NOP instructions. Returns undefined if there are fewer.
 function decodeSignificant(
@@ -473,7 +447,7 @@ function writeStack(stack: Map<string, number>, memory: Memory, value: Value | u
 }
 
 // Tracks constants through straight-line code only. Unmodeled writes clear tracked values.
-// Check the block's schema before trusting the results.
+// Callers check the reconstructed checksum against captured CLI requests.
 function analyzeX64(instructions: readonly Instruction[]): Analysis {
   const registers = new Map<Register, Value>();
   const stack = new Map<string, number>();
@@ -508,137 +482,24 @@ function analyzeX64(instructions: readonly Instruction[]): Analysis {
   return { calls, stores };
 }
 
-type Token = string | number | readonly Token[];
+// Every branch must target executable code. A target inside the decoded span must start a
+// decoded instruction or be `exit`.
+function requireBranchTargets(image: X64Elf, code: readonly Instruction[], exit?: number): void {
+  const addresses = new Set(code.map((instruction) => instruction.address));
+  const start = code[0]!.address;
+  const end = code.at(-1)!.next;
 
-function mapped(image: X64Elf, value: bigint): boolean {
-  return value <= BigInt(Number.MAX_SAFE_INTEGER) && image.contains(Number(value));
-}
-
-// Normalizes a block so its digest ignores NOPs, branch encodings, stack frame position,
-// and relocated addresses. Branches keep their targets, stack references keep their
-// layout, and data and call addresses keep their aliasing. Extracted constants are masked.
-// Hashes the contents of every 4- and 16-byte RIP-relative operand, such as the hex tables.
-class InstructionSchema {
-  private readonly aliases = new Map<number, number>();
-  private readonly stackBases = new Map<Register, number>();
-  private readonly indices = new Map<number, number>();
-
-  constructor(
-    private readonly image: X64Elf,
-    private readonly code: readonly Instruction[],
-    private readonly variables: ReadonlySet<number>,
-    private readonly window: Instruction | undefined,
-    private readonly exit?: number,
-  ) {
-    let index = 0;
-
-    for (const instruction of code) {
-      this.indices.set(instruction.address, index);
-      index += instruction.mnemonic === Mnemonic.Nop ? 0 : 1;
-    }
-  }
-
-  private alias(address: number): number {
-    if (!this.aliases.has(address)) {
-      this.aliases.set(address, this.aliases.size);
-    }
-
-    return this.aliases.get(address)!;
-  }
-
-  private displacement(value: Memory, instruction: Instruction): Token {
-    if (instruction.address === this.window?.address) {
-      return ["value"];
-    }
-
-    if (value.base === Register.RIP) {
-      return value.size === 16 || value.size === 4
-        ? ["table", this.image.slice(value.displacement, value.size).toString("hex")]
-        : ["address", this.alias(value.displacement)];
-    }
-
-    if (isStack(value)) {
-      if (!this.stackBases.has(value.base)) {
-        this.stackBases.set(value.base, value.displacement);
+  for (const instruction of code) {
+    for (const operand of instruction.operands) {
+      if (operand.kind === "branch") {
+        const { address } = operand;
+        requireSupported(image.executable(address));
+        requireSupported(
+          addresses.has(address) || address === exit || address < start || address >= end,
+        );
       }
-
-      return value.displacement - this.stackBases.get(value.base)!;
     }
-
-    return value.displacement;
   }
-
-  private branch(address: number): Token {
-    requireSupported(this.image.executable(address));
-    const internal = this.indices.get(address);
-
-    if (internal !== undefined) {
-      return ["branch", ["internal", internal]];
-    }
-
-    // A target inside the decoded range must start a decoded instruction or be the signer's
-    // shared exit, immediately after its path guard.
-    requireSupported(
-      address === this.exit || address < this.code[0]!.address || address >= this.code.at(-1)!.next,
-    );
-
-    return ["branch", ["external", this.alias(address)]];
-  }
-
-  private operand(value: Operand, instruction: Instruction): Token {
-    if (value.kind === "register") {
-      return ["register", value.register];
-    }
-
-    if (value.kind === "branch") {
-      return this.branch(value.address);
-    }
-
-    if (value.kind === "memory") {
-      const { base, index, scale, size } = value;
-
-      return ["memory", base, index, scale, size, this.displacement(value, instruction)];
-    }
-
-    if (this.variables.has(instruction.address)) {
-      return ["value"];
-    }
-
-    return mapped(this.image, value.value)
-      ? ["address", this.alias(Number(value.value))]
-      : ["integer", value.value.toString()];
-  }
-
-  normalize(): Token[] {
-    return significant(this.code).map((instruction) => [
-      instruction.mnemonic,
-      instruction.flow,
-      instruction.operands.map((value) => this.operand(value, instruction)),
-    ]);
-  }
-}
-
-function checkSchema(
-  image: X64Elf,
-  code: readonly Instruction[],
-  kind: BlockKind,
-  variables: ReadonlySet<number> = new Set(),
-  window?: Instruction,
-): void {
-  const schema = schemas[kind];
-
-  const exit =
-    kind === "signer"
-      ? code.find((instruction) => instruction.flow === FlowControl.ConditionalBranch)?.next
-      : undefined;
-
-  const normalized = new InstructionSchema(image, code, variables, window, exit).normalize();
-  const digest = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
-
-  requireSupported(
-    normalized.length === schema.instructions && digest === schema.digest,
-    `x64 ${kind} instruction schema`,
-  );
 }
 
 interface Seed {
@@ -807,8 +668,7 @@ function findSeed(image: X64Elf): { seed: Seed; start: number } {
 }
 
 // The path guard jumps over unrelated code into the signer. Decode reachable instructions
-// until the signer jumps to exit, the instruction after the guard. The schema checks every
-// branch target.
+// until the signer jumps to exit, the instruction after the guard.
 function signerBlock(image: X64Elf, seed: Seed, address: number): Instruction[] {
   const head = requireCode(
     decodeX64(
@@ -823,9 +683,10 @@ function signerBlock(image: X64Elf, seed: Seed, address: number): Instruction[] 
   requireSupported(
     entry?.kind === "branch" && entry.address > guard.next && entry.address < seed.address,
   );
-  const body = reachableCode(image, entry.address, guard.next, seed);
+  const code = [...head, ...reachableCode(image, entry.address, guard.next, seed)];
+  requireBranchTargets(image, code, guard.next);
 
-  return [...head, ...body];
+  return code;
 }
 
 function successors(instruction: Instruction): number[] {
@@ -846,7 +707,7 @@ function successors(instruction: Instruction): number[] {
 }
 
 // Decodes in address order and stops after the first JMP to exit past the seed.
-// The schema checks branch targets past that JMP, but they aren't decoded.
+// Branch targets past that JMP aren't decoded.
 function reachableCode(image: X64Elf, entry: number, exit: number, seed: Seed): Instruction[] {
   const bound = Math.min(
     seed.address + limits.signerBytes,
@@ -895,19 +756,19 @@ function reachableCode(image: X64Elf, entry: number, exit: number, seed: Seed): 
   return body;
 }
 
-function functionBlock(image: X64Elf, address: number, kind: BlockKind): Instruction[] {
+function helperBlock(image: X64Elf, address: number): Instruction[] {
   const end = image.text.address + image.text.fileSize;
 
   const instructions = requireCode(
     decodeSignificant(
-      image.code(address, Math.min(limits.functionBytes, end - address)),
+      image.code(address, Math.min(limits.helperBytes, end - address)),
       address,
-      schemas[kind].instructions,
+      limits.helperInstructions,
     ),
   );
 
   requireSupported(instructions.some((instruction) => instruction.flow === FlowControl.Return));
-  checkSchema(image, instructions, kind);
+  requireBranchTargets(image, instructions);
 
   return instructions;
 }
@@ -955,7 +816,7 @@ function sameStack(values: readonly (Value | undefined)[]): boolean {
 
 type Callee = (typeof signerCallLayout)[number];
 
-function callees(direct: readonly Call[]): Record<Callee, number> {
+function helperTarget(direct: readonly Call[]): number {
   const targets = new Map<Callee, number>();
 
   signerCallLayout.forEach((callee, index) => {
@@ -968,11 +829,7 @@ function callees(direct: readonly Call[]): Record<Callee, number> {
 
   requireSupported(new Set(targets.values()).size === targets.size);
 
-  return {
-    helper: targets.get("helper")!,
-    update: targets.get("update")!,
-    digest: targets.get("digest")!,
-  };
+  return targets.get("helper")!;
 }
 
 // Helper calls share one state argument; hash calls share the state seeded with the lanes.
@@ -1031,21 +888,17 @@ function signerCalls(image: X64Elf, instructions: readonly Instruction[], seed: 
   );
 
   requireCallState(direct, seed, stores);
-  const targets = callees(direct);
-  functionBlock(image, targets.update, "update");
-  functionBlock(image, targets.digest, "digest");
 
   return {
     searches,
     digest: direct.at(-1)!,
     slot: slot.address,
-    helper: targets.helper,
+    helper: helperTarget(direct),
     quoteSlot: quoteSearchSlot(image, indirect.at(-1)!, slot.address),
   };
 }
 
 // The long-string path searches for a single closing quote through a distinct slot.
-// The schema pins its surrounding bounds checks and short-string scalar loop.
 function quoteSearchSlot(image: X64Elf, call: Call, searchSlot: number): number {
   requireSupported(
     call.target?.kind === "slot" &&
@@ -1084,7 +937,7 @@ function windowLimit(
   const operand = instruction.operands[1];
   requireSupported(operand?.kind === "memory" && operand.displacement <= limits.window);
 
-  return { window: operand.displacement, instruction };
+  return operand.displacement;
 }
 
 function checksumLayout(instructions: readonly Instruction[], digest: Call, placeholder: Buffer) {
@@ -1118,39 +971,13 @@ function checksumLayout(instructions: readonly Instruction[], digest: Call, plac
   return { checksumOffset, checksumDigits: digits };
 }
 
-function byteDestination(operand: Operand | undefined): boolean {
-  return (
-    (operand?.kind === "memory" && operand.size === 1 && isStack(operand)) ||
-    (operand?.kind === "register" && RegisterExt.size(operand.register) === 1)
-  );
-}
-
-// The schema masks immediate MOVs that store the seed lanes or build the stack strings before the
-// seed. It keeps later byte constants. For example, AL=1 is the model-found flag.
-function signerVariables(instructions: readonly Instruction[], seed: Seed): ReadonlySet<number> {
-  const end = seed.stores.at(-1)!.instruction.next;
-
-  return new Set(
-    instructions.flatMap((instruction) => {
-      const [destination, source] = instruction.operands;
-      const lane = instruction.address >= seed.address && instruction.address < end;
-      const byte = instruction.address < seed.address && byteDestination(destination);
-
-      const variable =
-        instruction.mnemonic === Mnemonic.Mov && source?.kind === "immediate" && (lane || byte);
-
-      return variable ? [instruction.address] : [];
-    }),
-  );
-}
-
 function omissionMarkers(
   image: X64Elf,
   helper: number,
   slot: number,
   quoteSlot: number,
 ): CliOmission[] {
-  const indirect = analyzeX64(functionBlock(image, helper, "helper")).calls.filter(
+  const indirect = analyzeX64(helperBlock(image, helper)).calls.filter(
     (call) => call.instruction.flow === FlowControl.IndirectCall,
   );
 
@@ -1180,8 +1007,6 @@ export function extractElfCliSigner(bytes: Buffer): CliSignerConfig {
   );
 
   requireSupported(path!.equals(requestPath));
-  const window = windowLimit(block, targets.searches, placeholder!);
-  checkSchema(image, block, "signer", signerVariables(block, seed), window.instruction);
 
   return {
     seed: seed.value,
@@ -1189,7 +1014,7 @@ export function extractElfCliSigner(bytes: Buffer): CliSignerConfig {
     modelMarker: modelMarker!,
     omissions: omissionMarkers(image, targets.helper, targets.slot, targets.quoteSlot),
     placeholder: placeholder!,
-    window: window.window,
+    window: windowLimit(block, targets.searches, placeholder!),
     ...checksumLayout(block, targets.digest, placeholder!),
   };
 }

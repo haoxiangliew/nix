@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import type { CliOmission, CliSignerConfig } from "./claude-signer.ts";
 
 import { requireSupported } from "./binary.ts";
@@ -13,21 +11,6 @@ import {
 import { Arm64MachO } from "./macho.ts";
 
 type Pattern = readonly (readonly [number, number])[];
-
-type BlockKind = "signer" | "helper" | "hash";
-
-// SHA-256 of each block's words, with addresses and extracted constants masked out.
-const schemas = {
-  signer: {
-    words: 191,
-    digest: "5860bde5401044c26cf5ea786ea50bbada8bd718864e5f76f36da8456386e8e2",
-  },
-  helper: {
-    words: 230,
-    digest: "3481800a9c1f6639d9111ad7093dcd2659255457892bce8ae39d9c7330be7f70",
-  },
-  hash: { words: 214, digest: "9bb9ecb6c755f94690b370c70d757912da4dc91ca03e0eeb4e77f4512c0355a6" },
-} satisfies Record<BlockKind, { words: number; digest: string }>;
 
 // MOVZ/MOVK of the seed into x1, then the hash reset and helper calls.
 const seedPattern: Pattern = [
@@ -55,10 +38,18 @@ const signerStart: Pattern = [
   [0x3902e7e9, 0xffffffff],
 ];
 
-const signerEnd = [0x39001109, 0xbd000100];
+// The final stores write the fifth checksum digit and the first four digits.
+const signerEnd: Pattern = [
+  [0x39001109, 0xffffffff],
+  [0xbd000100, 0xffffffff],
+];
 
-// Words before the seed to search for the signer start.
+// Maximum instructions to scan on either side of the seed sequence.
 const signerLookback = 512;
+const signerLookahead = 512;
+
+// The helper scan covers the search calls and their argument setup.
+const helperWords = 230;
 
 // Word offsets of the hash entry points from the reset function.
 const hashEntries = { update: 19, digest: 114 };
@@ -274,7 +265,7 @@ function searchBytes(
 }
 
 // Tracks constants through straight-line code only and returns the needle of each call
-// to searchTarget. Check the block's schema before trusting the results.
+// to searchTarget. Callers check the reconstructed checksum against captured CLI requests.
 function readSearches(
   image: Arm64MachO,
   words: readonly number[],
@@ -302,64 +293,6 @@ function readSearches(
   });
 
   return result;
-}
-
-function addressSchema(word: number, previous: number): number {
-  if (isAdrp(word)) {
-    return masked(word, 0x9f00001f);
-  }
-
-  if (isAdrp(previous)) {
-    const op = masked(word, 0xffc00000);
-
-    if ([0x91000000, 0x3dc00000, 0xfd400000].includes(op)) {
-      return masked(word, 0xffc003ff);
-    }
-
-    return word;
-  }
-
-  return isCall(word) ? masked(word, 0xfc000000) : word;
-}
-
-function signerSchema(word: number, next: number): number {
-  const wide = masked(word, 0x7f800000);
-  const register = word & 31;
-  const variable = word >>> 31 === 1 ? register === 1 : register === 3;
-
-  if ([0x52800000, 0x72800000].includes(wide) && variable) {
-    return masked(word, 0xffe0001f);
-  }
-
-  if (masked(word, 0xffe00000) === 0x52800000 && masked(next, 0xffc003e0) === 0x390003e0) {
-    return masked(word, 0xffe0001f);
-  }
-
-  return word;
-}
-
-function checkSchema(words: readonly number[], kind: BlockKind): void {
-  const schema = schemas[kind];
-  const detail = `ARM64 ${kind} instruction schema`;
-  requireSupported(words.length === schema.words, detail);
-  const normalized = Buffer.alloc(words.length * 4);
-
-  words.forEach((word, index) => {
-    let value = addressSchema(word, words[index - 1] ?? 0);
-
-    if (kind === "signer") {
-      const valueSchema = signerSchema(word, words[index + 1] ?? 0);
-
-      if (valueSchema !== word) {
-        value = valueSchema;
-      }
-    }
-
-    normalized.writeUInt32LE(value, index * 4);
-  });
-
-  const digest = createHash("sha256").update(normalized).digest("hex");
-  requireSupported(digest === schema.digest, detail);
 }
 
 interface Block {
@@ -406,24 +339,20 @@ function signerBlock(image: Arm64MachO, seed: Block): Block {
   const lower = Math.max(image.text.address, seed.address - signerLookback * 4);
   const before = image.words(lower, (seed.address - lower) / 4);
   const address = lower + uniquePattern(before, signerStart) * 4;
-  const words = image.words(address, schemas.signer.words);
-  checkSchema(words, "signer");
-  requireSupported(words.at(-2) === signerEnd[0] && words.at(-1) === signerEnd[1]);
+  const afterSeed = seed.address + seed.words.length * 4;
+  const textEnd = image.text.address + image.text.size;
+  const tail = image.words(afterSeed, Math.min(signerLookahead, (textEnd - afterSeed) / 4));
+  const end = afterSeed + (uniquePattern(tail, signerEnd) + signerEnd.length) * 4;
 
-  return { address, words };
+  return { address, words: image.words(address, (end - address) / 4) };
 }
 
-// The reset function loads the first two lane offsets as one vector and calls one round
-// function three times.
-function verifyHash(image: Arm64MachO, address: number): void {
-  const words = image.words(address, schemas.hash.words);
-  checkSchema(words, "hash");
-  const constants = vectors(image, words, address);
+// The reset function loads the first two lane offsets as one vector.
+function verifyReset(image: Arm64MachO, address: number): void {
+  const constants = vectors(image, image.words(address, hashEntries.update), address);
   requireSupported(constants.length === 1);
   const [low, high] = constants[0]!.map(unsigned);
   requireSupported(low === laneOffsets[0] && high === laneOffsets[1]);
-  const targets = calls(words, address);
-  requireSupported(targets.length === 3 && targets.every((target) => target === targets[0]));
 }
 
 function signerCalls(image: Arm64MachO, seed: Block, block: Block) {
@@ -443,7 +372,7 @@ function signerCalls(image: Arm64MachO, seed: Block, block: Block) {
 
   requireSupported(targets.every((target, index) => target === entries[signerCallLayout[index]!]));
   requireSupported(entries.quote !== entries.search);
-  verifyHash(image, reset);
+  verifyReset(image, reset);
 
   return { search: entries.search, helper: entries.helper, quote: entries.quote };
 }
@@ -482,8 +411,7 @@ function omissionMarkers(
   search: number,
   quote: number,
 ): CliOmission[] {
-  const words = image.words(helper, schemas.helper.words);
-  checkSchema(words, "helper");
+  const words = image.words(helper, helperWords);
   const targets = calls(words, helper);
   const helperCalls = [search, search, quote, search];
 

@@ -37,7 +37,7 @@ import { forkReplays } from "./lib/summary-fork.ts";
 const Config = Type.Object(
   {
     models: Type.Array(Type.String(), {
-      default: ["claude-fable-5-2", "claude-opus-5-5"],
+      default: ["claude-fable-5-2", "claude-mythos-5-2", "claude-opus-5-5"],
     }),
     beta: Type.String({ minLength: 1, default: "fast-mode-2026-02-01" }),
     costMultiplier: Type.Number({ minimum: 1, default: 2 }),
@@ -809,7 +809,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerFlag("fast", {
-    description: "Start in fast mode (Anthropic Fable and Opus, OpenAI)",
+    description: "Start in fast mode (supported Anthropic models, OpenAI)",
     type: "boolean",
     default: false,
   });
