@@ -203,6 +203,12 @@ Replaces pi's footer with one line of segments. Other extensions' statuses go on
 - `talk`, `autoMode`, and `fast` show those extensions' statuses. Leaving one out hides its status.
 - `cvp` shows the selected Anthropic model's catalog badge, such as `CVP: Defense Access`.
 - `tokens` shows `↑` input and `↓` output tokens since your last message, with `~` while output is an estimate.
+- `cost` shows the session's cost. On a subscription it adds the plan, such as `$0.00 (pro 200)`.
+  - `openai-codex`: `free`, `go`, `plus`, `pro 100`, `pro 200`, `pro 500`, `business`, or `enterprise`, from the login's access token.
+  - `anthropic`: `pro`, `max`, `ultra`, `team`, or `enterprise`, from `claude auth status`. This is the Claude CLI's login, not pi's.
+  - Any other plan shows its raw name, such as `edu_plus`.
+  - After `/login`, the new plan shows on the next model selection.
+  - `(sub)` stands in for the plan while it loads, with `--offline`, and when the lookup fails or isn't possible. A failed lookup also shows a warning.
 
 | Key                   | Default                  | Meaning                                                                                                                                |
 | --------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |

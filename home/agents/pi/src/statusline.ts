@@ -19,8 +19,10 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 
 import { cacheRefreshCost } from "./lib/cache-refresh.ts";
+import { offline } from "./lib/offline.ts";
 import { tildify } from "./lib/paths.ts";
 import { loadOrReport } from "./lib/settings.ts";
+import { trackPlans, type PlanTracker } from "./lib/subscription-plan.ts";
 
 const SEGMENTS = [
   "talk",
@@ -172,14 +174,14 @@ function trackCost(): (ctx: ExtensionContext) => number {
   };
 }
 
-function formatCost(cost: number, ctx: ExtensionContext): string | undefined {
-  const subscription = isSubscription(ctx);
+function formatCost(cost: number, ctx: ExtensionContext, plans: PlanTracker): string | undefined {
+  const { model } = ctx;
 
-  if (cost === 0 && !subscription) {
-    return undefined;
+  if (model === undefined || !isSubscription(ctx)) {
+    return cost === 0 ? undefined : `$${cost.toFixed(2)}`;
   }
 
-  return `$${cost.toFixed(2)}${subscription ? " (sub)" : ""}`;
+  return `$${cost.toFixed(2)} (${plans.label(model.provider) ?? "sub"})`;
 }
 
 function formatTotals(totals: Totals | undefined): string | undefined {
@@ -306,6 +308,18 @@ export default function (pi: ExtensionAPI) {
   const speed = trackSpeed(pi, () => requestRender?.());
   const totals = trackTotals(pi, () => requestRender?.());
   const sessionCost = trackCost();
+  const plans = trackPlans(() => requestRender?.());
+  let showsCost = false;
+
+  // Only the TUI draws the footer. A lookup can refresh a login over the network.
+  const loadPlan = (ctx: ExtensionContext) => {
+    if (showsCost && ctx.mode === "tui" && !offline() && isSubscription(ctx)) {
+      plans.load(ctx);
+    }
+  };
+
+  pi.on("model_select", async (_event, ctx) => loadPlan(ctx));
+  pi.on("session_shutdown", async () => plans.dispose());
 
   pi.on("session_start", async (_event, ctx) => {
     const config = loadOrReport(ctx, "The custom status line", "statusline", Config);
@@ -315,6 +329,9 @@ export default function (pi: ExtensionAPI) {
     }
 
     const { segments } = config;
+
+    showsCost = segments.includes("cost");
+    loadPlan(ctx);
 
     ctx.ui.setFooter((tui, theme, footerData) => {
       requestRender = () => tui.requestRender();
@@ -353,7 +370,7 @@ export default function (pi: ExtensionAPI) {
 
               return [usage && formatContext(usage, theme)];
             },
-            cost: () => [tint("muted", formatCost(sessionCost(ctx), ctx))],
+            cost: () => [tint("muted", formatCost(sessionCost(ctx), ctx, plans))],
             speed: () => formatSpeed(speed).map((part) => theme.fg("muted", part)),
           };
 

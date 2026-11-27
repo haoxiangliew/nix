@@ -14,6 +14,7 @@ import {
   saveCatalog,
   type Catalog,
 } from "./claude-catalog.ts";
+import { offline } from "./offline.ts";
 import { errorMessage } from "./settings.ts";
 
 const STATUS = "cvp";
@@ -30,13 +31,6 @@ interface Refresh {
 
 // Sessions in one process, such as subagents', share a refresh.
 let latest: Refresh | undefined;
-
-// pi sets PI_OFFLINE for --offline too.
-function offline(): boolean {
-  const flag = process.env.PI_OFFLINE?.toLowerCase();
-
-  return flag === "1" || flag === "true" || flag === "yes";
-}
 
 // True when the CLI switched logins during this catalog's refresh and the new login's refresh has
 // started.

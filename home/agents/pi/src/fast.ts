@@ -30,6 +30,7 @@ import {
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
+import { chatgptClaim } from "./lib/openai-token.ts";
 import { errorMessage, loadOrReport, loadSettings, saveSetting } from "./lib/settings.ts";
 import { speedSwitch, type SpeedSwitch } from "./lib/speed-switch.ts";
 import { forkReplays } from "./lib/summary-fork.ts";
@@ -109,12 +110,6 @@ const CODEX_RELEASE_URL = "https://registry.npmjs.org/@openai/codex/latest";
 
 const NpmRelease = Type.Object({ version: Type.String({ minLength: 1 }) });
 
-const JWT_CLAIM = "https://api.openai.com/auth";
-
-const AccessToken = Type.Object({
-  [JWT_CLAIM]: Type.Object({ chatgpt_account_id: Type.String({ minLength: 1 }) }),
-});
-
 // Codex refreshes its catalog after this long.
 const CATALOG_TTL_MS = 5 * 60_000;
 
@@ -178,17 +173,10 @@ function saveSpeed(model: Model<Api>, speed: Speed): void {
   saveSetting("fastMode", speeds);
 }
 
+const AccountId = Type.Object({ chatgpt_account_id: Type.String({ minLength: 1 }) });
+
 function accountId(token: string): string {
-  const [, payload] = token.split(".");
-
-  const claims: unknown =
-    payload === undefined ? undefined : JSON.parse(Buffer.from(payload, "base64url").toString());
-
-  if (!Value.Check(AccessToken, claims)) {
-    throw new Error("The openai-codex login has no ChatGPT account ID");
-  }
-
-  return claims[JWT_CLAIM].chatgpt_account_id;
+  return chatgptClaim(token, AccountId, "ChatGPT account ID").chatgpt_account_id;
 }
 
 async function latestCodexVersion(): Promise<string> {

@@ -1,14 +1,13 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { promisify } from "node:util";
 import { Type, type StaticDecode } from "typebox";
 import { Value } from "typebox/value";
 
 import { isUuid } from "./billing-fields.ts";
 import { attributionFields, readAttribution, readFingerprintFlow } from "./claude-attribution.ts";
+import { readClaudeAuthStatus, type ClaudeAuthStatus } from "./claude-auth.ts";
 import { readFingerprint } from "./claude-fingerprint.ts";
 import { readProbeFlags, type ProbeFlags } from "./claude-flags.ts";
 import { discoverCliProfile, type CliProfile } from "./claude-profile.ts";
@@ -111,9 +110,7 @@ function fileStamp(path: string): string {
   return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 }
 
-const runFile = promisify(execFile);
-
-const AuthStatus = Type.Object({
+const BillingStatus = Type.Object({
   loggedIn: Type.Literal(true),
   authMethod: Type.Literal("claude.ai"),
   apiProvider: Type.Literal("firstParty"),
@@ -123,14 +120,16 @@ const AuthStatus = Type.Object({
 });
 
 async function readSubscription(launcher: string) {
-  const { stdout } = await runFile(launcher, ["auth", "status", "--json"], {
-    timeout: 5000,
-    maxBuffer: 65_536,
-  });
+  let status: ClaudeAuthStatus;
 
-  const status: unknown = JSON.parse(stdout);
+  try {
+    status = await readClaudeAuthStatus(launcher);
+  } catch (cause) {
+    // Every billing error ends the same way, so the user knows pi sent nothing.
+    throw new Error(`${errorMessage(cause).trimEnd()}. Request blocked.`, { cause });
+  }
 
-  if (!Value.Check(AuthStatus, status)) {
+  if (!Value.Check(BillingStatus, status)) {
     throw new Error("Claude CLI OAuth plan is unavailable. Request blocked.");
   }
 
