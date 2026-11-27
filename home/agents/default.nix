@@ -14,9 +14,7 @@ let
       map (p: lib.nameValuePair name (path p)) (lib.filter (p: lib.getName p == name) packages)
     );
 
-  # pi runs herdr agents with its own tools, from pi/src/herdr-agents.ts, instead of the herdr skill.
-  # claude and codex check pathIsDirectory on each skill, which builds a derivation during evaluation
-  # and fails for other platforms, so they get prose-unslop as text. pi only accepts paths.
+  # claude and codex's pathIsDirectory check fails for other platforms, so they get text
   skills = lib.mkMerge [
     (pkgsOf config.home.packages "herdr" (p: "${p.src}/skills/herdr"))
     sharedSkills
@@ -49,32 +47,11 @@ let
   integrations =
     pkgsOf config.home.packages "herdr" lib.id // pkgsOf config.home.packages "rex" lib.id;
 
-  # Rex.app ships its CLI inside the server bundle it updates. Rex adds that directory to PATH, but
-  # nix-darwin's set-environment replaces PATH when fish starts.
+  # nix-darwin's set-environment replaces the PATH Rex sets
   rex = pkgs.writeShellScriptBin "rex" ''
     exec "''${REX_BIN_DIR:-$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS}/rex" "$@"
   '';
 
-  rexSessionHook = pkgs.writeShellApplication {
-    name = "rex-session-hook";
-    runtimeInputs = [ pkgs.jq ];
-    text = builtins.readFile ./rex-session-hook.sh;
-  };
-
-  rexSessionHooks = agent: {
-    SessionStart = lib.optionals pkgs.stdenv.isDarwin [
-      {
-        hooks = [
-          {
-            type = "command";
-            command = "${lib.getExe rexSessionHook} ${agent}";
-          }
-        ];
-      }
-    ];
-  };
-
-  # Rex.app may not be installed, so a failed Rex setup warns instead of failing activation.
   installIntegration = {
     herdr = exe: target: "run ${exe} integration install ${target}";
     rex = exe: target: ''
@@ -90,13 +67,11 @@ let
     )
   );
 
-  # Versions and hashes come from bun.lock, so `bun update` bumps runtime packages too.
   npmPackage =
     name:
     let
       entry = bunLock.packages.${name};
       version = lib.removePrefix "${name}@" (builtins.elemAt entry 0);
-      # A scoped package's tarball and store path use the name without its scope.
       tarball = pkgs.fetchurl {
         url = "https://registry.npmjs.org/${name}/-/${baseNameOf name}-${version}.tgz";
         hash = builtins.elemAt entry 3;
@@ -107,13 +82,9 @@ let
       tar -xzf ${tarball} -C $out --strip-components=1
     '';
 
-  # A package's dependencies in bun.lock, without peer dependencies, which pi provides.
   lockDependencies =
     name: builtins.attrNames ((builtins.elemAt bunLock.packages.${name} 2).dependencies or { });
 
-  # A flat node_modules folder with the packages and everything they depend on, at bun.lock's
-  # versions. `overrides` maps a package name to another source, such as a patched build. `shallow`
-  # lists packages to copy without their dependencies.
   nodeModules =
     {
       packages,
@@ -153,9 +124,7 @@ let
     '') config.programs.pi-coding-agent.extensions}
   '';
 
-  # pi loads a local package without installing it, so pi-better-background-tasks' dependencies go
-  # in its node_modules. The package runs its scripts with process.execPath, but that is the
-  # compiled pi binary, which starts pi and not the script, so bun runs them.
+  # process.execPath is the compiled pi binary, so bun runs the package's scripts
   backgroundTasks = pkgs.runCommand "pi-better-background-tasks" { } ''
     cp -r ${npmPackage "pi-better-background-tasks"} $out
     chmod -R u+w $out
@@ -169,19 +138,12 @@ let
     } $out/node_modules
   '';
 
-  # pi-subagents with Explore on the Haiku family instead of Haiku 4.5, and fuzzy model names that
-  # pick the newest version on a tie. Its imports are all ones pi provides, so it needs no
-  # node_modules.
   subagents = pkgs.applyPatches {
     name = "pi-subagents";
     src = npmPackage "@gotgenes/pi-subagents";
     patches = [ ./pi/patches/pi-subagents.patch ];
   };
 
-  # This pi-permission-system lets the reviewer allow a request outside the project unless it is a
-  # proven write or an edit. Without the patch, such a request opens the permission dialog unless
-  # none of its paths exist. pi loads a local package without installing it, so its dependencies go
-  # in its node_modules.
   permissionSystem = pkgs.runCommand "pi-permission-system" { } ''
     cp -r ${
       pkgs.applyPatches {
@@ -196,9 +158,7 @@ let
     } $out/node_modules
   '';
 
-  # pi that saves an MCP HTTP reply over its 16 MiB message limit to a file and fails the call with
-  # the file's path, instead of cancelling the reply. A pi update that changes the replaced code
-  # fails the build here.
+  # Saves an MCP HTTP reply over pi's 16 MiB limit to a file instead of cancelling it
   piPackage = pkgs.llm-agents.pi.overrideAttrs (old: {
     # The compiled binary embeds pi-mcp from node_modules, which exists only after npm install.
     preInstall = ''
@@ -224,10 +184,7 @@ let
     };
     codex = {
       target = "codex";
-      after = [
-        "mergeCodexSettings"
-        "mergeCodexHooks"
-      ];
+      after = [ "mergeCodexSettings" ];
     };
     pi-coding-agent = {
       target = "pi";
@@ -302,13 +259,6 @@ in
         name = "mergeCodexSettings";
         file = ".codex/config.toml";
       })
-      {
-        file.".codex/hooks.json".text = builtins.toJSON { hooks = rexSessionHooks "codex"; };
-      }
-      (mutableConfig.mutableJson {
-        name = "mergeCodexHooks";
-        file = ".codex/hooks.json";
-      })
       (mutableConfig.mutableJson {
         name = "mergePiSettings";
         file = "${config.programs.pi-coding-agent.configDir}/settings.json";
@@ -351,7 +301,7 @@ in
                   }
                 );
             authorizerChain = [ "auto-mode" ];
-            # tier 3: anything not listed here goes to the reviewer
+            # tier 3: the reviewer checks everything else
             permission = {
               # tier 1: read-only tools
               read = "allow";
@@ -375,13 +325,11 @@ in
               web_enable = "allow";
               skill = "allow";
 
-              # tier 2: writes inside the project. the reviewer checks access outside it that isn't a
-              # proven read. if the reviewer allows a proven write or an edit outside it, the dialog
-              # still asks you
+              # tier 2: writes inside the project
               edit = "allow";
               write = "allow";
 
-              # tier 1: read-only commands. don't add interpreters or package scripts, which can run any code
+              # tier 1: read-only commands, so no interpreters or package scripts
               bash = {
                 "git status*" = "allow";
                 "git diff*" = "allow";
@@ -411,9 +359,7 @@ in
               };
               external_directory_read."*" = "allow";
 
-              # the reviewer checks credential files, even for read-only tools.
-              # pi-permission-system.patch checks only the write rules for a path that a command
-              # writes, so don't make a read rule stricter than its write rule
+              # the patch checks only a written path's write rules, so keep read rules no stricter
               path = {
                 "*" = "allow";
                 "*.env" = "ask";
@@ -433,8 +379,7 @@ in
           };
       }
       {
-        # Subagents don't load pi-better-background-tasks. It tells them to end their turn while a
-        # task runs, and pi-subagents can't resume them when the task ends.
+        # pi-subagents can't resume a subagent that ends its turn to wait for a background task
         file."${config.programs.pi-coding-agent.configDir}/subagents.json".source =
           (pkgs.formats.json { }).generate "subagents.json"
             {
@@ -463,14 +408,13 @@ in
               ] (lib.const { enabled = false; });
             };
       }
-      # Reload init.lua without starting Rex. A stopped server is normal; other failures still warn.
       (lib.mkIf pkgs.stdenv.isDarwin {
         activation.reloadRexConfig = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
           reloadRexConfig() {
             local output status=0
             output=$(run ${lib.getExe rex} --autostart=false config reload 2>&1) || status=$?
 
-            # Rex uses exit 4 for this case. Match the diagnostic too, not all connection failures.
+            # other connection failures exit 4 too
             if [[ $status -eq 4 &&
               $output == "Error: no Rex server is running at "*", and autostart is disabled" &&
               $output != *$'\n'* ]]; then
@@ -514,14 +458,6 @@ in
       source = ./rex;
       recursive = true;
     };
-    # agent_resume.json holds agent_resume.lua's settings.
-    xdg.configFile."rex/agent_resume.json" = lib.mkIf pkgs.stdenv.isDarwin {
-      source = (pkgs.formats.json { }).generate "rex-agent-resume.json" {
-        # the Rex server's PATH has no rex
-        rex = lib.getExe rex;
-      };
-    };
-    # worktree.json holds worktree.lua's settings.
     xdg.configFile."rex/worktree.json" = lib.mkIf pkgs.stdenv.isDarwin {
       source = (pkgs.formats.json { }).generate "rex-worktree.json" {
         directory = "~/Developer/.rex/worktrees";
@@ -571,7 +507,6 @@ in
       mcp.enable = true;
       claude-code = {
         enable = true;
-        # generates a Home Manager plugin with `.mcp.json` and wraps claude with `--plugin-dir`
         enableMcpIntegration = true;
         package = pkgs.llm-agents.claude-code;
         settings = {
@@ -586,7 +521,6 @@ in
             pr = "";
             sessionUrl = false;
           };
-          hooks = rexSessionHooks "claude";
         };
         inherit skills integrations;
       };
@@ -619,8 +553,7 @@ in
           theme = "light/dracula-pro";
           terminal.showTerminalProgress = true;
           showHardwareCursor = true;
-          enableInstallTelemetry = false;
-          # use bun as npm. pi's update check runs `npm view`, so this runs `bun info` instead
+          # pi's update check runs `npm view`, which bun calls `bun info`
           npmCommand = [
             (lib.getExe (
               pkgs.writeShellScriptBin "bun" ''
@@ -647,8 +580,7 @@ in
           talk.prompt = talkPrompt;
           mcpAncestors.roots = [ "~/Developer" ];
           rewind.silentCheckpoints = true;
-          # hides the Rex skill that Codex's integration puts in ~/.agents/skills, which pi reads by
-          # default. pi runs Rex agents with its own tools, from pi/src/rex.ts.
+          # hides the Rex skill that Codex's integration adds to ~/.agents/skills
           skills = [ "-${config.home.homeDirectory}/.agents/skills/rex" ];
           packages = [
             "npm:pi-web-access"
@@ -707,17 +639,14 @@ in
           "attention.ts" = ./pi/src/attention.ts;
           "herdr-agents.ts" = ./pi/src/herdr-agents.ts;
           "rex.ts" = ./pi/src/rex.ts;
-          "rex-resume.ts" = ./pi/src/rex-resume.ts;
           "auto-mode.ts" = ./pi/src/auto-mode.ts;
           "compaction.ts" = ./pi/src/compaction.ts;
           "mcp-ancestors.ts" = ./pi/src/mcp-ancestors.ts;
           "super-review.ts" = ./pi/src/super-review.ts;
-          # Extensions import package.json's dependencies at runtime.
           "node_modules" = nodeModules {
             packages = lib.attrNames (lib.importJSON ./pi/package.json).dependencies;
             overrides."@gotgenes/pi-subagents" = subagents;
-            # Extensions import only these packages' service getters, which load none of their
-            # dependencies.
+            # Extensions import only these packages' service getters, which load no dependencies.
             shallow = [
               "@gotgenes/pi-permission-system"
               "@gotgenes/pi-subagents"

@@ -2,5 +2,6 @@
 
 -- Worktrees… in the command palette opens, makes, and removes git worktrees as tabs.
 require("worktree")
--- Resumes coding agents in their panes after the Rex server restarts.
-require("agent_resume")
+
+-- Lets Rex resume pi sessions after the server restarts.
+rex.set("resume.trust.pi", { command = { "pi", "--session", rex.match.uuid } })

@@ -174,12 +174,6 @@ Rex has no worktrees, so [`home/agents/rex/worktree.lua`](../rex/worktree.lua) a
 
 Rex stops other palette actions after 30 seconds. **Worktrees…** and the tools run as scripts, which Rex doesn't stop.
 
-### `rex-resume.ts`
-
-Resumes pi sessions in their panes after the Rex server restarts. Claude Code and Codex sessions resume too, through [`home/agents/rex-session-hook.sh`](../rex-session-hook.sh). Each agent records its session in `~/.local/state/rex/agents/<block>`, and [`home/agents/rex/agent_resume.lua`](../rex/agent_resume.lua) runs the resume command once the pane is back at a shell.
-
-Quitting an agent deletes its record. Subagents, print runs such as `claude -p`, and Nushell panes aren't resumed. No settings.
-
 ### `mcp-ancestors.ts`
 
 Loads MCP servers from the `.mcp.json` in each folder from a configured root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. `${VAR}` and `${VAR:-default}` expand. Untrusted projects load none.
