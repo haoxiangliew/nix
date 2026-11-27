@@ -16,6 +16,31 @@
         "type": "github"
       }
     },
+    "awake": {
+      "inputs": {
+        "crane": "crane",
+        "fenix": "fenix",
+        "nixpkgs": [
+          "nixpkgs-unstable"
+        ],
+        "treefmt-nix": [
+          "treefmt-nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1795776946,
+        "narHash": "sha256-rD0qkGEl36mAkbU2YnsDeMyGrQxEuQCHckW8vDNjCbI=",
+        "owner": "haoxiangliew",
+        "repo": "awake",
+        "rev": "e2dc47f9ff647914ae58f1e5dc128cd69233d45c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "haoxiangliew",
+        "repo": "awake",
+        "type": "github"
+      }
+    },
     "bdwgc": {
       "flake": false,
       "locked": {
@@ -64,6 +89,21 @@
         "owner": "Mic92",
         "ref": "llm-agents",
         "repo": "bun2nix",
+        "type": "github"
+      }
+    },
+    "crane": {
+      "locked": {
+        "lastModified": 1794962885,
+        "narHash": "sha256-zrweT2tXbcWiJMACOhOr2eYFJKVa6g59ouRaZ3BS5Do=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "95e62def851e9d650f0eab63cb4f59a3306e20bd",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
         "type": "github"
       }
     },
@@ -145,6 +185,28 @@
       "original": {
         "type": "file",
         "url": "https://install.determinate.systems/determinate-nixd/tag/v3.24.3/x86_64-linux"
+      }
+    },
+    "fenix": {
+      "inputs": {
+        "nixpkgs": [
+          "awake",
+          "nixpkgs"
+        ],
+        "rust-analyzer-src": "rust-analyzer-src"
+      },
+      "locked": {
+        "lastModified": 1792838306,
+        "narHash": "sha256-fBD2iETShAeaJlVm7ieZGhAgaxcLk9OHe/2LnqgvZ4Q=",
+        "owner": "nix-community",
+        "repo": "fenix",
+        "rev": "e691190ae78c9551d1e6a0cba156555c8f7cceca",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "fenix",
+        "type": "github"
       }
     },
     "flake-compat": {
@@ -480,6 +542,7 @@
     "root": {
       "inputs": {
         "anthropic-skills": "anthropic-skills",
+        "awake": "awake",
         "darwin": "darwin",
         "determinate": "determinate",
         "helix": "helix",
@@ -493,6 +556,23 @@
         "pi-review": "pi-review",
         "pstack": "pstack",
         "treefmt-nix": "treefmt-nix_2"
+      }
+    },
+    "rust-analyzer-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792691653,
+        "narHash": "sha256-3/DMV3Lpmthk6OV2b7bJSJ5Okouyvl755YZENyLwllo=",
+        "owner": "rust-lang",
+        "repo": "rust-analyzer",
+        "rev": "0c4d74686b21f2b3bd8872b6d3cf36ad2e740d49",
+        "type": "github"
+      },
+      "original": {
+        "owner": "rust-lang",
+        "ref": "nightly",
+        "repo": "rust-analyzer",
+        "type": "github"
       }
     },
     "rust-overlay": {

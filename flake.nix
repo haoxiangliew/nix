@@ -26,6 +26,11 @@
       inputs.nix.inputs.nixpkgs-regression.follows = "nixpkgs";
     };
 
+    awake = {
+      url = "github:haoxiangliew/awake";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+      inputs.treefmt-nix.follows = "treefmt-nix";
+    };
     helix.url = "github:helix-editor/helix";
     llm-agents.url = "github:numtide/llm-agents.nix";
     nix-index-database = {

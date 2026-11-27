@@ -1,6 +1,10 @@
 inputs:
 
 {
+  awake = final: prev: {
+    awake = inputs.awake.packages.${prev.stdenv.hostPlatform.system}.default;
+  };
+
   helix = final: prev: {
     helix = inputs.helix.packages.${prev.stdenv.hostPlatform.system}.default;
   };

@@ -8,6 +8,7 @@
 
   home = {
     packages = with pkgs; [
+      awake
       unstable.ioskeley-mono.standard
       unstable.ioskeley-mono.term
       nerd-fonts.symbols-only
