@@ -1,17 +1,8 @@
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Type, type StaticDecode } from "typebox";
 import { Value } from "typebox/value";
@@ -25,6 +16,7 @@ import { readRequestIdentity } from "./claude-request-identity.ts";
 import { extractCliSigner, validateCliChecksum } from "./claude-signer.ts";
 import { discoverTurnProfile } from "./claude-turn-profile.ts";
 import { readTurnFormat, type TurnFormat } from "./claude-turns.ts";
+import { billingFilePath, writePrivateFile } from "./files.ts";
 import { JavaScript } from "./javascript.ts";
 import { awaitAbort, cached, cachedOutcome } from "./promise.ts";
 import { errorMessage } from "./settings.ts";
@@ -179,8 +171,7 @@ const sources = new Map<string, Promise<SourceIdentity>>();
 
 const SavedSource = Type.Object({ code: Text, source: Source });
 
-const savedPath = () =>
-  join(getAgentDir(), "extensions", "anthropic-billing", "source-identity.json");
+const savedPath = () => billingFilePath("source-identity.json");
 
 // Edits to the scanning code invalidate saved sources.
 function scanHash(): string {
@@ -238,16 +229,10 @@ function readSavedSource(launcher: string, version: string): SourceIdentity | un
 
 function saveSource(source: SourceIdentity): void {
   const path = savedPath();
-  const tmp = `${path}.${crypto.randomUUID()}.tmp`;
 
   try {
-    const saved = Value.Encode(SavedSource, { code: scanHash(), source });
-
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(tmp, JSON.stringify(saved), { mode: 0o600 });
-    renameSync(tmp, path);
+    writePrivateFile(path, JSON.stringify(Value.Encode(SavedSource, { code: scanHash(), source })));
   } catch (cause) {
-    rmSync(tmp, { force: true });
     throw new Error(
       `Couldn't save the Claude CLI identity to ${path}. ${errorMessage(cause)}. Request blocked.`,
       { cause },

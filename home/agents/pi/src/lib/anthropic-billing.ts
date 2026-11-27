@@ -32,7 +32,8 @@ import { requestHeaders, type FetchInput } from "./fetch.ts";
 import { piAnthropicProvider, readPiIdentity } from "./pi-identity.ts";
 import { awaitAbort, cached } from "./promise.ts";
 
-const targetOrigin = new URL(piAnthropicProvider.baseUrl!).origin;
+/** pi's Anthropic API origin, the only origin pi sends its OAuth token to. */
+export const targetOrigin = new URL(piAnthropicProvider.baseUrl!).origin;
 
 const Text = Type.String();
 
@@ -387,7 +388,8 @@ async function fetchAccount(
   }
 }
 
-async function assertAccount(
+/** Checks that pi's OAuth token, in `headers`, belongs to the Claude CLI's account. */
+export async function assertAccount(
   upstream: FetchFunction,
   headers: Headers,
   identity: ClaudeIdentity,

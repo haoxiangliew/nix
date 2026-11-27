@@ -1,50 +1,53 @@
 # pi extensions
 
-Extensions and a theme for [pi](https://pi.dev). `home/agents/default.nix` installs them into `~/.pi/agent`. `src/lib/` holds code they share.
-
-## Patches
-
-`patches/pi-review.patch` adds to [pi-review](https://github.com/earendil-works/pi-review):
-
-- `/end-review` keeps the editor open and shows its progress. Esc cancels.
-- `/review custom <prompt>`, or "Review with a custom prompt", reviews what you describe.
-- `$name` in a custom prompt, custom instructions, or `--extra` loads that skill into the review.
-- `super-review.ts` can add reviewers to `/review`.
-
-`patches/pi-subagents.patch` changes [pi-subagents](https://www.npmjs.com/package/@gotgenes/pi-subagents):
-
-- Explore runs on the newest Haiku instead of a fixed version.
-- A fuzzy model name, such as `sonnet`, picks the newest version when several match.
-
-The build fails if a patch stops applying after an update.
-
-## ChatGPT plan
-
-To use a ChatGPT plan, run `/login openai-codex` and select `openai-codex/gpt-6.2-sol` in `/model`.
+Extensions, patches, and a theme for [pi](https://pi.dev). `home/agents/default.nix` installs them into `~/.pi/agent`. `src/lib/` holds code the extensions share.
 
 ## Configure
 
-Extensions read their settings from `~/.pi/agent/settings.json`. Set them through `programs.pi-coding-agent.settings` in `home/agents/default.nix`, then run `/reload`. Missing keys use the defaults below. An unknown key or invalid value turns the extension off and shows an error. Activation doesn't delete old keys, so remove renamed keys by hand.
+Extensions read their settings from `~/.pi/agent/settings.json`. Set them in `programs.pi-coding-agent.settings` in `home/agents/default.nix`, then run `/reload`. Missing keys use the defaults below. An unknown key or invalid value turns the extension off and shows an error. Activation doesn't delete old keys, so remove renamed keys by hand.
+
+## ChatGPT plan
+
+Run `/login openai-codex`, then select `openai-codex/gpt-6.2-sol` in `/model`.
+
+## Patches
+
+The patches in `patches/` change other packages. The build fails if a patch stops applying after an update.
+
+- `pi-review.patch` changes [pi-review](https://github.com/earendil-works/pi-review):
+  - `/end-review` keeps the editor open and shows its progress. Esc cancels.
+  - `/review custom <prompt>`, or "Review with a custom prompt", reviews what you describe.
+  - `$name` in a custom prompt, custom instructions, or `--extra` loads that skill.
+  - `super-review.ts` can add reviewers to `/review`.
+- `pi-subagents.patch` changes [pi-subagents](https://www.npmjs.com/package/@gotgenes/pi-subagents):
+  - Explore runs on the newest Haiku.
+  - A fuzzy model name, such as `sonnet`, picks the newest match.
+- `pi-permission-system.patch` lets `auto-mode.ts` allow requests outside the project.
+- `mcp-spill.js` saves an MCP reply too large for pi to a file. The call fails with the file's path.
 
 ## Extensions
 
 ### `anthropic-billing.ts`
 
-Sends pi's Anthropic OAuth requests with the same headers, system prompt, and body signature as the installed `claude --print`. This covers agent turns, compaction, cache warming, and extension calls such as `/btw`. It works only on macOS ARM64 and Linux x86-64.
+Sends pi's Anthropic OAuth requests the way the installed `claude --print` sends them, with the same headers, system prompt, and body signature. This covers agent turns, compaction, cache warming, and extension calls such as `/btw`. Works only on macOS ARM64 and Linux x86-64.
 
-Requests later in a conversation match the CLI too. They carry the previous request and reply IDs, the turn counter, and which tools ran and how long they took. With message threads, pi sends only the new messages. pi uses threads only if the CLI does for the account. Then continued requests carry the same system prompt and tools the CLI sends, and an idle thread restarts on the CLI's schedule. Extension calls and cache warming don't change the conversation's thread or IDs.
+- It runs `claude` against a local mock to learn its requests.
+- It blocks a request it can't send that way.
+- On non-Enterprise plans, it blocks further requests once a response uses usage credits.
+- It adds the models in the account's Claude Code model catalog. Accounts in the Cyber Verification Program get Claude Mythos.
+- A model with a catalog badge, such as `CVP: Defense Access`, shows the badge after its name in `/model` and in the statusline.
 
-To learn the CLI's requests, it runs `claude` against a local mock with the account's own feature flags. `claude` may contact Anthropic for flags and telemetry, as it normally does. A second run makes a tool call to learn the later requests. That run starts on the first threaded request, or on the first request after a reply or a tool run. If a run fails, pi blocks the requests that need it until `/reload`. A change to the flags that decide threads runs both again.
+The catalog is saved in `~/.pi/agent/extensions/anthropic-billing/model-catalog.json`. pi refreshes it at most once an hour, and not with `--offline`. While the catalog adds or renames a model, pi's Anthropic models skip pi.dev's catalog updates.
 
-It blocks a request it can't send that way. On non-Enterprise plans, it also blocks further requests once a response uses usage credits. Run `/reload` after updating `claude` or pi, or after switching accounts. No settings.
+Run `/reload` after updating `claude` or pi, or after switching accounts. No settings.
 
 ### `attention.ts`
 
-Sends a notification when pi waits for you or finishes, unless you cancelled with Esc. In herdr, it shows pi as blocked while a question is open and notifies only for the active tab. In Rex, it also shows pi as blocked while an extension draws its own dialog, such as `ask_user_question` or pi-permission-system's prompt. pi reports its own dialogs, but leaves its state at working while an extension's dialog is open. `attention.ts` reports those as blocked on pi's own record, so Rex's tabs and session list show them. When the dialog closes, it writes pi's own state again.
+Notifies you when pi waits for you or finishes, unless you pressed Esc. In herdr and Rex, it shows pi as blocked while a question or an extension's dialog is open. In Rex, pi stays working while background tasks or subagents it waits on run.
 
-pi reports done whenever a run ends, even when a background task, a background subagent, or an agent in another pane will start the next run. In Rex, `attention.ts` reports working with a message such as "Waiting on 2 background tasks" in place of that done. Once the work ends, it reports pi's done and sends the "Ready for input" notification. A task started with `callback: false` doesn't count, and a run you cancel with Esc still shows idle. A task that calls back and never ends, such as a dev server, keeps pi working, so start those with `callback: false`. `attention.ts` reads the task files under `$TMPDIR/pi-better-background-tasks`, because pi-better-background-tasks has no API for them. If it can't read them, pi reports done as before.
+It also tells the agent to ask with `ask_user_question` only for choices it can't make, and never to end a turn with a question in chat.
 
-It also tells the agent to ask with `ask_user_question` only for choices it can't make, and to recommend an option when it asks. The agent shows drafts instead of asking whether to apply them. It never ends a turn with a question in chat, because herdr shows that turn as done.
+Start a task that never ends, such as a dev server, with `callback: false`. Otherwise pi stays working.
 
 | Key                 | Default | Meaning                            |
 | ------------------- | ------- | ---------------------------------- |
@@ -53,11 +56,9 @@ It also tells the agent to ask with `ask_user_question` only for choices it can'
 
 ### `auto-mode.ts`
 
-A model reviews pi-permission-system requests instead of asking you. Rules in `home/agents/default.nix` allow read-only tools, read-only commands, and writes inside the project without a review. The reviewer trusts your messages and your answers to `ask_user_question`, not the agent's tool calls or output.
+A reviewer model answers pi-permission-system requests instead of you. Rules in `home/agents/default.nix` allow read-only tools, read-only commands, and writes inside the project without a review. The reviewer trusts your messages and your answers to `ask_user_question`, not the agent's tool calls or output.
 
-When the reviewer denies a request, the agent takes the safer step if the reason names one. Otherwise it asks you with `ask_user_question` and retries once if you approve. A subagent stops and reports the denial to its parent instead. Errors open the permission dialog. So does a `path` request that the reviewer doesn't deny, and so does a proven write or an edit outside the project. `patches/pi-permission-system.patch` lets the reviewer allow other requests outside the project. Without the patch, pi-permission-system sends them to the dialog unless none of their paths exist.
-
-After `autoMode.maxDenials` denials in a row, the reviewer keeps reviewing, but each further denial opens the permission dialog instead of going back to the agent. An allow or a message from you resets the count. The main agent and each subagent have their own count.
+When the reviewer denies a request, the agent takes the safer step the reviewer names, or asks you and retries once if you approve. Errors, and some requests outside the project, open the permission dialog. After `autoMode.maxDenials` denials in a row, each further denial opens the dialog too.
 
 | Key                                     | Default                                                          | Meaning                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -80,17 +81,14 @@ After `autoMode.maxDenials` denials in a row, the reviewer keeps reviewing, but 
 
 ### `compaction.ts`
 
-Writes the summaries for compaction, `/tree`, and `/end-review` from a fork of the session, so they see full tool results. It works with every provider. It also compacts at the end of a turn once context reaches `compactAt` of the model's window. If a fork for pi's own compaction or a `/tree` summary fails, pi's summarizer runs instead. If an end-of-turn fork fails, compaction waits for pi's own threshold.
+Writes the summaries for compaction, `/tree`, and `/end-review` from a fork of the session. The summary sees full tool results and reads the prompt cache. If a fork fails, pi's own summarizer runs. It also:
 
-The fork repeats the session's last request, so it reads the prompt cache and keeps settings other extensions add, such as `/fast`. Requests it can't repeat, such as Google's, go out as pi builds them and may miss the cache. So does the first fork after pi restarts. A notice after each fork shows how much of its input came from the cache.
+- compacts at the end of a turn once context reaches `summaryFork.compactAt` of the model's window.
+- leaves out the thinking blocks Anthropic would drop after a compaction.
+- keeps an idle session's one-hour cache warm for `summaryFork.idle.warmMinutes`, then compacts the session while the cache is still warm.
+- compacts a large session that sat idle, such as after sleep or a restart, before your next prompt. This costs less than writing its whole context to the cache again.
 
-Anthropic binds each thinking block to the conversation before it, and a compaction replaces that conversation with a summary. Anthropic then drops the thinking blocks in the messages the compaction kept, every time it gets the whole history, and pi shows a notice each time. So this extension leaves those blocks out of requests to the Anthropic models that bind thinking, from the first request after a compaction.
-
-Pi's idle cache warming stops after 30 minutes, which is before the first refresh of a one-hour cache. So a large session left idle for an hour pays to write its whole context again. For those caches, this extension repeats the last request with a one-token reply shortly before the cache expires, which renews it. Once the session has been idle for `idle.warmMinutes`, the next refresh compacts it instead, while the cache is still warm. If the model can't repeat the request with a one-token reply, as an Anthropic model with a thinking budget can't, the extension compacts the session at the first refresh time instead. If the compaction's fork fails, the session stays as it was.
-
-The refreshes need pi running and the machine awake. A timer that fires late, as after sleep, sends nothing, because the cache may have expired. After a refresh that misses the cache, the extension sends no more. Each refresh is a `cache-refresh` entry in the session, which the statusline's cost includes. The next run shows a notice with the number of refreshes.
-
-After sleep or a restart, a session's cache may have expired. If the session's last reply was at least `idle.warmMinutes` ago and it holds at least `idle.minTokens`, your next prompt compacts the session first and then runs against the summary. The compaction reads the session uncached once and writes no cache for the conversation. That costs less than writing the whole context to the cache again, and every later turn is smaller. The prompt waits for the compaction. If you press Escape or the fork fails, the prompt goes to the full session. After a shorter idle, the session keeps its context and pi writes the cache again. A prompt sent during a run doesn't wait.
+Cache refreshes need pi running and the machine awake. Each one is a `cache-refresh` entry in the session, and the statusline's cost includes it.
 
 | Key                            | Default  | Meaning                                                                                                                |
 | ------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -101,22 +99,15 @@ After sleep or a restart, a session's cache may have expired. If the session's l
 
 ### `fast.ts`
 
-`/fast` picks the current model's speed: `off`, `fast`, or `ultrafast`. In the picker, Enter sets the speed for this session only. Ctrl+S saves it as the model's default in `fastMode` and clears the model's session override. `/fast on`, `/fast ultrafast`, and `/fast off` skip the picker and set the speed for this session only. Each model has its own session override. `/resume` and `/tree` restore the overrides on the current branch.
+Sets the current model's speed: `off`, `fast`, or `ultrafast`.
 
-`--fast` and `--ultrafast` override saved defaults until `/fast` saves a default. A session override wins over both. The footer shows the tier each request sends, so it also shows defaults that other pi processes save.
+- `/fast` opens a picker. Enter sets the speed for this session. Ctrl+S saves it as the model's default.
+- `/fast on`, `/fast ultrafast`, and `/fast off` set the speed for this session without the picker.
+- `--fast` and `--ultrafast` start pi at that speed.
 
-Fast turns on fast mode for supported Anthropic models and the priority service tier for OpenAI. Ultrafast sends OpenAI's ultrafast service tier and Anthropic's fast mode. On `openai`, every model gets fast, and the models in `fast.ultrafastModels` also get ultrafast. Other models get fast when you pick ultrafast.
+Fast turns on Anthropic's fast mode and OpenAI's priority tier. Ultrafast uses OpenAI's ultrafast tier on the models in `fast.ultrafastModels`, and fast on other models. On `openai-codex`, pi requests only the tiers the account's Codex catalog lists.
 
-Anthropic and OpenAI cache a prompt for one speed, so the first request after a speed change pays for the whole context again, at the new speed's price. The picker asks before such a change if the session is idle, holds at least `summaryFork.idle.minTokens`, and its cache hasn't expired. Each choice shows an estimated price.
-
-- "Compact, then switch" compacts the session at the old speed, which reads the cache, and then changes the speed. After pi restarts, the compaction reads the session uncached, and the price includes that.
-- "Switch now" changes the speed and keeps the whole context.
-
-Escape leaves the speed as it was, and so does a compaction that fails. `/fast` with an argument doesn't ask. It shows both prices and changes the speed. A change during a run happens at once.
-
-On `openai-codex`, the extension downloads the account's model catalog, like Codex does, and requests only the tiers the catalog lists for the model. The catalog requires a `client_version`, so the extension sends the latest Codex release from npm. After 5 minutes, it downloads the catalog again in the background. Startup and model switches don't wait for the download. If a download fails, requests go out without a tier and pi shows the error. Requests in the next 30 seconds get the same error without waiting, and then pi tries again. The `/fast` picker still opens during a failure, so you can still choose `off`.
-
-The `openai-codex` backend reports the default tier for every reply, so pi would price fast and ultrafast replies at the standard rate. The extension prices them at the tier it requested.
+A speed change makes the next request write the whole context to the cache again. On a large idle session, the picker offers to compact first and shows what each choice costs.
 
 | Key                            | Default                                                        | Meaning                                                                                     |
 | ------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -129,7 +120,7 @@ The `openai-codex` backend reports the default tier for every reply, so pi would
 
 ### `herdr-agents.ts`
 
-In herdr, pi uses tools instead of the herdr CLI for most of what the herdr skill covers. pi doesn't get the herdr skill, but Claude Code and Codex still do. Remote machines (`herdr --machine`) aren't covered, because the tools watch agents on the local herdr server.
+In herdr, gives pi tools to run agents and commands in panes, in place of the herdr CLI and skill. Claude Code and Codex keep the herdr skill. The tools work only with the local herdr server, not `herdr --machine`.
 
 | Tool                    | What it does                                                                                                                     |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
@@ -143,17 +134,16 @@ In herdr, pi uses tools instead of the herdr CLI for most of what the herdr skil
 | `herdr_close`           | Closes an agent's or a command's pane.                                                                                           |
 | `herdr_focus`           | Switches your herdr view to an agent, or to a pane's tab, when you ask to see it.                                                |
 
-A prompt returns right away, and pi gets a message when the agent is done, idle, blocked, or failed, so it doesn't poll. If the agent doesn't start working within 5 seconds of a prompt, the message says so. Keys, such as Esc to interrupt, wait 2 seconds and return the agent's state and the last 20 lines of its screen. So does a prompt that starts with `/`, after up to 5 seconds for the agent to start working, because a command such as `/review` or `/new` can open a menu or finish without a turn. If the agent is working, pi also gets a message when it settles.
+- After a prompt, pi gets a message when the agent is done, idle, blocked, or failed, so it doesn't poll.
+- Keys and prompts that start with `/` return the agent's state and screen.
+- A Herdr block above the editor lists the agents pi is waiting on.
+- Worktrees go in herdr's worktree directory, each in its own workspace. pi removes a worktree it made once the work is committed, and discards changes only when you say to.
 
-The watch stays open after that message until the agent exits, or until pi sends keys or a slash command to it while it isn't working. If the agent works again without a prompt from pi, as when you prompt it yourself, pi gets a message when it settles. The message says so and starts no turn, so pi sees it on its next turn.
-
-Worktrees go in herdr's worktree directory. Each opens in its own workspace, in the space of the repository's main checkout, so it shows up in herdr. pi can start from any directory in the repository, including another worktree, and a new branch starts from the commit there unless `base` says otherwise. If the branch already has a worktree, the tools reuse it. When its workspace is already open, `herdr_start` opens a new tab there rather than taking the first pane, which may be in use. Removing a worktree ends anything running in its workspace. herdr refuses one with uncommitted changes unless pi passes `force`, which it does only when you say to. pi removes a worktree it made once its work is committed and done, or when you ask. It won't remove the main checkout or the worktree it runs in.
-
-A Herdr block above the editor lists the agents pi is waiting on, with each one's state and the time since the prompt. If pi stops watching an agent first, for example because the agent exits, the message says so. No settings.
+No settings.
 
 ### `rex.ts`
 
-In [Rex](https://www.superlogical.com/rex), pi uses tools instead of the rex CLI to run agents and commands in panes. pi doesn't get the Rex skill, but Claude Code and Codex still do. pi gets either these tools or herdr's, from the nearest herdr or Rex server in its process ancestry. Panes inherit environment variables such as `HERDR_ENV` from whatever started the multiplexer, so pi can't rely on them. `attention.ts` checks the same way.
+In [Rex](https://www.superlogical.com/rex), gives pi tools to run agents and commands in panes, in place of the rex CLI and skill. Claude Code and Codex keep the Rex skill. pi gets these tools or herdr's, from whichever server it runs under.
 
 | Tool                  | What it does                                                                                                                                |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -167,40 +157,32 @@ In [Rex](https://www.superlogical.com/rex), pi uses tools instead of the rex CLI
 | `rex_close`           | Closes an agent's or a command's pane.                                                                                                      |
 | `rex_focus`           | Switches your Rex view to an agent's or a command's pane, when you ask to see it.                                                           |
 
-An agent is any program that reports its state to Rex with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), as pi, Claude Code, and Codex do. Its name is its pane's label. The tools follow the session's events from `rex events`, so pi gets a message when an agent is done, idle, blocked, or failed, the same way as in herdr, and doesn't poll. An agent counts as blocked while any of its records is, so pi gets a message when a pi agent waits on a permission prompt. `rex_start` runs the agent as its pane's command, so the pane closes when the agent exits. `rex_run` types its command into a shell, so your shell setup, such as direnv, applies.
+- An agent is any program that reports its state with Rex's [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), such as pi, Claude Code, and Codex. Its name is its pane's label.
+- After a prompt, pi gets a message when the agent is done, idle, blocked, or failed, as in herdr.
+- The tools reach every session. Name another session's pane as `session/name` or by block ID. A `session` label that no session has creates that session.
+- `rex_focus` switches to another session only with Remote Control on in the Rex app's settings.
+- `rex_start` runs the agent as the pane's command, so the pane closes when the agent exits. `rex_run` types its command into a shell, so your shell setup, such as direnv, applies.
 
-The tools reach every session. A bare name means a pane in pi's own session if one has it, then one in any session. `session/name` picks the session, and a block ID always works. `rex_start`, `rex_run`, and `rex_worktree` take `session` to open in another session, and the first two take `tab` to split the focused pane of a tab other than pi's. A split in another session always goes right, because a session no app shows reports its panes as 80x24. `rex_focus` switches the app to another session only with Remote Control on in the app's settings under Rex Server. Otherwise it focuses the pane and fails with an error that says so.
+Rex has no worktrees, so [`home/agents/rex/worktree.lua`](../rex/worktree.lua) adds them. New worktrees go in `<directory>/<repository>/<branch>`. `directory` comes from `~/.config/rex/worktree.json`, which `home/agents/default.nix` sets to `~/Developer/.rex/worktrees`. The file also adds a Worktrees category to Rex's command palette. Run the actions outside the palette with `rex do ~/.config/rex/worktree.lua --action NAME`.
 
-A `session` label that no session has creates that session. The new pane is alone in the session's first tab. The tab takes the pane's name, if it has one. For a worktree, the session starts with a shell that closes once the worktree's tab opens. If the worktree's tab is already open in another session, pi uses that tab and kills the new session. If the pane fails to start, pi kills the session it made too, unless another pane is there. A split into a session with no panes, such as one whose last agent exited, opens a tab there instead.
+| Action                    | What it does                                                                                                                                                                                                   |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worktree_open`           | **Worktrees…** picks a worktree of the focused pane's repository with fzf. Enter opens it, a new name creates it, ctrl-x removes it. With `branch` or `path`, it opens that worktree and creates it if needed. |
+| `worktree_remove_current` | **Remove This Tab's Worktree** removes the active tab's worktree and closes the tab.                                                                                                                           |
+| `worktree_remove`         | Removes a worktree by `branch` or `path`, with `force` to discard changes. Not in the palette.                                                                                                                 |
+| `worktree_list`           | Lists the repository's worktrees and the tabs they're open in. Not in the palette.                                                                                                                             |
 
-Rex has no worktrees of its own, so [`home/agents/rex/worktree.lua`](../rex/worktree.lua) adds them, and the tools run it with `rex do`. A worktree tab is a tab it opened for a worktree, labelled with Nerd Fonts' `nf-oct-git_branch` glyph, U+F418, and the branch. Rex keeps nothing on a tab, so it records each one in `~/.local/state/rex/worktrees.json`, under a lock so parallel calls don't lose entries. New worktrees go in `<directory>/<repository>/<branch>`, where `directory` comes from `~/.config/rex/worktree.json`. `home/agents/default.nix` sets it to `~/Developer/.rex/worktrees`, next to herdr's.
-
-pi can start from any directory in the repository, including another worktree, and a new branch starts from the commit there unless `base` says otherwise. A branch that only a remote has, such as a PR's, gets a local branch that tracks it. If the branch already has a worktree, the tools reuse it, and when its tab is open, `rex_start` splits that tab.
-
-Removing a worktree closes its tabs, which ends anything running there. It refuses one with uncommitted changes unless pi passes `force`, which it does only when you say to. pi removes a worktree it made once its work is committed and done, or when you ask. It won't remove the main checkout, or the worktree or tab it runs in.
-
-The same file adds a Worktrees category to Rex's command palette. Claude Code and Codex run its actions with `rex do`. `worktree_remove` and `worktree_list` aren't in the palette, so run them with `rex do ~/.config/rex/worktree.lua --action NAME`:
-
-| Action                    | What it does                                                                                                                                                                                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `worktree_open`           | **Worktrees…** opens fzf over the focused pane's repository. Enter opens one, a new name makes it, and ctrl-x removes one. With `branch` or `path`, it opens that worktree and makes it first if needed. It also takes `session`, `command`, `label`, and `focus`. |
-| `worktree_remove_current` | **Remove This Tab's Worktree** removes the active tab's worktree and closes the tab.                                                                                                                                                                               |
-| `worktree_remove`         | Removes a worktree by `branch` or `path`, with `force` to discard changes.                                                                                                                                                                                         |
-| `worktree_list`           | Lists the repository's worktrees and the tabs they're open in.                                                                                                                                                                                                     |
-
-Actions in the configuration get 30 seconds, so a big repository's `git worktree add` can time out from the palette. The picker and the tools run the file as a script, which Rex doesn't time out.
+Rex stops other palette actions after 30 seconds. **Worktrees…** and the tools run as scripts, which Rex doesn't stop.
 
 ### `rex-resume.ts`
 
-Tells Rex which session pi runs in its pane, so [`home/agents/rex/agent_resume.lua`](../rex/agent_resume.lua) can resume it with `pi --session <file>` after the Rex server restarts. Rex brings panes back as new shells. It can't see which session a program had, so each session start writes `{agent, session, file, cwd, pid}` to `~/.local/state/rex/agents/<block>`. Claude Code and Codex write the same record from a SessionStart hook, [`home/agents/rex-session-hook.sh`](../rex-session-hook.sh), and resume with `claude --resume <id>` and `codex resume <id>`.
+Resumes pi sessions in their panes after the Rex server restarts. Claude Code and Codex sessions resume too, through [`home/agents/rex-session-hook.sh`](../rex-session-hook.sh). Each agent records its session in `~/.local/state/rex/agents/<block>`, and [`home/agents/rex/agent_resume.lua`](../rex/agent_resume.lua) runs the resume command once the pane is back at a shell.
 
-`agent_resume.lua` does the rest. `init.lua` starts it as a script that follows every session. It deletes a record once the agent has exited and its pane is back at its shell's prompt, which means you quit the agent. An agent suspended with Ctrl+Z keeps its record. It also deletes the records of closed panes. When the server shuts down, the shell dies with the agent, so the record stays. When the script finds a new server instance, it types each record's command into its pane once the pane is back at a shell. The command joins `cd` and the agent with `&&`, so Nushell panes aren't resumed. A session with no messages yet starts fresh. If a resumed agent hasn't started a minute later, the script deletes its record.
-
-Subagents, print runs such as `claude -p` or `codex exec`, and agents running inside another agent's processes don't write a record. An agent that another agent starts in a pane of its own, as `rex_start` does, owns that pane and does. `rex-resume.ts` has no settings.
+Quitting an agent deletes its record. Subagents, print runs such as `claude -p`, and Nushell panes aren't resumed. No settings.
 
 ### `mcp-ancestors.ts`
 
-Loads MCP servers from the `.mcp.json` in each folder from a configured root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. It expands `${VAR}` and `${VAR:-default}` in them. Untrusted projects load none.
+Loads MCP servers from the `.mcp.json` in each folder from a configured root down to the session's folder, as Claude Code does. Nearer files win, and `~/.pi/agent/mcp.json` wins over all of them. `${VAR}` and `${VAR:-default}` expand. Untrusted projects load none.
 
 | Key                  | Default | Meaning                                                       |
 | -------------------- | ------- | ------------------------------------------------------------- |
@@ -208,25 +190,29 @@ Loads MCP servers from the `.mcp.json` in each folder from a configured root dow
 
 ### `prompt-sections.ts`
 
-Keeps the prompt cache working when other extensions add text to the system prompt. Without it, pi resends the whole prompt after each change. It has to run after those extensions, so `home/agents/default.nix` lists it last in `packages`. No settings.
+Keeps the prompt cache working when other extensions add to the system prompt. It must run after them, so `home/agents/default.nix` lists it last in `packages`. No settings.
 
 ### `skill-mention.ts`
 
-`$name` anywhere in a prompt loads that skill. pi's `/skill:name` works only at the start of a prompt. Other extensions can offer the same `$name` completion and loading in their own prompts, as pi-review's custom prompt does. No settings.
+`$name` anywhere in a prompt loads that skill. pi's own `/skill:name` works only at the start of a prompt. No settings.
 
 ### `statusline.ts`
 
-Replaces pi's footer with a line of segments. Statuses from other extensions go on a second line when there are any. The `talk`, `autoMode`, and `fast` segments show those extensions' statuses, so leaving a segment out hides its status. `tokens` shows input (`↑`) and output (`↓`) tokens since your last message, with `~` while output is an estimate. If the settings are invalid, pi keeps its own footer.
+Replaces pi's footer with one line of segments. Other extensions' statuses go on a second line. If the settings are invalid, pi keeps its own footer.
 
-| Key                   | Default                  | Meaning                                                                                                                         |
-| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `statusline.segments` | all, in the order listed | Segments to show, in order. Any of `talk`, `autoMode`, `model`, `thinking`, `fast`, `cwd`, `context`, `cost`, `tokens`, `speed` |
+- `talk`, `autoMode`, and `fast` show those extensions' statuses. Leaving one out hides its status.
+- `cvp` shows the selected Anthropic model's catalog badge, such as `CVP: Defense Access`.
+- `tokens` shows `↑` input and `↓` output tokens since your last message, with `~` while output is an estimate.
+
+| Key                   | Default                  | Meaning                                                                                                                                |
+| --------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `statusline.segments` | all, in the order listed | Segments to show, in order. Any of `talk`, `autoMode`, `model`, `thinking`, `fast`, `cvp`, `cwd`, `context`, `cost`, `tokens`, `speed` |
 
 ### `super-review.ts`
 
-Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. For an Anthropic session it suggests `openai-codex/gpt-6.2-astra`, or `openai/gpt-6.2-astra` if only `openai` has credentials. For an OpenAI session it suggests `anthropic/claude-fable-5-2`.
+Adds reviewers on other models to pi-review's `/review`. You pick the models after pi-review's dialogs. An Anthropic session suggests `openai-codex/gpt-6.2-astra`, and an OpenAI session suggests `anthropic/claude-fable-5-2`.
 
-Each reviewer reviews the same change. The session's model compares their findings and runs discussion rounds. After the round limit, it drops findings still in dispute and gives each finding whose priority is in dispute the lowest priority proposed. It prints the final review once the reviewers confirm it.
+The reviewers review the same change, and the session's model settles their findings over discussion rounds. After the last round, it drops disputed findings and gives each disputed priority the lowest one proposed.
 
 | Key                                  | Default | Meaning                                                                                                   |
 | ------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------- |
@@ -235,7 +221,7 @@ Each reviewer reviews the same change. The session's model compares their findin
 
 ### `talk.ts`
 
-`/talk` or shift+tab turns read-only talk mode on and off. It blocks `talk.blockedTools` and adds `talk.prompt` as a `talk_mode` system prompt section. On models that accept system messages mid-conversation, pi sends one system message each time the mode turns on or off. On other models, each toggle misses the prompt cache. Each branch keeps its own setting, including after `/tree`. Bash stays available for research. `--talk` starts with it on.
+Read-only talk mode. `/talk` or shift+tab turns it on and off, and `--talk` starts pi with it on. It blocks `talk.blockedTools` and adds `talk.prompt` to the system prompt. Bash stays available for research. Each branch keeps its own setting. On models without mid-conversation system messages, each toggle misses the prompt cache.
 
 | Key                 | Default             | Meaning                                            |
 | ------------------- | ------------------- | -------------------------------------------------- |

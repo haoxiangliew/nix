@@ -28,6 +28,7 @@ const SEGMENTS = [
   "model",
   "thinking",
   "fast",
+  "cvp",
   "cwd",
   "context",
   "cost",
@@ -45,7 +46,7 @@ const Config = Type.Object(
 type Segment = (typeof SEGMENTS)[number];
 
 // Statuses that segments show. They stay off the second line even when their segment is left out.
-const SEGMENT_STATUSES = new Set(["talk", "auto-mode", "fast"]);
+const SEGMENT_STATUSES = new Set(["talk", "auto-mode", "fast", "cvp"]);
 
 type Config = Static<typeof Config>;
 
@@ -338,6 +339,7 @@ export default function (pi: ExtensionAPI) {
             model: () => [ctx.model && theme.fg("accent", `${ctx.model.provider}/${ctx.model.id}`)],
             thinking: () => [theme.fg("muted", pi.getThinkingLevel())],
             fast: () => [statuses.get("fast")],
+            cvp: () => [statuses.get("cvp")],
             tokens: () => [tint("muted", formatTotals(totals()))],
             cwd: () => {
               const branch = footerData.getGitBranch();

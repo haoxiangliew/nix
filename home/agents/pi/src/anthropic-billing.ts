@@ -17,6 +17,7 @@ import {
   startQueuedPrompt,
   startTurn,
 } from "./lib/billing-session.ts";
+import { catalogUpdates } from "./lib/catalog-refresh.ts";
 import { readClaudeIdentity, type ClaudeIdentity } from "./lib/claude-identity.ts";
 import { registerFetchWrapper, requestHeaders, type FetchInput } from "./lib/fetch.ts";
 import { awaitAbort } from "./lib/promise.ts";
@@ -94,6 +95,9 @@ export default function (pi: ExtensionAPI) {
 
   registerFetchWrapper("anthropic-billing", (upstream) => createRouter(shared, upstream));
 
+  // Registers the saved catalog's models now, so startup model selection and --list-models see them.
+  const catalogs = catalogUpdates(pi);
+
   let cli: Promise<{ path: string; version: string }> | undefined;
   let session = newSession("");
 
@@ -114,12 +118,17 @@ export default function (pi: ExtensionAPI) {
   };
 
   const discover = async (ctx: ExtensionContext) => {
-    if (ctx.model?.provider !== "anthropic" || !ctx.modelRegistry.isUsingOAuth(ctx.model)) {
+    // The model may change while identity() runs, so the refresh uses the one checked here.
+    const model = ctx.model;
+
+    if (model?.provider !== "anthropic" || !ctx.modelRegistry.isUsingOAuth(model)) {
       return;
     }
 
+    let resolved: ClaudeIdentity;
+
     try {
-      await identity(ctx.model.id);
+      resolved = await identity(model.id);
     } catch (cause) {
       ctx.ui.notify(
         cause instanceof Error
@@ -127,7 +136,11 @@ export default function (pi: ExtensionAPI) {
           : "Claude CLI profile discovery failed. Request blocked.",
         "error",
       );
+
+      return;
     }
+
+    await catalogs.refresh(ctx, model, resolved);
   };
 
   // Startup and model switches don't wait for discovery. Requests wait for the same cached lookup.
@@ -154,10 +167,14 @@ export default function (pi: ExtensionAPI) {
       return billingFetch(upstream, (model, signal) => identity(model, signal, owner), owner, side);
     });
     routeBillingRegistry(ctx.modelRegistry, token);
+    catalogs.start(ctx);
     prefetch(ctx);
   });
 
-  pi.on("model_select", async (_event, ctx) => prefetch(ctx));
+  pi.on("model_select", async (_event, ctx) => {
+    catalogs.showBadge(ctx);
+    prefetch(ctx);
+  });
 
   pi.on("before_agent_start", async (event, ctx) => {
     if (event.messageType !== "user") {

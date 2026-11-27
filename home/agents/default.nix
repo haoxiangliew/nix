@@ -664,41 +664,6 @@ in
           ];
         };
         models.providers = {
-          anthropic.models = [
-            {
-              id = "claude-mythos-5-2";
-              name = "Claude Mythos 5.2";
-              reasoning = true;
-              input = [
-                "text"
-                "image"
-              ];
-              cost = {
-                input = 8;
-                output = 40;
-                cacheRead = 0.2;
-                cacheWrite = 10;
-              };
-              contextWindow = 1000000;
-              maxTokens = 128000;
-              thinkingLevelMap = {
-                off = null;
-                xhigh = "xhigh";
-                max = "max";
-              };
-              compat = {
-                forceAdaptiveThinking = true;
-                supportsMidConvoEffort = true;
-                supportsMidConvoSystemMessages = true;
-                supportsMidConvoToolChanges = true;
-                supportsStrictTools = true;
-              };
-              promptCache = {
-                short = 300;
-                long = 3600;
-              };
-            }
-          ];
           openai-codex.modelOverrides = lib.genAttrs [
             "gpt-6-luna"
             "gpt-6.2-astra"
