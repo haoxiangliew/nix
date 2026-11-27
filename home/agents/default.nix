@@ -253,7 +253,7 @@ in
             lib.mkOption {
               type = lib.types.nullOr lib.types.package;
               default = null;
-              description = "${name} package whose agent integration home-manager installs during activation.";
+              description = "${name} package whose agent integration Home Manager installs during activation.";
             }
           );
         }
@@ -571,7 +571,7 @@ in
       mcp.enable = true;
       claude-code = {
         enable = true;
-        # generates a home-manager plugin with `.mcp.json` and wraps claude with `--plugin-dir`
+        # generates a Home Manager plugin with `.mcp.json` and wraps claude with `--plugin-dir`
         enableMcpIntegration = true;
         package = pkgs.llm-agents.claude-code;
         settings = {

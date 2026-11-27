@@ -5,6 +5,30 @@
   ...
 }:
 
+let
+  stateDir = "${config.xdg.stateHome}/tailscale-user";
+  socket = "${stateDir}/tailscaled.sock";
+
+  tailscaledArgs = [
+    (lib.getExe' pkgs.tailscale "tailscaled")
+    "--tun=userspace-networking"
+    "--statedir=${stateDir}"
+    "--socket=${socket}"
+    # A system tailscaled or the Tailscale app may already use the default port.
+    "--port=0"
+    "--no-logs-no-support"
+    "--config=${
+      pkgs.writeText "tailscaled-user.json" (
+        builtins.toJSON {
+          Version = "alpha0";
+          Locked = false;
+          Hostname = config.services.tailscale-user.hostname;
+          RunSSHServer = true;
+        }
+      )
+    }"
+  ];
+in
 {
   options.services.tailscale-user.hostname = lib.mkOption {
     type = lib.types.str;
@@ -13,46 +37,34 @@
   };
 
   config = {
-    home = {
-      packages = [
-        (pkgs.writeShellScriptBin "tailscale-user" ''
-          exec ${lib.getExe' pkgs.tailscale "tailscale"} --socket=${lib.escapeShellArg "${config.xdg.stateHome}/tailscale-user/tailscaled.sock"} "$@"
-        '')
-      ];
-    };
+    home.packages = [
+      (pkgs.writeShellScriptBin "tailscale-user" ''
+        exec ${lib.getExe' pkgs.tailscale "tailscale"} --socket=${lib.escapeShellArg socket} "$@"
+      '')
+    ];
 
-    # Run `tailscale-user login` once to sign in.
+    # Home Manager ignores launchd agents on Linux and systemd units on macOS.
     launchd.agents.tailscaled-user = {
       enable = true;
       config = {
-        ProgramArguments = [
-          (lib.getExe' pkgs.tailscale "tailscaled")
-          "--tun=userspace-networking"
-          "--statedir=${config.xdg.stateHome}/tailscale-user"
-          "--socket=${config.xdg.stateHome}/tailscale-user/tailscaled.sock"
-          # The Tailscale app may already use the default port.
-          "--port=0"
-          "--no-logs-no-support"
-          # `Locked = false` lets `tailscale-user set` change settings.
-          "--config=${
-            pkgs.writeText "tailscaled-user.json" (
-              builtins.toJSON {
-                Version = "alpha0";
-                Locked = false;
-                Hostname = config.services.tailscale-user.hostname;
-                RunSSHServer = true;
-              }
-            )
-          }"
-        ];
-        # Without TS_LOGS_DIR, tailscaled keeps its log settings in /Library/Tailscale if that exists,
-        # or else in ~/.local/share/tailscale.
-        EnvironmentVariables.TS_LOGS_DIR = "${config.xdg.stateHome}/tailscale-user";
+        ProgramArguments = tailscaledArgs;
+        EnvironmentVariables.TS_LOGS_DIR = stateDir;
         KeepAlive = true;
         RunAtLoad = true;
-        StandardOutPath = "${config.xdg.stateHome}/tailscale-user/tailscaled.log";
-        StandardErrorPath = "${config.xdg.stateHome}/tailscale-user/tailscaled.log";
+        StandardOutPath = "${stateDir}/tailscaled.log";
+        StandardErrorPath = "${stateDir}/tailscaled.log";
       };
+    };
+
+    systemd.user.services.tailscaled-user = {
+      Unit.Description = "Userspace tailscaled for ${config.services.tailscale-user.hostname}";
+      Service = {
+        ExecStart = lib.escapeShellArgs tailscaledArgs;
+        Environment = [ "TS_LOGS_DIR=${stateDir}" ];
+        Restart = "always";
+        RestartSec = 5;
+      };
+      Install.WantedBy = [ "default.target" ];
     };
 
     programs.ssh.settings.tailscale-user = {

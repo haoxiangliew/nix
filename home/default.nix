@@ -1,7 +1,10 @@
 { pkgs, ... }:
 
 {
-  imports = [ ./nix.nix ];
+  imports = [
+    ./nix.nix
+    ./tailscale.nix
+  ];
 
   home = {
     packages = with pkgs; [
