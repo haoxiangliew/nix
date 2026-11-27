@@ -13,6 +13,7 @@
   determinateNix.customSettings.auto-optimise-store = lib.mkForce false;
   home-manager.users.hao = {
     home.stateVersion = "26.05";
+    services.tailscale-user.hostname = "haof07567t705-fluidstack-macbook-user";
   };
 
   homebrew.casks =

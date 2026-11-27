@@ -1,6 +1,8 @@
 { config, ... }:
 
 {
+  imports = [ ./tailscale.nix ];
+
   manual.manpages.enable = false;
 
   home.file.".hushlogin".text = "";
