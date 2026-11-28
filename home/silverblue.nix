@@ -31,10 +31,5 @@
   # it and the three packages it pulls in.
   xdg.mime.enable = false;
 
-  # An rpm-ostree overlay installs 1Password, so the agent socket is in $HOME
-  # and op-ssh-sign is at an FHS path rather than in the Nix store.
-  hx.onePassword = {
-    agentSocket = "${config.home.homeDirectory}/.1password/agent.sock";
-    sshSignProgram = "/opt/1Password/op-ssh-sign";
-  };
+  hx.onePassword.agentSocket = "${config.home.homeDirectory}/.1password/agent.sock";
 }

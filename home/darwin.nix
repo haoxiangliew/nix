@@ -5,10 +5,7 @@
 
   home.file.".hushlogin".text = "";
 
-  hx.onePassword = {
-    agentSocket = "${config.home.homeDirectory}/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock";
-    sshSignProgram = "/Applications/1Password.app/Contents/MacOS/op-ssh-sign";
-  };
+  hx.onePassword.agentSocket = "${config.home.homeDirectory}/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock";
 
   programs = {
     ghostty = {
